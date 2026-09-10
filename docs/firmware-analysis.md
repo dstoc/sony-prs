@@ -134,6 +134,16 @@ Do not guess the header pin order or apply external power. The serial header's
 physical accessibility and the blank-password behavior remain unverified until
 the reader is connected and observed.
 
+The separate recovery CramFS independently contains the same
+`::respawn:/sbin/getty -L 115200 ttymxc0 vt102` entry, creates `/dev/ttymxc0`
+as character device major 207/minor 16, and carries the same `guest` account
+with an empty password. The captured kernel image also contains the default
+`console=ttymxc0` argument and MXC early-serial-console strings. This makes the
+UART evidence independent of the normal ebook application. Recovery's init
+remounts its own root filesystem read-write and runs only the updater check, so
+it is a useful fallback for console observation but should not be selected or
+written to without a documented recovery procedure.
+
 ### Other shell-capable surfaces checked
 
 The image contains a latent USB CDC-ACM path in
