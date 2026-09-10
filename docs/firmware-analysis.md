@@ -235,6 +235,35 @@ This has not been run. It is a Data-volume write and a new runtime experiment,
 although it does not require a firmware partition write; the recovery shell
 route remains the proven fallback.
 
+### Risk assessment for the normal-mode hook
+
+The hook does not flash a root filesystem, but it is not risk-free:
+
+- Staging the package and marker writes the Data FAT volume. A power loss,
+  forced disconnect, or concurrent automounter could corrupt the filesystem or
+  lose user data.
+- `update.sh` remounts Data read/write and invokes `nblconfig -ksel normal`.
+  The latter changes persistent boot metadata even though it selects the safe
+  normal slot rather than a firmware image.
+- `gadget.sh serial` unmounts Data and removes the mass-storage gadget. A
+  timing failure in the background getty or the subsequent storage setup could
+  leave the host with neither usable storage nor the expected serial shell
+  until a power cycle or recovery boot.
+- If normal `log_start.sh` does not reach its cleanup path, the package may be
+  retried at the next boot or the normal application may not start. The
+  package's empty-password root shadow also exposes a privileged console to
+  anyone holding the USB connection while it is active.
+- The package has been accepted by both verifier implementations and executed
+  in recovery, but the normal-mode lifecycle and its gadget race remain
+  unverified. A valid legacy signature is not a guarantee against these
+  runtime failures.
+
+The already-proven recovery shell is therefore the lower-risk way to obtain
+root. Any normal-mode trial should use a verified package hash, a complete Data
+backup, stable power, USB/kernel monitoring, and no flash or diagnostic package
+nearby. If the normal hook fails, do not repeatedly reboot with the package
+present; return to recovery and remove it from Data.
+
 ### Native `system()` audit
 
 `ebookSystem.so`, `kbook.so`, and `switcher.so` import libc `system()`, so all
