@@ -140,6 +140,34 @@ depends on an older, device-specific Fsk runtime and Sony native extensions.
 Modern Kinoma tooling is therefore useful for understanding the format, not
 an immediately compatible drop-in build system.
 
+## Stock autorun references
+
+The normal application has one direct startup reference:
+
+```xml
+<document href="applicationStart.xml"/>
+```
+
+Its `initialized` function currently registers the USB dispatcher, reports
+startup progress, and optionally delays settings loading. It does not load an
+external JavaScript file.
+
+The stock image does contain `autorun` references, but they belong to the
+factory/test UI:
+
+- `resources/tests/autorun.xml` and `autorunAssets.xml` define the test-mode
+  autorun screen;
+- `resources/tests/650.xml` calls `kbook.autoRunRoot.exitIf(model)` when leaving
+  that test screen;
+- `main.xml` tracks `EXIST_SD_AUTORUN`, `EXIST_MS_AUTORUN`, and
+  `EXIST_INTERNAL_AUTORUN` to display test-mode state and choose the test data
+  directory.
+
+A search of the extracted tree and raw `mtdblock15` image found no literal
+`autorun.js` or `/Data/autorun` startup hook. The external autorun technique
+described above is therefore a modification pattern from PRS+, not a latent
+stock feature in this image.
+
 ## Official update path
 
 The firmware update scripts show a gated path for persistent changes:
