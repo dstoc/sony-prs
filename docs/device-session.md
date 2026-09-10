@@ -110,5 +110,6 @@ The trial succeeded on the connected reader. After the recovery selector, the
 host exposed `/dev/ttyACM0`; the corrected bridge reached the recovery getty,
 and logging in as root with the package's blank password produced
 `uid=0(root) gid=0(root)`. This confirms the non-flashing shell route described
-above. Reboot to the selected normal slot and remove the package before
-considering the session complete.
+above. The device was then rebooted through the already-selected normal slot;
+the temporary package was removed and the final scan again found the normal
+`/dev/sg0` and `/dev/sg1` devices.

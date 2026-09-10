@@ -294,9 +294,18 @@ uid=0(root) gid=0(root)
 
 This is runtime confirmation of a root shell without a firmware partition
 write. The package was only placed on the Data volume, and the recovery
-script's normal-slot selection remains in effect. The reader should be
-rebooted from this shell, after which the package must be removed from the
-`READER` volume and the clean normal-storage state verified.
+script's normal-slot selection remained in effect. The reader was rebooted
+from this shell, the package was removed from the `READER` volume, and clean
+normal-storage state was verified.
+
+The live recovery shell reported `root=/dev/mtdblock4` in `/proc/cmdline`, with
+the recovery CramFS mounted read-only and `/dev/mtdblock16` mounted at `/Data`
+read-only. The temporary shadow override appeared as a tmpfs mount at
+`/etc/shadow`. After `/sbin/reboot`, the cleanup sequence printed the expected
+package hash, removed the package, unmounted the volume, and returned to the
+normal USB layout. A final read-only host check found `/dev/sda` (`READER`) and
+`/dev/sdb` (`SETTING`) unmounted, no `/dev/ttyACM*`, and the expected Sony
+`/dev/sg0` and Launcher `/dev/sg1`.
 
 ## Where behavior lives
 
