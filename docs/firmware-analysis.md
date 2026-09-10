@@ -72,6 +72,13 @@ but disabled in its init script, and telnet is commented out in `inetd.conf`.
 The presence of the console in the image does not by itself prove that the
 connector is accessible on a retail unit.
 
+A PRS-350 teardown reports a 2.54 mm serial header on the main PCB and
+identifies the interface as 3.3 V; its power pad is marked `V` and is
+unpowered while the reader is shut down. See the
+[MobileRead teardown](https://www.mobileread.com/forums/showthread.php?s=76b1df5fd6824b272e3ff685aa8cc183&t=193321).
+The public write-up does not establish the header's TX/RX/GND pin order, so
+that order must be verified from the board before connecting anything.
+
 ## Where behavior lives
 
 | Surface | Examples | What can be learned or changed |
