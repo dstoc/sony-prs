@@ -113,3 +113,12 @@ and logging in as root with the package's blank password produced
 above. The device was then rebooted through the already-selected normal slot;
 the temporary package was removed and the final scan again found the normal
 `/dev/sg0` and `/dev/sg1` devices.
+
+The normal image also contains an untested service-package hook. If the
+companion marker from `model-def` is present, normal boot accepts a
+`PRS-350 SP Updater.package` and invokes `log_start.sh` before starting the
+storage gadget. The unchanged login package may be staged under that filename
+with an empty marker so its serial getty remains active when normal boot's
+storage setup refuses to replace an in-use `ttygserial`. This is a separate
+Data-volume experiment and is not needed to reproduce the already-verified
+recovery shell.

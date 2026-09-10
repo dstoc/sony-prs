@@ -184,7 +184,8 @@ database has the same `guest` shell with an empty password as the normal image.
 Thus, if the reader is already in this recovery diagnostic branch, the host
 should see a USB CDC-ACM serial interface and a login prompt at 9600 baud.
 This is stronger evidence than the unused normal-image script branch, but it
-has not been exercised on the live reader.
+was exercised on the live reader: `/dev/ttyACM0` appeared and the recovery
+getty accepted the package's empty-password root account.
 
 The recovery init script reaches this code only after the bootloader has
 selected the recovery rootfs. Its `rc` invokes `update_check.sh`, while the
@@ -202,18 +203,37 @@ commented out, and the telnet/FTP entries in `inetd.conf` are commented out as
 well. Those files are evidence of build-system carryover, not a second live
 remote-shell route.
 
-The live reader observed during this analysis currently enumerates as one
-USB Mass Storage interface (Sony `054c:031e`), with no CDC-ACM interface. That
-confirms it is still in normal storage mode; it does not test the recovery
-diagnostic branch. Selecting recovery with `nblconfig -ksel recovery` changes
-persistent NBL boot configuration (`nblconfig` only exposes `-ksel normal`,
-`-ksel recovery`, `-bootdone`, and `-dump`) and was not run. The public PRS-350
-service manual documents the separate file-triggered factory test mode, but
-does not document a safe retail recovery-console entry sequence. The safe
-order is therefore to
-verify the physical UART first, and only consider a documented, reversible
-recovery-boot observation after a complete read-only capture and recovery plan
-exist.
+Before the live trial, the reader enumerated as one USB Mass Storage interface
+(Sony `054c:031e`) with no CDC-ACM interface, confirming normal storage mode.
+The trial then selected recovery through the host-side `0x70` operation,
+exposed `/dev/ttyACM0`, and returned cleanly to the same normal layout after
+`/sbin/reboot` and package cleanup.
+
+### Candidate normal-mode shell hook
+
+The normal rootfs has a separate, gated service-package path that was not
+needed for the recovery trial. Its `update_check.sh` searches `/Data` for
+`PRS-350 SP Updater.package`, but only when a companion marker file named by
+`/usr/local/sony/bin/model-def` exists. On this image the marker name is
+`VsKg2WclV00Ohtwe25PhUgcyAn8K4F0h.eiy1Bm5I4HxPW04WdksJQ5DtYMFfetrB`.
+
+The normal `log_start.sh` uses the same package decryption, checksum, RSA
+signature, and model checks as the recovery updater. Its cleanup routine exits
+without rebooting after the package script returns. The login package's
+`update.sh` starts `gadget.sh serial` in the background, binds its temporary
+shadow file over `/etc/shadow`, and sets the NBL selector to normal. The normal
+boot then proceeds to `gadget.sh storage`, whose first guard refuses to replace
+an active `/dev/ttygserial` getty. This suggests a way for the package to leave
+the USB serial root getty active while the normal rootfs continues booting.
+
+The package was passed through the normal rootfs verifier host-side and all
+checks succeeded. A read-only attempt to retrieve the exact model marker from
+the live Data namespace returned status `-16`, consistent with the marker not
+being present. The proposed test would therefore copy the unchanged package
+under the `SP Updater` filename and add an empty marker file, then reboot once.
+This has not been run. It is a Data-volume write and a new runtime experiment,
+although it does not require a firmware partition write; the recovery shell
+route remains the proven fallback.
 
 ### Native `system()` audit
 
