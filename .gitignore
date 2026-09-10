@@ -1,0 +1,10 @@
+/target/
+*.img
+*.dump
+*.pcap
+*.part
+
+# Temporary device extraction and probe outputs
+model*.txt
+extracted/
+device-dumps/
