@@ -60,6 +60,29 @@ The recovery CramFS at block 4 has a similar low-level init but ends after
 ebook application. The scripts switch between normal and recovery selection
 with `/usr/local/sony/bin/nblconfig -ksel normal|recovery`.
 
+### `tinyhttp`
+
+Despite its name, `tinyhttp` is the main reader application process. The
+normal init script starts `tinyhttp.sh` in the background after mounting the
+firmware filesystems. The wrapper then:
+
+- reads a saved exit code from the previous application run;
+- sets the application `PATH` and `LD_LIBRARY_PATH`;
+- brings up loopback;
+- launches `/opt/sony/ebook/application/tinyhttp -d bootcode=<code>`;
+- logs the command, return value, and exit-code file to the embedded log
+  device; and
+- translates application exit codes into data/card formatting, reboot,
+  update/recovery, or power-off actions.
+
+The `tinyhttp` executable itself is only about 3.6 KiB. Its real runtime is
+`libtinyhttp.so` (about 2 MiB), which contains the Fsk application loop, the
+Kinoma VM, the Fsk UI/file/network APIs, and the Sony application bindings.
+The library exports both HTTP client and HTTP server APIs, but the static
+image inspection has not established that an externally reachable HTTP
+listener is enabled. The name should not be taken to mean that this is merely
+an ordinary web server.
+
 The root filesystem also defines a serial console:
 
 ```text
