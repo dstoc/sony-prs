@@ -170,6 +170,13 @@ reader powered and connected, monitor kernel/device events, and remove the
 package after returning to normal mode. Do not send the selector implicitly
 from the read-only CLI.
 
+The package was also passed through the recovery image's own
+`updater-functions` on the host. Header/model validation, the package checksum,
+the RSA signature check, and tar extraction all returned success. The host
+needed only the legacy DES/AES provider and MD5 KDF compatibility that the
+reader's older OpenSSL supplies; no package bytes or selector request were sent
+to the reader.
+
 ## First device-session questions
 
 1. Does the exact x50 file service vary across PRS-x50 firmware versions?

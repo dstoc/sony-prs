@@ -269,6 +269,16 @@ trial should be performed only after a clean unmount/eject, with USB/kernel
 events monitored throughout; the package should be removed after returning to
 normal mode.
 
+As an additional host-only check, the exact `updater-functions` extracted from
+the recovery image was run against this package and the matching `Info.img`.
+With only a compatibility wrapper for the host's OpenSSL 3 legacy DES/AES
+provider and MD5 key derivation, `unpack_package_info` returned success for the
+model/header check and `unpack_package_updater` returned success for the
+payload checksum, RSA signature, and tar extraction. The extracted files were
+again exactly `shadow` (187 bytes) and `update.sh` (461 bytes). This verifies
+acceptance by Sony's recovery verifier logic, but it still does not verify
+execution on the physical reader.
+
 ## Where behavior lives
 
 The ebook UI is a Kinoma/Fsk application. Its structure is approximately:
