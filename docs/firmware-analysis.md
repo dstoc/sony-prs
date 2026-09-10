@@ -200,7 +200,11 @@ The live reader observed during this analysis currently enumerates as one
 USB Mass Storage interface (Sony `054c:031e`), with no CDC-ACM interface. That
 confirms it is still in normal storage mode; it does not test the recovery
 diagnostic branch. Selecting recovery with `nblconfig -ksel recovery` changes
-persistent boot selection and was not run. The safe order is therefore to
+persistent NBL boot configuration (`nblconfig` only exposes `-ksel normal`,
+`-ksel recovery`, `-bootdone`, and `-dump`) and was not run. The public PRS-350
+service manual documents the separate file-triggered factory test mode, but
+does not document a safe retail recovery-console entry sequence. The safe
+order is therefore to
 verify the physical UART first, and only consider a documented, reversible
 recovery-boot observation after a complete read-only capture and recovery plan
 exist.
