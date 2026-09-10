@@ -123,28 +123,80 @@ The matching host wrapper confirms the two fixed-size fields. Its
 4. sends command `0x40`; and
 5. returns two 32-bit result values to its caller.
 
-The exact semantic names of those two strings and returned words are not yet
-proven. They are likely request-selection/service parameters and a returned
-buffer/length pair, but that remains an inference until a caller or a wire
-capture confirms it.
+The two request strings are still not named by the retained host code, but the
+wire-level result is now established. Both control headers are two little-
+endian 32-bit words:
+
+```text
+word 0: status or callback result
+word 1: number of body bytes that follow
+```
+
+For command `0x40`, the phases are:
+
+```text
+host -> device, phase 1: 0x200 bytes (two 0x100-byte string slots)
+device -> host, phase 3: 8-byte control header
+device -> host, phase 3/2: body, at most 0x1000 bytes per transfer
+```
+
+The device sends the body with phase `3` for intermediate chunks and phase
+`2` for the final chunk. The host uses the second control word as the body
+length and allocates that many bytes. In the native no-callback fallback the
+status is zero, the length is `0x3400`, and the body is a zero-filled
+`0x3400`-byte allocation containing the two input strings as NUL-terminated
+copies. The first word is not explicitly checked by the retained `0x40` host
+operation, so its precise error semantics remain less certain than its
+position and encoding.
 
 ### Response direction and shape
 
 The native `SetHttpResponse` operation reads the first 32-bit word of its
-input and uses it to allocate response storage. Subsequent phases transfer
-response metadata and body data, again with data chunks capped at `0x1000`
-bytes.
+input and uses it as the response-body length. Its phases are:
+
+```text
+host -> device, phase 1: 4-byte little-endian body length
+host -> device, phase 3: body, at most 0x1000 bytes per transfer
+device -> host, phase 3: 8-byte control header
+device -> host, phase 3/2: optional returned body, at most 0x1000 bytes per transfer
+```
+
+The host sends the body in phase-3 chunks, including the final body chunk. It
+then reads the 8-byte control header and explicitly rejects a nonzero first
+word. The second word is the returned-body length; if nonzero, the host reads
+that body using phase `3` for intermediate chunks and phase `2` for the final
+chunk.
 
 The host wrapper `MSC_ebookUsb_sendHTTPResponsetoDevice` sends command `0x41`
 with a caller-provided pointer and length and returns two 32-bit result values.
-The firmware-side XS helper then constructs an XS response object containing
-the fields consumed by `httpPatchUSB`: `status`, `statusCode`, `headers`, and
-`body`.
+The firmware-side callback helper receives the complete host-supplied body and
+can return a separate buffer/status pair. The XS layer then constructs a
+response object containing the fields consumed by `httpPatchUSB`: `status`,
+`statusCode`, `headers`, and `body`.
 
-The first response word is a length or allocation-related field according to
-the native access pattern, but the complete response-header serialization has
-not been recovered. It would be unsafe to treat the current interpretation as
-a stable public protocol.
+In the native no-callback fallback, the device returns status zero and a
+zero-filled `0x3400`-byte buffer. This fallback is not a useful HTTP response;
+it is evidence that an installed native callback is expected to perform the
+actual host-mediated handoff.
+
+### SCSI transport framing
+
+The host DLL carries these operations through Windows
+`IOCTL_SCSI_PASS_THROUGH`. The pass-through buffer is initialized with a
+10-byte CDB targeting SCSI target ID `1`, LUN `0`, and the following command
+fields:
+
+```text
+CDB[0] = 0x20
+CDB[2] = Sony application command ID (0x40 or 0x41)
+CDB[4] = phase (1, 2, or 3)
+```
+
+The data direction is selected by the pass-through `DataIn` field. The normal
+transfer buffer is at offset `0x50`, and the host-side timeout is `10000 ms`.
+This explains why the Linux SCSI-generic client can see the device as a
+Mass-Storage target while the HTTP exchange remains outside the standard
+SCSI command set.
 
 ## Host DLL evidence
 
@@ -166,6 +218,14 @@ ledger (`MSC_UsbFile_GetSize`, `MSC_UsbFile_Read`, `MSC_UsbFile_Write`, and
 names as `switcher.so`, providing strong evidence that the host and device
 implementations belong to the same protocol family.
 
+The retained host binaries import only the USB/file bridge, Windows setup and
+UI/runtime libraries, and OLE support. There are no imports from
+`ws2_32.dll`, `wininet.dll`, `winhttp.dll`, or `urlmon.dll`, and no socket
+functions such as `connect`, `send`, or `recv` appear in the relevant import
+sets. Therefore `USBDLL.dll` is a SCSI tunnel, not the component that fetches
+the remote URL. The network-side consumer is a separate Sony desktop
+component that is not present in the retained artifacts.
+
 The older `ebook_msc.c` utility does not exercise these HTTP functions; it is
 useful mainly as confirmation of the surrounding file-service API. The HTTP
 exports are present in `DeviceAccessor.dll` even though the legacy sample does
@@ -179,14 +239,17 @@ Established by static analysis:
   ordinary network client path;
 - the request is handed from the storage VM to the switcher VM;
 - firmware command IDs `0x40` and `0x41` carry the request/response exchange;
+- both command control headers are little-endian `(status, length)` pairs;
+- command `0x40` uses a `0x200`-byte request and command `0x41` uses a 4-byte
+  body-length prefix;
 - a matching host-side API was intended to retrieve requests and return
   responses; and
 - the mechanism is tied to the USB Mass Storage/SCSI command service.
 
 Not established yet:
 
-- the exact byte-level serialization of request and response headers;
-- the identity of the Sony desktop caller that services the request;
+- the semantic names of the two `0x100`-byte request fields;
+- the identity of the Sony desktop component that services the request;
 - the remote DRM/service URLs and authentication sequence;
 - whether all PRS-x50 firmware revisions use identical fields; or
 - whether the host API can be safely exercised independently of the full Sony
@@ -199,13 +262,11 @@ not provide enough evidence to identify it as a separate external protocol.
 
 Since the library cannot be run here, the highest-value analysis is static:
 
-1. disassemble the host DLL callers, not only its exported wrappers, to find
-   who interprets the two returned words and constructs response buffers;
-2. compare the host and device implementations of the shared command classes;
-3. recover the ARM helper field mapping for
-   `EBookUSBHttpGetHTTPRequest` and `EBookUSBHttpSendHTTPResponse`; and
-4. if a compatible Sony application is ever available, capture one known
-   transaction and compare its `0x40`/`0x41` phases with the inferred layout.
+1. locate the missing Sony desktop component that calls the HTTP exports;
+2. identify the semantic names of the two request-string slots from that
+   caller; and
+3. if a compatible Sony application is ever available, capture one known
+   transaction and compare its `0x40`/`0x41` phases with the static layout.
 
 The current `prsctl` client should remain read-only and should not expose
 `0x40` or `0x41` until their framing and safety properties are confirmed.
