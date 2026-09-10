@@ -63,12 +63,15 @@ storage mode identifies the `Data` and `Launcher` MTD partitions and exports
 them through the USB mass-storage gadget; this explains why the public
 reader partition is exposed as `/dev/mtdblock15` in the x50 file namespace.
 
-## Next work
+## Firmware follow-up
 
-The safest next development step is read-only metadata and filesystem
-inspection: add a command that lists or probes known reader paths, then
-compare selected files from the live namespace with the archived image. The
-public Data partition is `/dev/mtdblock16` on this unit, but it is large enough
-that it should only be read in a separately verified full-dump session.
-Keep writes, deletes, update packages, and raw arbitrary commands outside the
-CLI boundary.
+The broader partition map is now recorded in
+[firmware-analysis.md](firmware-analysis.md). The important distinction is
+that block 15 is the normal-mode root filesystem, while block 4 is a separate
+recovery/diagnostic root filesystem. Block 10 is the tiny `Id` filesystem;
+block 2 is the `Info` area used by the updater identity logic.
+
+The public Data partition is `/dev/mtdblock16` on this unit, but it is not the
+interesting behavior surface. Keep writes, deletes, update packages, and raw
+arbitrary commands outside the CLI boundary while the boot and recovery path
+is being understood.

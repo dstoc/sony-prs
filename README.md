@@ -66,3 +66,5 @@ The reproducible download helper is [tools/fetch-historical.sh](tools/fetch-hist
 The first-device checklist is [docs/device-session.md](docs/device-session.md).
 The first complete PRS-350 image and filesystem findings are recorded in
 [docs/mtdblock15-analysis.md](docs/mtdblock15-analysis.md).
+The firmware partition map, boot flow, and behavior-modification roadmap are
+in [docs/firmware-analysis.md](docs/firmware-analysis.md).
