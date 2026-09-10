@@ -279,6 +279,25 @@ again exactly `shadow` (187 bytes) and `update.sh` (461 bytes). This verifies
 acceptance by Sony's recovery verifier logic, but it still does not verify
 execution on the physical reader.
 
+### Live trial result
+
+The controlled trial was subsequently performed on the connected PRS-350. The
+reader switched from mass storage to USB CDC-ACM as `/dev/ttyACM0`; the
+corrected host bridge used `/dev/tty` for keyboard I/O because an inline Python
+heredoc occupies standard input. The recovery getty accepted the package's
+blank-password root account and returned:
+
+```text
+[root (ttygserial)]# id
+uid=0(root) gid=0(root)
+```
+
+This is runtime confirmation of a root shell without a firmware partition
+write. The package was only placed on the Data volume, and the recovery
+script's normal-slot selection remains in effect. The reader should be
+rebooted from this shell, after which the package must be removed from the
+`READER` volume and the clean normal-storage state verified.
+
 ## Where behavior lives
 
 The ebook UI is a Kinoma/Fsk application. Its structure is approximately:
