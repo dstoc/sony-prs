@@ -59,3 +59,43 @@ The most useful next artifact, if a read fails, is a USB/SCSI trace showing the
 command CDB, data-out transaction, status phase, data-in transaction, and
 returned length. That will settle remaining questions in [the protocol
 ledger](protocol.md).
+
+## Controlled non-flashing shell trial
+
+Static analysis found a historical, PRS-350-specific `login_update` package
+that should expose a temporary root shell from recovery without replacing the
+firmware. This experiment has not been run on the reader. It is still
+state-changing: it writes one package to the Data volume and invokes the
+stock recovery selector, which reboots the reader.
+
+Before authorizing a trial:
+
+1. Keep the reader connected to stable power and USB. Preserve the existing
+   MTD captures and record the package hash from the local update-tools archive.
+2. Confirm the target by label and model. On this host the reader currently
+   appears as `/dev/sda` (`READER`, 1.5 GiB) and `/dev/sdb` (`SETTING`, 10 MiB,
+   `PRS-350 Launcher`). The package belongs on the root of the `READER`
+   volume, never the Launcher volume.
+3. Confirm neither reader volume is mounted, and stop any file manager or
+   automounter that could remount it while the package is being copied.
+4. In separate host terminals, monitor `journalctl -kf --no-pager` and
+   `lsusb -t`. The expected transition is mass storage disappearing, followed
+   by a CDC-ACM serial interface at 9600 baud.
+
+The package copy must be completed and flushed before the volume is cleanly
+unmounted/ejected. Only then should the verified host-side `0x70` request be
+sent with recovery mode `1`. Do not use a generic SCSI command or improvise a
+packet: the exact four-byte little-endian framing is recorded in
+[the protocol ledger](protocol.md).
+
+If the serial interface appears, try the stock getty at 9600 baud and use the
+package's empty-password root account. The package's reboot is commented out;
+after collecting runtime evidence, `/sbin/reboot` should return to the already
+selected normal slot. Once normal mass storage returns, remove the updater
+package and cleanly eject the volume. If the expected serial interface does
+not appear, do not repeatedly resend the selector; preserve kernel and USB
+logs and use the physical UART/recovery procedure before taking another step.
+
+This procedure is intentionally not part of `prsctl`: the CLI remains
+read-only and has no update-mode, package-copy, reboot, or arbitrary-SCSI
+operation.
