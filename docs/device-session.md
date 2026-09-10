@@ -96,6 +96,10 @@ package and cleanly eject the volume. If the expected serial interface does
 not appear, do not repeatedly resend the selector; preserve kernel and USB
 logs and use the physical UART/recovery procedure before taking another step.
 
+When using an inline Python heredoc for the serial bridge, do not call
+`termios.tcgetattr(0)`: standard input is the heredoc pipe, not the terminal.
+The bridge must open `/dev/tty` explicitly for keyboard input and output.
+
 This procedure is intentionally not part of `prsctl`: the CLI remains
 read-only and has no update-mode, package-copy, reboot, or arbitrary-SCSI
 operation.
