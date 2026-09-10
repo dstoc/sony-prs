@@ -243,6 +243,32 @@ for command `0x70`; the mode is `0` for normal and nonzero for recovery. The
 recovery selector is consequently understood well enough for a future test,
 but the rollback requirement remains unresolved and no packet was sent.
 
+### Non-flashing recovery shell package
+
+The historical PRS-350 update-tools archive supplies a more promising,
+device-specific route than the empty-Memory-Stick diagnostic branch. Its
+`login_update/PRS-350 Updater.package` was decrypted and checked offline using
+the captured `Info.img`: the package checksum and RSA signature match. The
+payload contains only `shadow` and `update.sh`; it has no root filesystem,
+partition image, or flash command.
+
+When the recovery updater runs this package as root, `update.sh` selects the
+normal NBL slot, starts the stock `gadget.sh serial` script, mounts Data
+read/write, and bind-mounts the package shadow file over `/etc/shadow`. The
+shadow file gives root an empty password. The serial script loads
+`g_serial.ko` with ACM enabled and starts a 9600-baud getty on `ttygserial`,
+so the expected host-side result is a CDC-ACM serial device with a root shell.
+The script's reboot is commented out; once the shell is obtained, an ordinary
+`/sbin/reboot` should follow the already-selected normal slot.
+
+This path still requires a controlled Data-volume write and the persistent,
+rebooting `0x70` recovery selector. The exact package has not been exercised
+on the reader, and no package has been copied and no selector command has been
+sent. The live device remains in normal mass-storage mode. If authorized, the
+trial should be performed only after a clean unmount/eject, with USB/kernel
+events monitored throughout; the package should be removed after returning to
+normal mode.
+
 ## Where behavior lives
 
 The ebook UI is a Kinoma/Fsk application. Its structure is approximately:

@@ -145,6 +145,31 @@ host-visible recovery command that is still serviced after the gadget switches
 from mass storage to CDC-ACM. An empty Memory Stick can select `DIAG`, but it
 is not a rollback mechanism.
 
+### Historical `login_update` shell package
+
+The archived PRS-350 update tools contain a package named
+`PRS-350 Updater.package` under `login_update/`. Its encrypted payload was
+verified offline against the captured `Info.img`: the package checksum and
+signature match, and the decrypted tar contains only `shadow` and `update.sh`.
+It contains no root filesystem image, partition-write command, or flash tool.
+
+The package script runs as the recovery updater's root process. It selects the
+normal boot slot, starts the stock `gadget.sh serial` path, mounts the Data
+volume read/write, and bind-mounts a package-provided shadow file over
+`/etc/shadow`. That shadow file gives `root` and `guest` empty passwords. The
+serial gadget loads `g_serial.ko` with ACM enabled and runs a 9600-baud getty
+on `ttygserial`, so the expected host-side result is a USB CDC-ACM device and
+a root login without changing the installed firmware.
+
+This is the strongest non-flashing shell route found so far, but it is not
+risk-free. Testing it writes one package to the user Data volume, sends the
+state-changing recovery selector (`0x70` with mode `1`), and reboots. The
+package has not been executed on the reader. A controlled trial must preserve
+the existing MTD backups, unmount/eject the Data volume cleanly, keep the
+reader powered and connected, monitor kernel/device events, and remove the
+package after returning to normal mode. Do not send the selector implicitly
+from the read-only CLI.
+
 ## First device-session questions
 
 1. Does the exact x50 file service vary across PRS-x50 firmware versions?
