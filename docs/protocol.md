@@ -62,12 +62,43 @@ Phase 2 marks the final data chunk, phase 3 an intermediate chunk, and the
 helper limits chunks to 0x1000 bytes. The write command `0x82` is
 deliberately not exposed.
 
+## Firmware command registry
+
+Static inspection of the PRS-350 `switcher.so` command manager found these
+dispatcher IDs. The IDs below are firmware evidence, not a promise that every
+command has the same meaning on another x50 revision.
+
+| ID | Firmware command | Current disposition |
+|---:|---|---|
+| `0x01` | GetUSBProtocolVersion | receive-only probe returned ASCII `01000000` |
+| `0x06` | GetProperty | used by the verified initialization exchange |
+| `0x08` | GetFreeSpace | read-only framing tested; selector semantics unresolved |
+| `0x40` | GetHttpRequest | not exposed |
+| `0x41` | SetHttpResponse | not exposed |
+| `0x42` | GetHttpNeedRegistration | not exposed |
+| `0x43` | GetMarlinState | not exposed |
+| `0x50`–`0x66` | DIW/DRM and device identity operations | not exposed; several are sensitive or mutating |
+| `0x70` | ReqUpdateChangeMode | not exposed |
+| `0x80` | UsbFileGetSize | implemented as path-based GetSize |
+| `0x81` | UsbFileRead | implemented as path-based FileRead |
+| `0x82` | UsbFileWrite | deliberately not exposed |
+| `0x83` | UsbFileDelete | deliberately not exposed |
+| `0x90` | GetFingerPrint | not exposed |
+| `0xa0` | GetInfo | read-only candidate; untested |
+
+For `0x08`, the PRS-350 accepted a four-byte selector and returned eight bytes
+for selectors 0–2, all zero. Selector 3 was rejected. This is enough to
+confirm the phase shape but not enough to define a useful public API, so the
+command remains outside the CLI.
+
 ## First device-session questions
 
 1. Does the exact x50 file service vary across PRS-x50 firmware versions?
 2. Which negative file-service status values should be mapped to user-facing
    diagnostics?
-3. Are there additional read-only x50 commands worth exposing, such as
+3. What selector and storage state does `GetFreeSpace` require on each x50
+   variant?
+4. Are there additional read-only x50 commands worth exposing, such as
    directory enumeration or device properties?
 
 The `probe` command only issues standard SCSI INQUIRY. The x50
