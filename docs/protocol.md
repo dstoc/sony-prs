@@ -120,6 +120,31 @@ maintenance operation, not a newly invented packet format. It still performs
 a reboot and persistent boot-mode change, so the project deliberately does not
 reimplement or invoke it as part of the read-only tool.
 
+The retained Windows DLL also resolves the wire-level sizes. Its exported
+`MSC_ReqChangeMode` wrapper calls the common request routine with command
+`0x70`, a four-byte input containing the mode, and a four-byte output for the
+device result. The mode is passed as a native 32-bit integer, so the host
+representation is little-endian. This is enough to prepare a future controlled
+observation, but not a reason to expose the operation in a read-only CLI: it
+selects a persistent boot slot and reboots immediately.
+
+### Recovery rollback constraint
+
+Static inspection does not yet establish a safe rollback after selecting
+recovery. The recovery `DIAG` path launches the USB serial getty and then
+returns from `update_check.sh`; it does not call `nblconfig -ksel normal`.
+The only stock recovery path that explicitly selects normal is `safe_reboot()`,
+used by update/error handling. That path is not reached by the empty-Memory-
+Stick diagnostic branch, and a `guest` shell cannot be assumed to have
+permission to rewrite the NBL MTD configuration.
+
+The project must therefore not send `MSC_ReqChangeMode(1)` until one of these
+rollback paths is verified independently: a root-capable physical UART
+console, a documented stock recovery action that selects normal, or a
+host-visible recovery command that is still serviced after the gadget switches
+from mass storage to CDC-ACM. An empty Memory Stick can select `DIAG`, but it
+is not a rollback mechanism.
+
 ## First device-session questions
 
 1. Does the exact x50 file service vary across PRS-x50 firmware versions?

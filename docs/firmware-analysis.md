@@ -196,6 +196,12 @@ general shell trigger. The script can also unpack and execute a signed
 `update.sh`, so no package or diagnostic entry point should be supplied merely
 to test the console.
 
+The recovery image contains init scripts for networking, `inetd`, lighttpd,
+and SSH, but its top-level `rc` does not invoke them. The SSH start command is
+commented out, and the telnet/FTP entries in `inetd.conf` are commented out as
+well. Those files are evidence of build-system carryover, not a second live
+remote-shell route.
+
 The live reader observed during this analysis currently enumerates as one
 USB Mass Storage interface (Sony `054c:031e`), with no CDC-ACM interface. That
 confirms it is still in normal storage mode; it does not test the recovery
@@ -232,6 +238,10 @@ is established. The retained historical `ebook_msc` host utility exposes this
 same operation as `um recovery`/`um normal` through
 `MSC_ReqChangeMode(1)`/`MSC_ReqChangeMode(0)`, confirming that the path was an
 intended maintenance interface rather than an accidental internal call.
+The DLL wrapper supplies a four-byte mode input and requests a four-byte result
+for command `0x70`; the mode is `0` for normal and nonzero for recovery. The
+recovery selector is consequently understood well enough for a future test,
+but the rollback requirement remains unresolved and no packet was sent.
 
 ## Where behavior lives
 
