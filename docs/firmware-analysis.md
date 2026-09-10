@@ -20,7 +20,7 @@ first 4 KiB of each block identified the following layout:
 | `6` | 1,048,576 | begins with `EBKL` and a timestamped log record | event/log area |
 | `7` | 1,048,576 | raw binary | device-specific state; not decoded |
 | `8` | 1,048,576 | all `ff` in the sampled header | currently erased/unused area |
-| `9` | 4,194,304 | same sampled ARM/kernel header as block 3 | second executable copy or boot slot; not fully compared |
+| `9` | 4,194,304 | byte-for-byte identical to block 3 in the complete capture | duplicate executable copy or boot slot |
 | `10` | 131,072 | CramFS, logical size 4,096, 2 files | `Id` key/identity filesystem |
 | `11` | 209,715,200 | FAT16 label `DICTIONARY` | dictionary content |
 | `12` | 10,485,760 | FAT16 label `SETTING` | USB Launcher volume |
@@ -40,9 +40,10 @@ The 4 MiB block 3 capture contains the string:
 Linux version 2.6.23 ... #2 PREEMPT Wed Aug 4 23:07:12 JST 2010
 ```
 
-That establishes a kernel payload in this region, but the exact boundaries
-between bootloader, kernel, padding, and any duplicate slot still need to be
-recovered from the flash table or a full image comparison.
+That establishes a kernel payload in this region. Blocks 3 and 9 have the
+same complete 4 MiB image, so they are duplicate copies or slots. The exact
+boundaries between bootloader, kernel, and padding still need to be recovered
+from the flash table or bootloader metadata.
 
 ## Boot and recovery flow
 
@@ -114,15 +115,13 @@ procedure before attempting any persistent modification.
 
 1. Preserve the read-only captures already made and record hashes for any new
    firmware image.
-2. Compare the complete block 3 and block 9 images to determine whether they
-   are duplicate kernel slots.
-3. Recover the MTD partition table from bootloader output, diagnostic logs, or
+2. Recover the MTD partition table from bootloader output, diagnostic logs, or
    the kernel image rather than inferring names from size alone.
-4. Use the serial console, if physically available, for runtime-only tests
+3. Use the serial console, if physically available, for runtime-only tests
    and to learn the normal/recovery boot selection behavior.
-5. Select one harmless XML/resource change, rebuild the normal CramFS in a
+4. Select one harmless XML/resource change, rebuild the normal CramFS in a
    separate workspace, and validate its size and contents offline.
-6. Only after a recovery path is demonstrated should the update-package
+5. Only after a recovery path is demonstrated should the update-package
    format be considered for a sacrificial device.
 
 The current `prsctl` boundary intentionally stops before step 6: it can read
