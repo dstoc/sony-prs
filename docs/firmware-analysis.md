@@ -81,6 +81,28 @@ that order must be verified from the board before connecting anything.
 
 ## Where behavior lives
 
+The ebook UI is a Kinoma/Fsk application. Its structure is approximately:
+
+```text
+Linux init
+└── tinyhttp
+    └── Fsk VM (kconfig.xml)
+        ├── application.xml
+        │   └── applicationStart.xml
+        │       └── resources/scripts/main.xml
+        ├── other XML views, skins, layouts, and localized assets
+        ├── *.xsb / *.xso compiled bytecode modules
+        └── *.so ARM native extensions
+```
+
+This is visible in the shipped files rather than inferred from filenames:
+`kconfig.xml` declares the Fsk root VM and native extensions, `application.xml`
+loads the application bytecode and `applicationStart.xml`, and the latter
+loads `resources/scripts/main.xml` as the main 600x800 view. The XML files
+contain Fsk view descriptions plus JavaScript-like functions inside `code`,
+`function`, and CDATA elements. The application image contains 88 XML files,
+including the home, settings, browser, test, and document-viewer screens.
+
 | Surface | Examples | What can be learned or changed |
 |---|---|---|
 | Boot shell scripts | `rc`, `gadget.sh`, `tinyhttp.sh`, `compulsion.sh` | startup order, USB mode, reboot/power behavior, update dispatch |
@@ -94,6 +116,29 @@ practical first target for a behavior experiment would be a copied resource
 file in the normal root image, followed by an offline rebuilt CramFS image.
 Changing compiled behavior would require ARM-compatible binary analysis or
 replacement and is a later step.
+
+There is no obvious stock plug-in directory or application installer in this
+image. New script behavior must be referenced by an existing XML entry point,
+and it can only call APIs already exposed by the loaded Fsk extensions. New
+hardware-facing behavior requires a compatible ARM native extension or a
+change to one of Sony's existing libraries.
+
+This model was extensible enough for the historical PRS+ project: its source
+and installer target the 350/650/950 family, and its community documentation
+describes adding menus, key bindings, games, and other JavaScript-based
+features. One documented technique adds code to `applicationStart.xml` to
+load `/Data/autorun.js` at startup. See the [PRS+ source repository](https://github.com/natowi/prs-plus),
+the [PRS+ feature list](https://github.com/natowi/prs-plus/wiki), and the
+[documented autorun hook](https://www.mobileread.com/forums/showthread.php?page=2&s=8e09a0ed017d4929d5a9a4089b03f330&t=64510).
+That is evidence of a practical extension path, not proof that an unmodified
+stock image already contains the hook.
+
+The original build environment is not present in the extracted image. The
+current Kinoma open-source project documents `application.xml` as a legacy
+project format and supports embedded Linux targets, but the PRS-350 image
+depends on an older, device-specific Fsk runtime and Sony native extensions.
+Modern Kinoma tooling is therefore useful for understanding the format, not
+an immediately compatible drop-in build system.
 
 ## Official update path
 
