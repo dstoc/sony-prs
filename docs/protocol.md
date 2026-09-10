@@ -112,6 +112,14 @@ arbitrary shell string. It is the likely stock bridge from normal USB mode to
 the recovery image, whose `DIAG` branch can expose the USB CDC-ACM getty
 described in `docs/firmware-analysis.md`.
 
+The historical `ebook_msc` source in the retained host artifacts removes the
+remaining ambiguity about the public interface: its `um normal` and
+`um recovery` commands call `MSC_ReqChangeMode(0)` and
+`MSC_ReqChangeMode(1)`, respectively. That utility is an intended Sony/x50
+maintenance operation, not a newly invented packet format. It still performs
+a reboot and persistent boot-mode change, so the project deliberately does not
+reimplement or invoke it as part of the read-only tool.
+
 ## First device-session questions
 
 1. Does the exact x50 file service vary across PRS-x50 firmware versions?

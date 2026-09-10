@@ -228,7 +228,10 @@ test-mode XML resource supplies a process-spawn or shell API. The `0x70`
 transition is the likely stock way to reach the recovery USB serial branch, but
 it is not a read-only operation and was not sent to the reader. The physical
 UART remains the safer runtime-only route until a reversible recovery procedure
-is established.
+is established. The retained historical `ebook_msc` host utility exposes this
+same operation as `um recovery`/`um normal` through
+`MSC_ReqChangeMode(1)`/`MSC_ReqChangeMode(0)`, confirming that the path was an
+intended maintenance interface rather than an accidental internal call.
 
 ## Where behavior lives
 
