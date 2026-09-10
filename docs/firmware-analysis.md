@@ -102,6 +102,74 @@ unpowered while the reader is shut down. See the
 The public write-up does not establish the header's TX/RX/GND pin order, so
 that order must be verified from the board before connecting anything.
 
+The account database makes this more useful than a boot-log-only console:
+
+```text
+/etc/passwd: root ... /bin/ash
+/etc/passwd: guest ... /bin/ash
+/etc/shadow: guest::0:0:99999:7:::
+/etc/securetty: ttymxc0, ttymxc1, tty1, ttygserial
+```
+
+The empty `guest` password is evidence that the stock login path may accept a
+blank password; it still needs to be confirmed on the physical console. The
+shell would initially be an unprivileged `guest` shell, not root. The image
+contains BusyBox `ash`, `login`, `getty`, and common diagnostic applets, but no
+`sshd`, `ftpd`, or SUID/SGID helper was found. Extracted CramFS ownership and
+mode bits are not authoritative, so the absence of SUID/SGID files is a useful
+negative result rather than a security guarantee.
+
+The safe first connection procedure is:
+
+1. Use a USB-TTL adapter configured for 3.3 V logic, not an RS-232 adapter.
+2. With the reader powered off, identify GND and the signal pads by board
+   markings, continuity, or a scope. Do not connect the pad marked `V`.
+3. Power the reader from its normal battery/USB arrangement and connect only
+   GND, reader TX to adapter RX, and reader RX to adapter TX.
+4. Open the adapter at `115200 8N1`; the inittab entry uses a local getty on
+   `ttymxc0`.
+5. At the login prompt, try the `guest` account and submit an empty password.
+
+Do not guess the header pin order or apply external power. The serial header's
+physical accessibility and the blank-password behavior remain unverified until
+the reader is connected and observed.
+
+### Other shell-capable surfaces checked
+
+The image contains a latent USB CDC-ACM path in
+`/usr/local/sony/bin/gadget.sh serial`. That branch removes mass storage,
+loads `g_serial.ko`, creates `/dev/ttygserial`, and runs a `9600` baud getty in
+an infinite loop. However, normal `/etc/init.d/rc` invokes only
+`gadget.sh storage`, and no retained script, XML resource, or native binary
+calls the `serial` branch. Switching to it would also unmount the public data
+volumes, so it is not a safe experiment to trigger blindly through an
+unverified command.
+
+The normal boot does not start networking, SSH, `inetd`, telnet, lighttpd, or
+Avahi. BusyBox still contains `httpd`, `telnetd`, `inetd`, and `nc` applets, but
+the corresponding service configuration is commented out or not dispatched by
+the boot script. The `tinyhttp` process is the Kinoma/Fsk reader application;
+its library has generic HTTP server APIs, but no enabled external listener has
+been established.
+
+### Native `system()` audit
+
+Both `ebookSystem.so` and `kbook.so` import libc `system()`, so this was checked
+as a possible software-only shell route. The recovered ARM call sites are
+consistent with fixed internal maintenance commands:
+
+| Library/function | Static command or input | Assessment |
+|---|---|---|
+| `ebookSystem.so` / `doSystemStateChange` | `/usr/local/sony/bin/nblconfig -bootdone` | fixed boot bookkeeping |
+| `ebookSystem.so` / `doWatchDog` | `/opt/sony/ebook/bin/compulsion.sh 1` or `... 0` | fixed watchdog action |
+| `ebookSystem.so` / `CMWrapperSetNTPDateTime` | command pointer held in an internal WAN/NTP structure | no caller-controlled command path identified |
+| `kbook.so` / EULA and version helpers | `/opt/sony/ebook/bin/euladec.sh`, `rm`, `mkdir`, `mtdmount`, `grep`/`awk`, `umount`, `rmdir` | fixed update housekeeping |
+
+No direct `system(command)` binding is exported to the Kinoma scripts, and no
+test-mode XML resource supplies a process-spawn or shell API. This makes the
+physical UART the primary non-flashing route; the USB serial branch and test
+mode remain secondary investigation targets, not confirmed shell access.
+
 ## Where behavior lives
 
 The ebook UI is a Kinoma/Fsk application. Its structure is approximately:
