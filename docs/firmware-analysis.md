@@ -162,6 +162,49 @@ the boot script. The `tinyhttp` process is the Kinoma/Fsk reader application;
 its library has generic HTTP server APIs, but no enabled external listener has
 been established.
 
+The recovery updater contains a second, more concrete USB-shell path. Its
+`update_check.sh` starts in `UPDATE` mode and, when a Memory Stick is present
+without a model-specific `Updater.package` or `Console.package`, changes the
+mode to `DIAG`. The final dispatch is:
+
+```sh
+/usr/local/sony/bin/gadget.sh serial &
+```
+
+The recovery `gadget.sh serial` branch removes `g_file_storage`, loads
+`arcotg_udc` and `g_serial.ko use_acm=1`, creates `/dev/ttygserial` as major
+127/minor 0, and runs:
+
+```sh
+/sbin/getty -L 9600 ttygserial vt102
+```
+
+`ttygserial` is also listed in `/etc/securetty`, and the recovery account
+database has the same `guest` shell with an empty password as the normal image.
+Thus, if the reader is already in this recovery diagnostic branch, the host
+should see a USB CDC-ACM serial interface and a login prompt at 9600 baud.
+This is stronger evidence than the unused normal-image script branch, but it
+has not been exercised on the live reader.
+
+The recovery init script reaches this code only after the bootloader has
+selected the recovery rootfs. Its `rc` invokes `update_check.sh`, while the
+normal rootfs invokes a different, application-oriented updater script and
+does not dispatch `gadget.sh serial`. The recovery script also has a fallback
+key sequence (`HOME`, `NEXT`, `OPTION`, `PREV`, `SIZE`) while checking for a
+missing direct update package; this is a diagnostic/update control path, not a
+general shell trigger. The script can also unpack and execute a signed
+`update.sh`, so no package or diagnostic entry point should be supplied merely
+to test the console.
+
+The live reader observed during this analysis currently enumerates as one
+USB Mass Storage interface (Sony `054c:031e`), with no CDC-ACM interface. That
+confirms it is still in normal storage mode; it does not test the recovery
+diagnostic branch. Selecting recovery with `nblconfig -ksel recovery` changes
+persistent boot selection and was not run. The safe order is therefore to
+verify the physical UART first, and only consider a documented, reversible
+recovery-boot observation after a complete read-only capture and recovery plan
+exist.
+
 ### Native `system()` audit
 
 Both `ebookSystem.so` and `kbook.so` import libc `system()`, so this was checked
