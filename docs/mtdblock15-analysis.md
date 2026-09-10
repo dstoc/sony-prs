@@ -10,9 +10,22 @@ size: 33554432 bytes
 sha256: c9eaca3950efff60f259791b2c7c2c94ea56ffe7bbec94891db2ce528b012714
 ```
 
-## Filesystem
+## Partition identity and filesystem
 
-The image begins with a little-endian CramFS filesystem:
+The live x50 namespace reports these relevant MTD sizes:
+
+| Device | Size | Identity |
+|---|---:|---|
+| `/dev/mtdblock12` | 10485760 bytes | USB Launcher (`SETTING`) |
+| `/dev/mtdblock15` | 33554432 bytes | system/root CramFS image |
+| `/dev/mtdblock16` | 1608384512 bytes | USB Data (`READER`) |
+
+The Launcher and Data identities are correlated from the firmware's
+`gadget.sh` label lookup and the matching host-side USB disk sizes/labels.
+The current x50 service returns zero bytes for virtual `/proc/mtd`, so the
+partition labels themselves are not directly readable through this interface.
+
+`mtdblock15.img` begins with a little-endian CramFS filesystem:
 
 ```text
 Linux Compressed ROM File System
@@ -21,8 +34,9 @@ blocks: 7649
 files: 827
 ```
 
-The remaining bytes are the fixed-size MTD block container/padding. The
-filesystem can be extracted without mounting it:
+The remaining bytes are the fixed-size MTD block container/padding. This is a
+system image, not the public `READER` storage partition. It can be extracted
+without mounting it:
 
 ```sh
 fakeroot fsck.cramfs --extract=/tmp/prs350-mtdblock15-root mtdblock15.img
@@ -53,6 +67,8 @@ reader partition is exposed as `/dev/mtdblock15` in the x50 file namespace.
 
 The safest next development step is read-only metadata and filesystem
 inspection: add a command that lists or probes known reader paths, then
-compare selected files from the live namespace with the archived image.
+compare selected files from the live namespace with the archived image. The
+public Data partition is `/dev/mtdblock16` on this unit, but it is large enough
+that it should only be read in a separately verified full-dump session.
 Keep writes, deletes, update packages, and raw arbitrary commands outside the
 CLI boundary.
