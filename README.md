@@ -68,3 +68,5 @@ The first complete PRS-350 image and filesystem findings are recorded in
 [docs/mtdblock15-analysis.md](docs/mtdblock15-analysis.md).
 The firmware partition map, boot flow, and behavior-modification roadmap are
 in [docs/firmware-analysis.md](docs/firmware-analysis.md).
+The static analysis of the `httpPatchUSB` HTTP-over-USB bridge and matching
+host DLL is in [docs/http-patch-usb-analysis.md](docs/http-patch-usb-analysis.md).

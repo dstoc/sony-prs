@@ -229,3 +229,8 @@ procedure before attempting any persistent modification.
 
 The current `prsctl` boundary intentionally stops before step 6: it can read
 firmware files and images, but cannot write them.
+
+The firmware’s USB-mediated HTTP bridge is documented separately in
+[http-patch-usb-analysis.md](http-patch-usb-analysis.md). That analysis also
+covers the matching host-side `DeviceAccessor.dll` exports and explains why
+the path is not a separate USB networking interface.
