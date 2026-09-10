@@ -211,9 +211,9 @@ exist.
 
 ### Native `system()` audit
 
-Both `ebookSystem.so` and `kbook.so` import libc `system()`, so this was checked
-as a possible software-only shell route. The recovered ARM call sites are
-consistent with fixed internal maintenance commands:
+`ebookSystem.so`, `kbook.so`, and `switcher.so` import libc `system()`, so all
+three were checked as possible software-only shell routes. The recovered ARM
+call sites are consistent with fixed internal maintenance commands:
 
 | Library/function | Static command or input | Assessment |
 |---|---|---|
@@ -221,11 +221,14 @@ consistent with fixed internal maintenance commands:
 | `ebookSystem.so` / `doWatchDog` | `/opt/sony/ebook/bin/compulsion.sh 1` or `... 0` | fixed watchdog action |
 | `ebookSystem.so` / `CMWrapperSetNTPDateTime` | command pointer held in an internal WAN/NTP structure | no caller-controlled command path identified |
 | `kbook.so` / EULA and version helpers | `/opt/sony/ebook/bin/euladec.sh`, `rm`, `mkdir`, `mtdmount`, `grep`/`awk`, `umount`, `rmdir` | fixed update housekeeping |
+| `switcher.so` / `ReqUpdateChangeMode` (`0x70`) | mode `0`: `nblconfig -ksel normal` + reboot; nonzero: fixed `cp` to `/opt0/UsbUpdater`, `nblconfig -ksel recovery`, + reboot | stock boot-mode transition; persistent and rebooting, but not arbitrary shell execution |
 
 No direct `system(command)` binding is exported to the Kinoma scripts, and no
-test-mode XML resource supplies a process-spawn or shell API. This makes the
-physical UART the primary non-flashing route; the USB serial branch and test
-mode remain secondary investigation targets, not confirmed shell access.
+test-mode XML resource supplies a process-spawn or shell API. The `0x70`
+transition is the likely stock way to reach the recovery USB serial branch, but
+it is not a read-only operation and was not sent to the reader. The physical
+UART remains the safer runtime-only route until a reversible recovery procedure
+is established.
 
 ## Where behavior lives
 

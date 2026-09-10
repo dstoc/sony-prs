@@ -78,7 +78,7 @@ command has the same meaning on another x50 revision.
 | `0x42` | GetHttpNeedRegistration | not exposed |
 | `0x43` | GetMarlinState | not exposed |
 | `0x50`–`0x66` | DIW/DRM and device identity operations | not exposed; several are sensitive or mutating |
-| `0x70` | ReqUpdateChangeMode | not exposed |
+| `0x70` | ReqUpdateChangeMode | stock normal/recovery selector; not exposed |
 | `0x80` | UsbFileGetSize | implemented as path-based GetSize |
 | `0x81` | UsbFileRead | implemented as path-based FileRead |
 | `0x82` | UsbFileWrite | deliberately not exposed |
@@ -90,6 +90,27 @@ For `0x08`, the PRS-350 accepted a four-byte selector and returned eight bytes
 for selectors 0–2, all zero. Selector 3 was rejected. This is enough to
 confirm the phase shape but not enough to define a useful public API, so the
 command remains outside the CLI.
+
+### `ReqUpdateChangeMode` safety finding
+
+The native `switcher.so` implementation of command `0x70` is a stock boot-mode
+control, not a general command runner. Its fixed `system()` call sites are
+consistent with this behavior:
+
+```text
+mode == 0:  /usr/local/sony/bin/nblconfig -ksel normal; reboot
+mode != 0: cp /opt/sony/ebook/bin/UsbUpdater /opt0/UsbUpdater;
+           /usr/local/sony/bin/nblconfig -ksel recovery; reboot
+```
+
+The captured normal root filesystem does not contain
+`/opt/sony/ebook/bin/UsbUpdater`, so the purpose and availability of that copy
+source on a retail unit still need to be resolved. The selector itself writes
+the persistent NBL boot configuration and reboots; it is therefore outside the
+read-only CLI even though the commands are fixed and do not accept an
+arbitrary shell string. It is the likely stock bridge from normal USB mode to
+the recovery image, whose `DIAG` branch can expose the USB CDC-ACM getty
+described in `docs/firmware-analysis.md`.
 
 ## First device-session questions
 
