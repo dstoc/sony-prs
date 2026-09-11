@@ -32,7 +32,7 @@ while IFS= read -r line; do
                 printf 'PRS1 ERR invalid-exec-header\n'
                 continue
             fi
-            /bin/stty 9600 raw -echo -ixon -ixoff min 1 time 0 || {
+            /bin/stty 9600 raw -echo -ixon -ixoff min 0 time 10 || {
                 printf 'PRS1 ERR cannot-enter-upload-mode\n'
                 continue
             }
@@ -49,7 +49,7 @@ while IFS= read -r line; do
                 printf 'PRS1 ERR invalid-shell-header\n'
                 continue
             fi
-            /bin/stty 9600 raw -echo -ixon -ixoff min 1 time 0 || {
+            /bin/stty 9600 raw -echo -ixon -ixoff min 0 time 10 || {
                 printf 'PRS1 ERR cannot-enter-shell-mode\n'
                 continue
             }

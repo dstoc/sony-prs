@@ -3,7 +3,7 @@ use std::io::{self, Read, Write};
 use std::os::fd::AsRawFd;
 use std::os::raw::c_void;
 use std::os::raw::{c_int, c_ulong};
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{compiler_fence, Ordering};
@@ -19,6 +19,10 @@ const MAX_EXEC_BYTES: usize = 1024 * 1024;
 const MAX_SHELL_BYTES: usize = 4096;
 const MAX_SHELL_OUTPUT_BYTES: usize = 64 * 1024;
 const TRANSFER_CHUNK_SIZE: usize = 1024;
+const O_NONBLOCK: i32 = 0x800;
+const POLLERR: i16 = 0x0008;
+const POLLHUP: i16 = 0x0010;
+const POLLNVAL: i16 = 0x0020;
 
 #[repr(C)]
 #[derive(Default)]
@@ -73,6 +77,14 @@ unsafe extern "C" {
         offset: isize,
     ) -> *mut c_void;
     fn munmap(address: *mut c_void, length: usize) -> c_int;
+    fn poll(fds: *mut PollFd, nfds: usize, timeout: c_int) -> c_int;
+}
+
+#[repr(C)]
+struct PollFd {
+    fd: c_int,
+    events: i16,
+    revents: i16,
 }
 
 fn main() {
@@ -81,11 +93,59 @@ fn main() {
         Some("capture") => capture_framebuffer(),
         Some("receive-exec") => receive_and_execute(),
         Some("receive-shell") => receive_and_shell(),
+        Some("watch-usb") => watch_usb(std::env::args().nth(2)),
         _ => println!(
             "PRS1 OK PROBE fb={} input={}",
             probe_framebuffer(),
             probe_input()
         ),
+    }
+}
+
+fn watch_usb(path: Option<String>) {
+    let Some(path) = path else {
+        return;
+    };
+    let result = (|| -> io::Result<()> {
+        let mut armed = false;
+        loop {
+            let file = match OpenOptions::new()
+                .read(true)
+                .custom_flags(O_NONBLOCK)
+                .open(&path)
+            {
+                Ok(file) => file,
+                Err(_) => {
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                    continue;
+                }
+            };
+            let mut descriptor = PollFd {
+                fd: file.as_raw_fd(),
+                events: 0,
+                revents: 0,
+            };
+            let result = unsafe { poll(&mut descriptor, 1, 1000) };
+            if result < 0 {
+                let error = io::Error::last_os_error();
+                if error.kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(error);
+            }
+            if descriptor.revents & (POLLERR | POLLHUP | POLLNVAL) != 0 {
+                if armed {
+                    let _ = Command::new("/bin/sync").status();
+                    let _ = Command::new("/sbin/reboot").status();
+                    return Ok(());
+                }
+                continue;
+            }
+            armed = true;
+        }
+    })();
+    if let Err(error) = result {
+        eprintln!("USB recovery watcher stopped: {error}");
     }
 }
 

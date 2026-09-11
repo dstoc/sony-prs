@@ -285,6 +285,20 @@ a controlled test, but the old gadget implementation may ignore that setting.
 The upload command is intentionally powerful and should not be enabled in a
 normal production image.
 
+The development gadget also starts a separate USB-disconnect watcher. If the
+protocol service is stuck in a transfer, reset the USB device from the host:
+
+```text
+tools/prs350-usb-reset.sh /dev/ttyACM0
+```
+
+The bus reset is observed by the independent watcher, which synchronizes and
+reboots the reader. This is a userspace recovery path for a wedged protocol
+reader; it cannot recover a kernel hang or a loss of device power. The stock
+`g_serial.ko` exposes only one CDC-ACM port and the firmware's gadget scripts
+remove mass storage before loading it, so a true second USB interface would
+require building a composite gadget module against Sony's 2.6.23 kernel.
+
 The host commands are:
 
 ```text
