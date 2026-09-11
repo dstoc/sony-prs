@@ -62,6 +62,18 @@ impl SerialClient {
         }
     }
 
+    pub fn status(&mut self) -> Result<String> {
+        match self.exchange(Request::Status)? {
+            Response::Status(value) => Ok(value),
+            Response::Error(message) => Err(Error::Protocol(format!(
+                "reader rejected status: {message}"
+            ))),
+            response => Err(Error::Protocol(format!(
+                "unexpected status response: {response:?}"
+            ))),
+        }
+    }
+
     fn exchange(&mut self, request: Request) -> Result<Response> {
         self.writer
             .write_all(&serial_protocol::encode_request(request))?;

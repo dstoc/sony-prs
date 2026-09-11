@@ -7,12 +7,14 @@ pub const MAX_LINE_LEN: usize = 1024;
 pub enum Request {
     Ping,
     Info,
+    Status,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Response {
     Pong,
     Info(String),
+    Status(String),
     Error(String),
 }
 
@@ -20,6 +22,7 @@ pub fn encode_request(request: Request) -> Vec<u8> {
     let command = match request {
         Request::Ping => "PING",
         Request::Info => "INFO",
+        Request::Status => "STATUS",
     };
     format!("{PREFIX} {command}\n").into_bytes()
 }
@@ -29,6 +32,7 @@ pub fn decode_request(line: &[u8]) -> Result<Request> {
     match line.as_str() {
         "PRS1 PING" => Ok(Request::Ping),
         "PRS1 INFO" => Ok(Request::Info),
+        "PRS1 STATUS" => Ok(Request::Status),
         _ => Err(Error::Protocol(format!(
             "unsupported serial request: {line:?}"
         ))),
@@ -41,6 +45,10 @@ pub fn encode_response(response: &Response) -> Result<Vec<u8>> {
         Response::Info(value) => {
             validate_text(value, "serial info")?;
             format!("{PREFIX} OK INFO {value}")
+        }
+        Response::Status(value) => {
+            validate_text(value, "serial status")?;
+            format!("{PREFIX} OK STATUS {value}")
         }
         Response::Error(value) => {
             validate_text(value, "serial error")?;
@@ -60,6 +68,12 @@ pub fn decode_response(line: &[u8]) -> Result<Response> {
             return Err(Error::Protocol("serial info response is empty".into()));
         }
         return Ok(Response::Info(value.into()));
+    }
+    if let Some(value) = line.strip_prefix("PRS1 OK STATUS ") {
+        if value.is_empty() {
+            return Err(Error::Protocol("serial status response is empty".into()));
+        }
+        return Ok(Response::Status(value.into()));
     }
     if let Some(value) = line.strip_prefix("PRS1 ERR ") {
         if value.is_empty() {
@@ -120,6 +134,18 @@ mod tests {
             decode_response(&bytes).unwrap(),
             Response::Info("model=PRS-350 transport=cdc-acm".into())
         );
+    }
+
+    #[test]
+    fn status_round_trips() {
+        let request = encode_request(Request::Status);
+        assert_eq!(request, b"PRS1 STATUS\n");
+        assert_eq!(decode_request(&request).unwrap(), Request::Status);
+
+        let response = Response::Status("ui=stock-alive".into());
+        let bytes = encode_response(&response).unwrap();
+        assert_eq!(bytes, b"PRS1 OK STATUS ui=stock-alive\n");
+        assert_eq!(decode_response(&bytes).unwrap(), response);
     }
 
     #[test]

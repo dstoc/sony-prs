@@ -57,6 +57,11 @@ fn run() -> Result<()> {
             reject_extra(&mut args)?;
             serial_info(&path)
         }
+        "serial-status" => {
+            let path = required(&mut args, "serial-status requires /dev/ttyACM0")?;
+            reject_extra(&mut args)?;
+            serial_status(&path)
+        }
         "decode-request" => {
             let path = required(&mut args, "decode-request requires a packet file")?;
             reject_extra(&mut args)?;
@@ -165,6 +170,13 @@ fn serial_info(path: &str) -> Result<()> {
     Ok(())
 }
 
+fn serial_status(path: &str) -> Result<()> {
+    let mut client = SerialClient::open(path)?;
+    let status = client.status()?;
+    println!("{}: {}", client.path().display(), status);
+    Ok(())
+}
+
 fn required(args: &mut impl Iterator<Item = String>, message: &str) -> Result<String> {
     args.next()
         .ok_or_else(|| Error::InvalidArgument(message.into()))
@@ -195,7 +207,7 @@ fn hex_preview(bytes: &[u8], max: usize) -> String {
 
 fn print_usage() {
     println!(
-        "prsctl {}\n\nUsage:\n  prsctl scan\n  prsctl probe /dev/sgN\n  prsctl get /dev/sgN DEVICE_PATH OUTPUT\n  prsctl serial-ping /dev/ttyACM0\n  prsctl serial-info /dev/ttyACM0\n  prsctl decode-request PACKET\n  prsctl decode-answer PACKET\n\nThe tool is read-only. OUTPUT is created exclusively and is never overwritten.",
+        "prsctl {}\n\nUsage:\n  prsctl scan\n  prsctl probe /dev/sgN\n  prsctl get /dev/sgN DEVICE_PATH OUTPUT\n  prsctl serial-ping /dev/ttyACM0\n  prsctl serial-info /dev/ttyACM0\n  prsctl serial-status /dev/ttyACM0\n  prsctl decode-request PACKET\n  prsctl decode-answer PACKET\n\nThe tool is read-only. OUTPUT is created exclusively and is never overwritten.",
         env!("CARGO_PKG_VERSION")
     );
 }
