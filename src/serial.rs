@@ -8,7 +8,6 @@ use std::time::{Duration, Instant};
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(3);
 const UPLOAD_CHUNK_SIZE: usize = 1024;
-const UPLOAD_PACE: Duration = Duration::from_millis(5);
 
 pub struct SerialClient {
     path: PathBuf,
@@ -193,7 +192,7 @@ impl SerialClient {
             }
         }
 
-        self.write_payload(&data)?;
+        self.write_payload(&data, "EXEC")?;
 
         match self.read_response_line()? {
             Response::Executed(value) => Ok(value),
@@ -236,7 +235,7 @@ impl SerialClient {
             }
         }
 
-        self.write_payload(data)?;
+        self.write_payload(data, "SHELL")?;
         let response = self.read_response_line()?;
         let (bytes, status) = match response {
             Response::Shell { bytes, status } => (bytes, status),
@@ -274,11 +273,29 @@ impl SerialClient {
         serial_protocol::decode_response(&line)
     }
 
-    fn write_payload(&mut self, data: &[u8]) -> Result<()> {
+    fn write_payload(&mut self, data: &[u8], kind: &str) -> Result<()> {
+        let mut acknowledged = 0usize;
         for chunk in data.chunks(UPLOAD_CHUNK_SIZE) {
             self.writer.write_all(chunk)?;
             self.writer.flush()?;
-            std::thread::sleep(UPLOAD_PACE);
+            match self.read_response_line()? {
+                Response::Ack {
+                    kind: ack_kind,
+                    bytes,
+                } if ack_kind == kind && bytes == acknowledged + chunk.len() => {
+                    acknowledged = bytes;
+                }
+                Response::Error(message) => {
+                    return Err(Error::Protocol(format!(
+                        "reader rejected {kind} upload: {message}"
+                    )))
+                }
+                response => {
+                    return Err(Error::Protocol(format!(
+                        "unexpected {kind} upload acknowledgement: {response:?}"
+                    )))
+                }
+            }
         }
         Ok(())
     }

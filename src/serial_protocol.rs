@@ -28,6 +28,7 @@ pub enum Response {
     Probe(String),
     Rendered(String),
     Ready(String),
+    Ack { kind: String, bytes: usize },
     Framebuffer(FramebufferHeader),
     Executed(String),
     Shell { bytes: usize, status: String },
@@ -103,6 +104,10 @@ pub fn encode_response(response: &Response) -> Result<Vec<u8>> {
             validate_text(value, "serial ready")?;
             format!("{PREFIX} READY {value}")
         }
+        Response::Ack { kind, bytes } => {
+            validate_text(kind, "serial acknowledgement kind")?;
+            format!("{PREFIX} ACK {kind} bytes={bytes}")
+        }
         Response::Framebuffer(header) => encode_framebuffer_header(header)?,
         Response::Executed(value) => {
             validate_text(value, "serial exec")?;
@@ -157,6 +162,12 @@ pub fn decode_response(line: &[u8]) -> Result<Response> {
             return Err(Error::Protocol("serial ready response is empty".into()));
         }
         return Ok(Response::Ready(value.into()));
+    }
+    if let Some(value) = line.strip_prefix("PRS1 ACK ") {
+        return Ok(Response::Ack {
+            kind: parse_ack_kind(value)?,
+            bytes: parse_named_usize(value, "bytes")?,
+        });
     }
     if line.starts_with("PRS1 OK FRAMEBUFFER ") {
         return Ok(Response::Framebuffer(parse_framebuffer_header(&line)?));
@@ -254,6 +265,15 @@ fn parse_named_usize(value: &str, name: &str) -> Result<usize> {
         .strip_prefix(&format!("{name}="))
         .and_then(|value| value.parse().ok())
         .ok_or_else(|| Error::Protocol(format!("serial shell {name} is invalid")))
+}
+
+fn parse_ack_kind(value: &str) -> Result<String> {
+    let kind = value
+        .split_whitespace()
+        .next()
+        .filter(|kind| !kind.is_empty())
+        .ok_or_else(|| Error::Protocol("serial acknowledgement kind is missing".into()))?;
+    Ok(kind.into())
 }
 
 fn parse_named_text(value: &str, name: &str) -> Result<String> {
@@ -486,6 +506,20 @@ mod tests {
         assert_eq!(
             decode_response(&ready).unwrap(),
             Response::Ready("EXEC".into())
+        );
+
+        let ack = encode_response(&Response::Ack {
+            kind: "EXEC".into(),
+            bytes: 1024,
+        })
+        .unwrap();
+        assert_eq!(ack, b"PRS1 ACK EXEC bytes=1024\n");
+        assert_eq!(
+            decode_response(&ack).unwrap(),
+            Response::Ack {
+                kind: "EXEC".into(),
+                bytes: 1024,
+            }
         );
     }
 

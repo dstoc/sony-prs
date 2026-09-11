@@ -18,6 +18,7 @@ const MAP_FAILED: *mut c_void = -1isize as *mut c_void;
 const MAX_EXEC_BYTES: usize = 1024 * 1024;
 const MAX_SHELL_BYTES: usize = 4096;
 const MAX_SHELL_OUTPUT_BYTES: usize = 64 * 1024;
+const TRANSFER_CHUNK_SIZE: usize = 1024;
 
 #[repr(C)]
 #[derive(Default)]
@@ -173,21 +174,19 @@ fn receive_and_execute() {
             .write(true)
             .open(path)?;
         let mut input = io::stdin().lock();
+        let mut stdout = io::stdout().lock();
         let mut remaining = bytes;
+        let mut received = 0usize;
         let mut crc = 0xffff_ffffu32;
-        let mut buffer = [0u8; 4096];
+        let mut buffer = [0u8; TRANSFER_CHUNK_SIZE];
         while remaining != 0 {
             let requested = remaining.min(buffer.len());
-            let read = input.read(&mut buffer[..requested])?;
-            if read == 0 {
-                return Err(io::Error::new(
-                    io::ErrorKind::UnexpectedEof,
-                    "serial upload ended before the declared length",
-                ));
-            }
-            output.write_all(&buffer[..read])?;
-            crc = crc32_update(crc, &buffer[..read]);
-            remaining -= read;
+            input.read_exact(&mut buffer[..requested])?;
+            output.write_all(&buffer[..requested])?;
+            crc = crc32_update(crc, &buffer[..requested]);
+            remaining -= requested;
+            received += requested;
+            write_ack(&mut stdout, "EXEC", received)?;
         }
         output.sync_all()?;
         let crc = !crc;
@@ -234,7 +233,7 @@ fn receive_and_shell() {
             ));
         }
 
-        let command = String::from_utf8(receive_payload(bytes, expected_crc)?).map_err(|_| {
+        let command = String::from_utf8(receive_payload(bytes, expected_crc, "SHELL")?).map_err(|_| {
             io::Error::new(io::ErrorKind::InvalidData, "shell command is not UTF-8")
         })?;
         let output = Command::new("/bin/sh")
@@ -288,24 +287,22 @@ fn parse_crc(value: String) -> io::Result<u32> {
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid CRC32"))
 }
 
-fn receive_payload(bytes: usize, expected_crc: u32) -> io::Result<Vec<u8>> {
+fn receive_payload(bytes: usize, expected_crc: u32, kind: &str) -> io::Result<Vec<u8>> {
     let mut input = io::stdin().lock();
+    let mut stdout = io::stdout().lock();
     let mut remaining = bytes;
+    let mut received = 0usize;
     let mut crc = 0xffff_ffffu32;
     let mut payload = Vec::with_capacity(bytes);
-    let mut buffer = [0u8; 4096];
+    let mut buffer = [0u8; TRANSFER_CHUNK_SIZE];
     while remaining != 0 {
         let requested = remaining.min(buffer.len());
-        let read = input.read(&mut buffer[..requested])?;
-        if read == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "serial payload ended before the declared length",
-            ));
-        }
-        payload.extend_from_slice(&buffer[..read]);
-        crc = crc32_update(crc, &buffer[..read]);
-        remaining -= read;
+        input.read_exact(&mut buffer[..requested])?;
+        payload.extend_from_slice(&buffer[..requested]);
+        crc = crc32_update(crc, &buffer[..requested]);
+        remaining -= requested;
+        received += requested;
+        write_ack(&mut stdout, kind, received)?;
     }
     let crc = !crc;
     if crc != expected_crc {
@@ -315,6 +312,11 @@ fn receive_payload(bytes: usize, expected_crc: u32) -> io::Result<Vec<u8>> {
         ));
     }
     Ok(payload)
+}
+
+fn write_ack(stdout: &mut impl Write, kind: &str, bytes: usize) -> io::Result<()> {
+    writeln!(stdout, "PRS1 ACK {kind} bytes={bytes}")?;
+    stdout.flush()
 }
 
 fn crc32_update(mut crc: u32, bytes: &[u8]) -> u32 {

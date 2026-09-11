@@ -268,10 +268,14 @@ switch the tty to raw mode:
 ```text
 PRS1 EXEC <byte-count> <crc32>\n
 reader -> host: PRS1 READY EXEC\n
-host -> reader: <exactly byte-count raw bytes>
+repeat until the declared length is sent:
+  host -> reader: <up to 1024 raw bytes>
+  reader -> host: PRS1 ACK EXEC bytes=<cumulative-byte-count>\n
 ```
 
-The payload is capped at 1 MiB and the reader verifies CRC32 before writing
+The host waits for an acknowledgement after every chunk; this is required by
+the stock 9600-baud gadget path because a blind raw stream can overrun the
+reader's tty input queue. The payload is capped at 1 MiB and the reader verifies CRC32 before writing
 `/tmp/prs350-upload`, marking it executable, and spawning it with standard
 input, output, and error detached from the protocol. The response reports its
 PID; this is intentional because a replacement UI is expected to remain
@@ -289,8 +293,9 @@ prsctl serial-exec /dev/ttyACM0 ./prs350-agent-test
 prsctl serial-shell /dev/ttyACM0 'cat /proc/cmdline'
 ```
 
-`serial-shell` uses the same ready/raw framing with a 4 KiB command limit and
-returns up to 64 KiB of combined standard output and standard error. It runs
+`serial-shell` uses the same ready/raw framing and per-chunk acknowledgements,
+with a 4 KiB command limit, and returns up to 64 KiB of combined standard
+output and standard error. It runs
 `/bin/sh -c` as root in the development service, so it is intentionally a
 debug-only facility and must not be included in a production image.
 
