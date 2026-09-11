@@ -7,6 +7,8 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(3);
+const UPLOAD_CHUNK_SIZE: usize = 1024;
+const UPLOAD_PACE: Duration = Duration::from_millis(5);
 
 pub struct SerialClient {
     path: PathBuf,
@@ -191,8 +193,7 @@ impl SerialClient {
             }
         }
 
-        self.writer.write_all(&data)?;
-        self.writer.flush()?;
+        self.write_payload(&data)?;
 
         match self.read_response_line()? {
             Response::Executed(value) => Ok(value),
@@ -235,8 +236,7 @@ impl SerialClient {
             }
         }
 
-        self.writer.write_all(data)?;
-        self.writer.flush()?;
+        self.write_payload(data)?;
         let response = self.read_response_line()?;
         let (bytes, status) = match response {
             Response::Shell { bytes, status } => (bytes, status),
@@ -272,6 +272,15 @@ impl SerialClient {
     fn read_response_line(&mut self) -> Result<Response> {
         let line = self.read_line()?;
         serial_protocol::decode_response(&line)
+    }
+
+    fn write_payload(&mut self, data: &[u8]) -> Result<()> {
+        for chunk in data.chunks(UPLOAD_CHUNK_SIZE) {
+            self.writer.write_all(chunk)?;
+            self.writer.flush()?;
+            std::thread::sleep(UPLOAD_PACE);
+        }
+        Ok(())
     }
 
     fn read_line(&mut self) -> Result<Vec<u8>> {

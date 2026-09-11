@@ -198,6 +198,7 @@ fn receive_and_execute() {
                 format!("CRC32 mismatch: got {crc:08x}, expected {expected_crc:08x}"),
             ));
         }
+        drop(output);
         fs::set_permissions(path, fs::Permissions::from_mode(0o755))?;
         let child = Command::new(path)
             .stdin(Stdio::null())
