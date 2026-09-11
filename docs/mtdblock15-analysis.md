@@ -1,8 +1,8 @@
 # PRS-350 `mtdblock15` analysis
 
-The first complete read of the connected PRS-350 was saved as
-`mtdblock15.img`. The image is intentionally ignored by Git (`*.img`), so
-keep the image and its digest together when moving the capture between
+The first complete read of the connected PRS-350 is archived locally as
+`device-dumps/raw/mtdblock15.img`. The image is intentionally ignored by Git,
+so keep the image and its digest together when moving the capture between
 machines:
 
 ```text
@@ -39,7 +39,9 @@ system image, not the public `READER` storage partition. It can be extracted
 without mounting it:
 
 ```sh
-fakeroot fsck.cramfs --extract=/tmp/prs350-mtdblock15-root mtdblock15.img
+fakeroot fsck.cramfs \
+  --extract=device-dumps/extracted/mtdblock15-root-new \
+  device-dumps/raw/mtdblock15.img
 ```
 
 The destination must not already exist; choose another path if needed.

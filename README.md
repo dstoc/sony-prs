@@ -81,6 +81,8 @@ shadow file, neither of which is committed.
 The first-device checklist is [docs/device-session.md](docs/device-session.md).
 The first complete PRS-350 image and filesystem findings are recorded in
 [docs/mtdblock15-analysis.md](docs/mtdblock15-analysis.md).
+The local, ignored archive of raw captures and extracted device files is
+described in [docs/device-dumps.md](docs/device-dumps.md).
 The firmware partition map, boot flow, and behavior-modification roadmap are
 in [docs/firmware-analysis.md](docs/firmware-analysis.md).
 The static analysis of the `httpPatchUSB` HTTP-over-USB bridge and matching
