@@ -209,7 +209,7 @@ The trial then selected recovery through the host-side `0x70` operation,
 exposed `/dev/ttyACM0`, and returned cleanly to the same normal layout after
 `/sbin/reboot` and package cleanup.
 
-### Candidate normal-mode shell hook
+### Verified normal-mode service hook
 
 The normal rootfs has a separate, gated service-package path that was not
 needed for the recovery trial. Its `update_check.sh` searches `/Data` for
@@ -226,14 +226,30 @@ boot then proceeds to `gadget.sh storage`, whose first guard refuses to replace
 an active `/dev/ttygserial` getty. This suggests a way for the package to leave
 the USB serial root getty active while the normal rootfs continues booting.
 
-The package was passed through the normal rootfs verifier host-side and all
-checks succeeded. A read-only attempt to retrieve the exact model marker from
-the live Data namespace returned status `-16`, consistent with the marker not
-being present. The proposed test would therefore copy the unchanged package
-under the `SP Updater` filename and add an empty marker file, then reboot once.
-This has not been run. It is a Data-volume write and a new runtime experiment,
-although it does not require a firmware partition write; the recovery shell
-route remains the proven fallback.
+The hook was validated on the connected reader with a newly generated,
+non-flashing test package. The package was renamed to
+`PRS-350 SP Updater.package`, accompanied by the model marker, and staged on
+the `READER` volume. The stock normal-mode selector (`0x70`, mode `0`) then
+rebooted the device with all-zero SCSI status. On the next boot the package
+was removed by Sony's normal cleanup path and its payload created
+`/Data/prs350-hook-ran` containing:
+
+```text
+normal-mode service hook executed
+```
+
+The test payload did not call `nblconfig`, load the serial gadget, flash an
+MTD, or replace `tinyhttp`; it only remounted Data read/write long enough to
+write that marker. The model marker and test marker were removed afterward,
+and normal `READER`/`SETTING` mass storage returned.
+
+The first generated package was rejected by the device with `Package header
+decrypt error`. Modern OpenSSL had used its default SHA-256 password KDF for
+the outer DES header, while the PRS-350 expects the legacy MD5 KDF. Enabling
+the legacy provider alone is insufficient; package generation must invoke DES
+with `-md md5`. The corrected package passed the host verifier and executed
+successfully. The corrected test package had size 11,280 bytes and SHA-256
+`2a3ea54e3b8e0ab0ac9b6c6b4973be99be2aaee5ccda1ad58961d0b4b82d7c88`.
 
 ### Risk assessment for the normal-mode hook
 
@@ -253,10 +269,10 @@ The hook does not flash a root filesystem, but it is not risk-free:
   retried at the next boot or the normal application may not start. The
   package's empty-password root shadow also exposes a privileged console to
   anyone holding the USB connection while it is active.
-- The package has been accepted by both verifier implementations and executed
-  in recovery, but the normal-mode lifecycle and its gadget race remain
-  unverified. A valid legacy signature is not a guarantee against these
-  runtime failures.
+- The no-op service package has now been accepted and executed in normal mode,
+  but the more invasive serial-getty handoff and custom application launch
+  remain unverified. A valid legacy signature is not a guarantee against
+  those runtime failures.
 
 The already-proven recovery shell is therefore the lower-risk way to obtain
 root. Any normal-mode trial should use a verified package hash, a complete Data
