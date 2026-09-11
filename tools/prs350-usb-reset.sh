@@ -30,13 +30,29 @@ if [ -z "$BUSNUM" ] || [ -z "$DEVNUM" ]; then
 fi
 
 DEVICE=$(printf '/dev/bus/usb/%03d/%03d' "$BUSNUM" "$DEVNUM")
-exec python3 - "$DEVICE" <<'PY'
+if python3 - "$DEVICE" <<'PY'
 import fcntl
 import sys
 
 USBDEVFS_RESET = 0x5514
 path = sys.argv[1]
 with open(path, 'rb', buffering=0) as device:
-    fcntl.ioctl(device.fileno(), USBDEVFS_RESET, 0)
+    try:
+        fcntl.ioctl(device.fileno(), USBDEVFS_RESET, 0)
+    except OSError as exc:
+        print(f'USBDEVFS_RESET failed: {exc}', file=sys.stderr)
+        raise SystemExit(75)
 print(f'reset USB device {path}')
 PY
+then
+    exit 0
+fi
+
+if [ -w "$SYSFS/authorized" ]; then
+    printf '0\n' >"$SYSFS/authorized"
+    printf 'deauthorized USB device %s; the reader watcher should reboot it\n' "$DEVICE"
+    exit 0
+fi
+
+echo "error: USB reset was rejected and $SYSFS/authorized is not writable" >&2
+exit 1

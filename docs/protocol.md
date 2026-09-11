@@ -293,8 +293,11 @@ tools/prs350-usb-reset.sh /dev/ttyACM0
 ```
 
 The bus reset is observed by the independent watcher, which synchronizes and
-reboots the reader. This is a userspace recovery path for a wedged protocol
-reader; it cannot recover a kernel hang or a loss of device power. The stock
+reboots the reader. If the host kernel rejects `USBDEVFS_RESET` while the CDC
+driver owns the interfaces, the helper falls back to de-authorizing the exact
+USB device through sysfs, which produces the same disconnect event. This is a
+userspace recovery path for a wedged protocol reader; it cannot recover a kernel
+hang or a loss of device power. The stock
 `g_serial.ko` exposes only one CDC-ACM port and the firmware's gadget scripts
 remove mass storage before loading it, so a true second USB interface would
 require building a composite gadget module against Sony's 2.6.23 kernel.
