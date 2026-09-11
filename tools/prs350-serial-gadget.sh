@@ -14,6 +14,12 @@ export PATH
 /sbin/lsmod | /bin/grep -q '^g_serial' || \
 /sbin/insmod /lib/modules/2.6.23/kernel/drivers/usb/gadget/g_serial.ko use_acm=1 || exit 1
 /bin/sleep 2
+(
+    /bin/sleep 5
+    /usr/bin/killall tinyhttp.sh >/dev/null 2>&1 || true
+    /usr/bin/killall tinyhttp >/dev/null 2>&1 || true
+    /tmp/prs350-agent ui >/dev/null 2>&1 &
+) &
 /tmp/prs350-agent watch-usb /dev/ttygserial >/dev/null 2>&1 &
 /tmp/prs350-serial-service.sh </dev/ttygserial >/dev/ttygserial 2>&1 &
 exit 0
