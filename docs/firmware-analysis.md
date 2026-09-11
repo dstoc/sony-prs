@@ -163,9 +163,9 @@ its library has generic HTTP server APIs, but no enabled external listener has
 been established.
 
 The recovery updater contains a second, more concrete USB-shell path. Its
-`update_check.sh` starts in `UPDATE` mode and, when a Memory Stick is present
-without a model-specific `Updater.package` or `Console.package`, changes the
-mode to `DIAG`. The final dispatch is:
+`update_check.sh` starts in `UPDATE` mode and, on models with a Memory Stick
+slot, changes the mode to `DIAG` when a card is present without a
+model-specific `Updater.package` or `Console.package`. The final dispatch is:
 
 ```sh
 /usr/local/sony/bin/gadget.sh serial &
@@ -192,8 +192,11 @@ selected the recovery rootfs. Its `rc` invokes `update_check.sh`, while the
 normal rootfs invokes a different, application-oriented updater script and
 does not dispatch `gadget.sh serial`. The recovery script also has a fallback
 key sequence (`HOME`, `NEXT`, `OPTION`, `PREV`, `SIZE`) while checking for a
-missing direct update package; this is a diagnostic/update control path, not a
-general shell trigger. The script can also unpack and execute a signed
+missing direct update package. This is evaluated only after recovery startup
+has already been selected; it does not interact with the hardware reset switch
+or override the boot selector. The PRS-350 has no Memory Stick slot, so neither
+that card path nor its associated diagnostic fallback is available on this
+unit. The script can also unpack and execute a signed
 `update.sh`, so no package or diagnostic entry point should be supplied merely
 to test the console.
 
@@ -465,7 +468,7 @@ stock feature in this image.
 
 The firmware update scripts show a gated path for persistent changes:
 
-- `update_check.sh` searches the Memory Stick and `Data` volumes for a
+- `update_check.sh` searches the model's Memory Stick and `Data` volumes for a
   model-specific updater package;
 - `updater-functions` reads update identity material from the `Info` MTD;
 - the package header is DES-decrypted and its package metadata is

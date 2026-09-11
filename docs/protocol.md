@@ -136,14 +136,15 @@ returns from `update_check.sh`; it does not call `nblconfig -ksel normal`.
 The only stock recovery path that explicitly selects normal is `safe_reboot()`,
 used by update/error handling. That path is not reached by the empty-Memory-
 Stick diagnostic branch, and a `guest` shell cannot be assumed to have
-permission to rewrite the NBL MTD configuration.
+permission to rewrite the NBL MTD configuration. The PRS-350 hardware has no
+Memory Stick slot, so that generic recovery path is unavailable on this unit.
 
 The project must therefore not send `MSC_ReqChangeMode(1)` until one of these
 rollback paths is verified independently: a root-capable physical UART
 console, a documented stock recovery action that selects normal, or a
 host-visible recovery command that is still serviced after the gadget switches
-from mass storage to CDC-ACM. An empty Memory Stick can select `DIAG`, but it
-is not a rollback mechanism.
+from mass storage to CDC-ACM. The generic recovery image's empty-Memory-Stick
+`DIAG` path is unavailable on the PRS-350 and is not a rollback mechanism.
 
 ### Historical `login_update` shell package
 
