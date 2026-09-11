@@ -177,6 +177,31 @@ needed only the legacy DES/AES provider and MD5 KDF compatibility that the
 reader's older OpenSSL supplies; no package bytes or selector request were sent
 to the reader.
 
+### Controlled normal-mode serial-gadget test
+
+A second, temporary signed package tested the normal boot path without changing
+the firmware image. Its `update.sh` bind-mounted a package-provided replacement
+for `/usr/local/sony/bin/gadget.sh`. When normal `rc` invoked that script with
+the `storage` argument, the replacement instead unloaded `g_file_storage`,
+loaded `g_serial.ko use_acm=1`, and started the stock 9600-baud `getty` on
+`ttygserial`.
+
+The package was generated and verified offline, then installed through the
+normal-mode service hook. It was 11,280 bytes with SHA-256
+`5e3a658f55f071fdb3c2c0210964c631fb7899b20b0acd1303692ed1595482e4`. The
+reader enumerated as `/dev/ttyACM0`; `/dev/sg0`, `/dev/sg1`, `/dev/sda`, and
+`/dev/sdb` were absent. The host saw the expected Linux login banner, and the
+reader's touch screen and hardware buttons remained interactive while USB was
+connected.
+
+This isolates the charging screen to the mass-storage path rather than USB
+power/VBUS alone. It also shows that a serial-only normal-mode transport is a
+viable base for a replacement UI's host communication. A composite gadget that
+also exposes mass storage may still trigger the native switcher's charging
+state and needs a separate test. The package's bind mount lives in `/tmp`, so a
+normal reboot removes the test and restores the stock `gadget.sh`; the temporary
+root getty should not be retained in a production package.
+
 ## First device-session questions
 
 1. Does the exact x50 file service vary across PRS-x50 firmware versions?
