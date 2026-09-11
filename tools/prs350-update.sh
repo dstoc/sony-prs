@@ -6,7 +6,7 @@ PATH=/bin:/sbin:/usr/bin:/usr/sbin
 export PATH
 
 /bin/cp ./serial-gadget-protocol.sh /tmp/prs350-serial-gadget.sh
-/bin/cp ./prs350-serial-service.sh /tmp/prs350-serial-service.sh
+/bin/cp ./serial-service.sh /tmp/prs350-serial-service.sh
 /bin/cp ./prs350-agent /tmp/prs350-agent
 /bin/cp ./shadow /tmp/prs350-shadow
 /bin/chmod 755 /tmp/prs350-serial-gadget.sh /tmp/prs350-serial-service.sh /tmp/prs350-agent
