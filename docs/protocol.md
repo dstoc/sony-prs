@@ -318,10 +318,13 @@ debug-only facility and must not be included in a production image.
 
 ### Rebuilding the development package
 
-The package sidecar is tracked in `tools/prs350-serial-service.sh`,
-`tools/prs350-serial-gadget.sh`, and `tools/prs350-update.sh`. The package
-builder copies those files and the cross-built `device-agent` into a fresh
-directory, then invokes the externally obtained Sony signing helpers:
+The package launcher is tracked in `tools/prs350-serial-service.sh`,
+`tools/prs350-serial-gadget.sh`, and `tools/prs350-update.sh`. The launcher
+now only configures the tty and `exec`s the Rust `device-agent service` mode;
+request parsing, raw upload transitions, acknowledgements, framebuffer
+capture, shell execution, and reboot handling live in the ARM binary. The
+package builder copies those files and the cross-built `device-agent` into a
+fresh directory, then invokes the externally obtained Sony signing helpers:
 
 ```text
 tools/build-prs350-dev-package.sh \
@@ -330,6 +333,18 @@ tools/build-prs350-dev-package.sh \
   device-agent/target/armv5te-unknown-linux-musleabi/release/prs350-agent \
   /tmp/prs350-dev-package
 ```
+
+For the normal-mode hook, stage the generated package under the hook's exact
+filename and create its companion model marker after mounting the `READER`
+volume:
+
+```text
+tools/stage-prs350-service-package.sh /tmp/prs350-dev-package /mnt/prs350-hook-test
+```
+
+The helper deliberately does not mount or unmount the volume. It creates
+`PRS-350 SP Updater.package`, not the builder's `PRS-350 Updater.package`, and
+creates the marker required by the normal `log_start.sh` path.
 
 If the host OpenSSL needs the legacy-provider wrapper used during this
 development session, set `PRS350_OPENSSL_WRAPPER_DIR` before invoking the

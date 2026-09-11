@@ -17,7 +17,7 @@ UPDATE_TOOLS=$1
 SHADOW=$2
 ARM_BINARY=$3
 OUTPUT=$4
-WRAPPER_DIR=\${PRS350_OPENSSL_WRAPPER_DIR:-}
+WRAPPER_DIR=${PRS350_OPENSSL_WRAPPER_DIR:-}
 
 for file in create_update.sh update_test.sh Info.img; do
     if [ ! -f "$UPDATE_TOOLS/$file" ]; then
@@ -38,6 +38,10 @@ if [ -e "$OUTPUT" ]; then
     exit 1
 fi
 
+LOG_DIR=$(mktemp -d /tmp/prs350-package-logs.XXXXXX)
+CREATE_LOG="$LOG_DIR/create.log"
+UPDATE_TEST_LOG="$LOG_DIR/update-test.log"
+
 mkdir -p "$OUTPUT"
 cp "$ROOT/tools/prs350-serial-gadget.sh" "$OUTPUT/serial-gadget-protocol.sh"
 cp "$ROOT/tools/prs350-serial-service.sh" "$OUTPUT/serial-service.sh"
@@ -51,6 +55,8 @@ cleanup() {
     if [ -f /tmp/sigKeyPriv.pem ]; then
         truncate -s 0 /tmp/sigKeyPriv.pem
     fi
+    rm -f "$CREATE_LOG" "$UPDATE_TEST_LOG"
+    rmdir "$LOG_DIR" 2>/dev/null || true
 }
 trap cleanup EXIT HUP INT TERM
 
@@ -61,8 +67,8 @@ fi
 
 (
     cd "$UPDATE_TOOLS"
-    ./create_update.sh "$OUTPUT" >"$OUTPUT/create.log" 2>&1
-    ./update_test.sh "$OUTPUT" >"$OUTPUT/update-test.log" 2>&1
+    ./create_update.sh "$OUTPUT" >"$CREATE_LOG" 2>&1
+    ./update_test.sh "$OUTPUT" >"$UPDATE_TEST_LOG" 2>&1
 )
 
 sha256sum "$OUTPUT/PRS-350 Updater.package"

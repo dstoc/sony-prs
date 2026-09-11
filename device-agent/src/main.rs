@@ -19,6 +19,7 @@ const MAP_FAILED: *mut c_void = -1isize as *mut c_void;
 const MAX_EXEC_BYTES: usize = 1024 * 1024;
 const MAX_SHELL_BYTES: usize = 4096;
 const MAX_SHELL_OUTPUT_BYTES: usize = 64 * 1024;
+const MAX_PROTOCOL_LINE: usize = 1024;
 const TRANSFER_CHUNK_SIZE: usize = 1024;
 const O_NONBLOCK: i32 = 0x800;
 const POLLIN: i16 = 0x0001;
@@ -108,6 +109,19 @@ enum InputEvent {
     Key { code: u8, state: u8 },
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum ServiceRequest {
+    Ping,
+    Info,
+    Status,
+    Reboot,
+    Probe,
+    Render,
+    Capture,
+    Execute { bytes: usize, crc32: u32 },
+    Shell { bytes: usize, crc32: u32 },
+}
+
 #[derive(Default)]
 struct UiState {
     touch: Option<(u16, u16, bool)>,
@@ -190,6 +204,7 @@ fn main() {
         Some("render") => println!("PRS1 OK RENDERED {}", render_test()),
         Some("capture") => capture_framebuffer(),
         Some("ui") => run_ui(),
+        Some("service") => run_serial_service(),
         Some("receive-exec") => receive_and_execute(),
         Some("receive-shell") => receive_and_shell(),
         Some("watch-usb") => watch_usb(std::env::args().nth(2)),
@@ -199,6 +214,275 @@ fn main() {
             probe_input()
         ),
     }
+}
+
+fn run_serial_service() {
+    let stdin = io::stdin();
+    let stdout = io::stdout();
+    let result = run_serial_service_with(stdin.lock(), stdout.lock());
+    if let Err(error) = result {
+        eprintln!("Rust serial service stopped: {error}");
+    }
+}
+
+fn run_serial_service_with(mut input: impl Read, mut output: impl Write) -> io::Result<()> {
+    loop {
+        let Some(line) = read_protocol_line(&mut input)? else {
+            return Ok(());
+        };
+        let request = match parse_service_request(&line) {
+            Ok(request) => request,
+            Err(error) => {
+                write_protocol_error(&mut output, &error)?;
+                continue;
+            }
+        };
+
+        let result = handle_service_request(request, &mut input, &mut output);
+        if let Err(error) = result {
+            write_protocol_error(&mut output, &error)?;
+        }
+    }
+}
+
+fn handle_service_request(
+    request: ServiceRequest,
+    input: &mut impl Read,
+    output: &mut impl Write,
+) -> io::Result<()> {
+    match request {
+        ServiceRequest::Ping => write_protocol_line(output, "PRS1 OK PONG"),
+        ServiceRequest::Info => {
+            write_protocol_line(output, "PRS1 OK INFO model=PRS-350 transport=cdc-acm")
+        }
+        ServiceRequest::Status => {
+            let ui = if stock_ui_alive() {
+                "stock-alive"
+            } else {
+                "stock-missing"
+            };
+            write_protocol_line(output, &format!("PRS1 OK STATUS ui={ui}"))
+        }
+        ServiceRequest::Reboot => {
+            write_protocol_line(output, "PRS1 OK REBOOTING")?;
+            let _ = Command::new("/bin/sync").status();
+            std::thread::sleep(Duration::from_secs(1));
+            let _ = Command::new("/sbin/reboot").status();
+            Ok(())
+        }
+        ServiceRequest::Probe => write_protocol_line(
+            output,
+            &format!(
+                "PRS1 OK PROBE fb={} input={}",
+                probe_framebuffer(),
+                probe_input()
+            ),
+        ),
+        ServiceRequest::Render => {
+            write_protocol_line(output, &format!("PRS1 OK RENDERED {}", render_test()))
+        }
+        ServiceRequest::Capture => capture_framebuffer_to(output),
+        ServiceRequest::Execute { bytes, crc32 } => {
+            set_serial_mode(true)?;
+            write_protocol_line(output, "PRS1 READY EXEC")?;
+            let payload_result = receive_payload_from(input, output, bytes, crc32, "EXEC");
+            set_serial_mode(false)?;
+            let payload = payload_result?;
+            let (size, crc, pid) = execute_binary(&payload)?;
+            write_protocol_line(
+                output,
+                &format!("PRS1 OK EXEC size={size} crc32={crc:08x} pid={pid}"),
+            )
+        }
+        ServiceRequest::Shell { bytes, crc32 } => {
+            set_serial_mode(true)?;
+            write_protocol_line(output, "PRS1 READY SHELL")?;
+            let payload_result = receive_payload_from(input, output, bytes, crc32, "SHELL");
+            set_serial_mode(false)?;
+            let command = String::from_utf8(payload_result?)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "shell command is not UTF-8"))?;
+            let result = Command::new("/bin/sh")
+                .arg("-c")
+                .arg(command)
+                .stdin(Stdio::null())
+                .output()?;
+            let mut data = Vec::with_capacity(result.stdout.len() + result.stderr.len());
+            data.extend_from_slice(&result.stdout);
+            data.extend_from_slice(&result.stderr);
+            let truncated = data.len() > MAX_SHELL_OUTPUT_BYTES;
+            data.truncate(MAX_SHELL_OUTPUT_BYTES);
+            let status = result
+                .status
+                .code()
+                .map_or_else(|| "signal".to_string(), |code| format!("exit={code}"));
+            write_protocol_line(
+                output,
+                &format!(
+                    "PRS1 OK SHELL bytes={} status={}{}",
+                    data.len(),
+                    status,
+                    if truncated { ",truncated=1" } else { "" }
+                ),
+            )?;
+            output.write_all(&data)?;
+            output.flush()
+        }
+    }
+}
+
+fn set_serial_mode(raw: bool) -> io::Result<()> {
+    let args = if raw {
+        [
+            "9600", "raw", "-echo", "-ixon", "-ixoff", "min", "0", "time", "10",
+        ]
+    } else {
+        [
+            "9600", "icanon", "-echo", "-ixon", "-ixoff", "min", "1", "time", "0",
+        ]
+    };
+    let status = Command::new("/bin/stty").args(args).status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::Other,
+            if raw {
+                "could not enter serial upload mode"
+            } else {
+                "could not restore serial line mode"
+            },
+        ))
+    }
+}
+
+fn parse_service_request(line: &[u8]) -> io::Result<ServiceRequest> {
+    let line = String::from_utf8(line.to_vec())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "request is not UTF-8"))?;
+    let mut fields = line.trim_end_matches(['\r', '\n']).split_whitespace();
+    if fields.next() != Some("PRS1") {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "unsupported serial request",
+        ));
+    }
+    let command = fields.next().ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "serial request is missing a command")
+    })?;
+    let request = match command {
+        "PING" => ServiceRequest::Ping,
+        "INFO" => ServiceRequest::Info,
+        "STATUS" => ServiceRequest::Status,
+        "REBOOT" => ServiceRequest::Reboot,
+        "PROBE" => ServiceRequest::Probe,
+        "RENDER" => ServiceRequest::Render,
+        "CAPTURE" => ServiceRequest::Capture,
+        "EXEC" | "SHELL" => {
+            let bytes = fields
+                .next()
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "missing byte count"))?
+                .parse::<usize>()
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid byte count"))?;
+            let limit = if command == "EXEC" {
+                MAX_EXEC_BYTES
+            } else {
+                MAX_SHELL_BYTES
+            };
+            if bytes == 0 || bytes > limit {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("payload must be between 1 and {limit} bytes"),
+                ));
+            }
+            let crc32 = u32::from_str_radix(
+                fields.next().ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "missing CRC32")
+                })?,
+                16,
+            )
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid CRC32"))?;
+            if fields.next().is_some() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "unexpected serial request arguments",
+                ));
+            }
+            if command == "EXEC" {
+                ServiceRequest::Execute { bytes, crc32 }
+            } else {
+                ServiceRequest::Shell { bytes, crc32 }
+            }
+        }
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "unsupported serial request",
+            ))
+        }
+    };
+    if fields.next().is_some() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "unexpected serial request arguments",
+        ));
+    }
+    Ok(request)
+}
+
+fn read_protocol_line(input: &mut impl Read) -> io::Result<Option<Vec<u8>>> {
+    let mut line = Vec::new();
+    let mut byte = [0u8; 1];
+    loop {
+        match input.read(&mut byte)? {
+            0 => return Ok(if line.is_empty() { None } else { Some(line) }),
+            1 => {
+                line.push(byte[0]);
+                if line.len() > MAX_PROTOCOL_LINE {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "serial request line is too long",
+                    ));
+                }
+                if byte[0] == b'\n' {
+                    return Ok(Some(line));
+                }
+            }
+            _ => unreachable!(),
+        }
+    }
+}
+
+fn write_protocol_line(output: &mut impl Write, line: &str) -> io::Result<()> {
+    if line.len() + 1 > MAX_PROTOCOL_LINE || line.bytes().any(|byte| byte == b'\r' || byte == b'\n')
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "serial response line is invalid",
+        ));
+    }
+    output.write_all(line.as_bytes())?;
+    output.write_all(b"\n")?;
+    output.flush()
+}
+
+fn write_protocol_error(output: &mut impl Write, error: &io::Error) -> io::Result<()> {
+    let message = error.to_string().replace(['\r', '\n'], " ");
+    write_protocol_line(output, &format!("PRS1 ERR {message}"))
+}
+
+fn stock_ui_alive() -> bool {
+    fs::read_dir("/proc")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .and_then(|name| name.parse::<u32>().ok())
+                .map(|_| entry.path().join("cmdline"))
+        })
+        .filter_map(|path| fs::read(path).ok())
+        .any(|cmdline| cmdline.windows(b"tinyhttp".len()).any(|part| part == b"tinyhttp"))
 }
 
 fn run_ui() {
@@ -547,59 +831,66 @@ fn watch_usb(path: Option<String>) {
 }
 
 fn capture_framebuffer() {
-    let result = (|| -> io::Result<()> {
-        let path = Path::new("/dev/fb0");
-        let file = OpenOptions::new().read(true).write(true).open(path)?;
-        let mut info = FbVarScreeninfo::default();
-        let result = unsafe { ioctl(file.as_raw_fd(), FBIOGET_VSCREENINFO, &mut info) };
-        if result != 0 {
-            return Err(io::Error::last_os_error());
-        }
-        if info.bits_per_pixel != 8 || info.xres == 0 || info.yres == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                format!("unsupported framebuffer format {}bpp", info.bits_per_pixel),
-            ));
-        }
-        let stride = info.xres_virtual as usize;
-        let length = stride * info.yres_virtual as usize;
-        let bytes = info.xres as usize * info.yres as usize;
-        let mapping = unsafe {
-            mmap(
-                std::ptr::null_mut(),
-                length,
-                PROT_READ,
-                MAP_SHARED,
-                file.as_raw_fd(),
-                0,
-            )
-        };
-        if mapping == MAP_FAILED {
-            return Err(io::Error::last_os_error());
-        }
-
-        let mut stdout = io::stdout().lock();
-        write!(
-            stdout,
-            "PRS1 OK FRAMEBUFFER width={} height={} format=gray8 bytes={}\n",
-            info.xres, info.yres, bytes
-        )?;
-        let pixels = mapping.cast::<u8>();
-        for y in 0..info.yres as usize {
-            let row =
-                unsafe { std::slice::from_raw_parts(pixels.add(y * stride), info.xres as usize) };
-            stdout.write_all(row)?;
-        }
-        stdout.flush()?;
-        let unmap_result = unsafe { munmap(mapping, length) };
-        if unmap_result != 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(())
-    })();
+    let mut stdout = io::stdout().lock();
+    let result = capture_framebuffer_to(&mut stdout);
     if let Err(error) = result {
-        println!("PRS1 ERR capture-failed-{error}");
+        let _ = write_protocol_error(&mut stdout, &io::Error::new(
+            error.kind(),
+            format!("capture-failed-{error}"),
+        ));
     }
+}
+
+fn capture_framebuffer_to(output: &mut impl Write) -> io::Result<()> {
+    let path = Path::new("/dev/fb0");
+    let file = OpenOptions::new().read(true).write(true).open(path)?;
+    let mut info = FbVarScreeninfo::default();
+    let result = unsafe { ioctl(file.as_raw_fd(), FBIOGET_VSCREENINFO, &mut info) };
+    if result != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if info.bits_per_pixel != 8 || info.xres == 0 || info.yres == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            format!("unsupported framebuffer format {}bpp", info.bits_per_pixel),
+        ));
+    }
+    let stride = info.xres_virtual as usize;
+    let length = stride * info.yres_virtual as usize;
+    let bytes = info.xres as usize * info.yres as usize;
+    let mapping = unsafe {
+        mmap(
+            std::ptr::null_mut(),
+            length,
+            PROT_READ,
+            MAP_SHARED,
+            file.as_raw_fd(),
+            0,
+        )
+    };
+    if mapping == MAP_FAILED {
+        return Err(io::Error::last_os_error());
+    }
+
+    write_protocol_line(
+        output,
+        &format!(
+            "PRS1 OK FRAMEBUFFER width={} height={} format=gray8 bytes={}",
+            info.xres, info.yres, bytes
+        ),
+    )?;
+    let pixels = mapping.cast::<u8>();
+    for y in 0..info.yres as usize {
+        let row =
+            unsafe { std::slice::from_raw_parts(pixels.add(y * stride), info.xres as usize) };
+        output.write_all(row)?;
+    }
+    output.flush()?;
+    let unmap_result = unsafe { munmap(mapping, length) };
+    if unmap_result != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 fn receive_and_execute() {
@@ -747,6 +1038,16 @@ fn parse_crc(value: String) -> io::Result<u32> {
 fn receive_payload(bytes: usize, expected_crc: u32, kind: &str) -> io::Result<Vec<u8>> {
     let mut input = io::stdin().lock();
     let mut stdout = io::stdout().lock();
+    receive_payload_from(&mut input, &mut stdout, bytes, expected_crc, kind)
+}
+
+fn receive_payload_from(
+    input: &mut impl Read,
+    stdout: &mut impl Write,
+    bytes: usize,
+    expected_crc: u32,
+    kind: &str,
+) -> io::Result<Vec<u8>> {
     let mut remaining = bytes;
     let mut received = 0usize;
     let mut crc = 0xffff_ffffu32;
@@ -759,7 +1060,7 @@ fn receive_payload(bytes: usize, expected_crc: u32, kind: &str) -> io::Result<Ve
         crc = crc32_update(crc, &buffer[..requested]);
         remaining -= requested;
         received += requested;
-        write_ack(&mut stdout, kind, received)?;
+        write_ack(stdout, kind, received)?;
     }
     let crc = !crc;
     if crc != expected_crc {
@@ -769,6 +1070,26 @@ fn receive_payload(bytes: usize, expected_crc: u32, kind: &str) -> io::Result<Ve
         ));
     }
     Ok(payload)
+}
+
+fn execute_binary(payload: &[u8]) -> io::Result<(usize, u32, u32)> {
+    let path = Path::new("/tmp/prs350-upload");
+    let mut output = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(path)?;
+    output.write_all(payload)?;
+    output.sync_all()?;
+    drop(output);
+    fs::set_permissions(path, fs::Permissions::from_mode(0o755))?;
+    let child = Command::new(path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let crc = !crc32_update(0xffff_ffff, payload);
+    Ok((payload.len(), crc, child.id()))
 }
 
 fn write_ack(stdout: &mut impl Write, kind: &str, bytes: usize) -> io::Result<()> {
@@ -984,8 +1305,12 @@ pub extern "C" fn __sync_synchronize() {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Cursor;
+
     use super::{
-        decode_subcpu_packet, interpolate_touch, pack_subcpu_packet, InputEvent, SUBCPU_PACKET_SIZE,
+        decode_subcpu_packet, interpolate_touch, pack_subcpu_packet, parse_service_request,
+        receive_payload_from, InputEvent, ServiceRequest, SUBCPU_PACKET_SIZE,
+        crc32_update,
     };
 
     #[test]
@@ -1034,5 +1359,40 @@ mod tests {
         assert_eq!(interpolate_touch(3588, 513, 3588, 100, 500, 599), 500);
         assert_eq!(interpolate_touch(3411, 3411, 677, 100, 700, 799), 100);
         assert_eq!(interpolate_touch(677, 3411, 677, 100, 700, 799), 700);
+    }
+
+    #[test]
+    fn parses_service_requests() {
+        assert_eq!(
+            parse_service_request(b"PRS1 PING\n").unwrap(),
+            ServiceRequest::Ping
+        );
+        assert_eq!(
+            parse_service_request(b"PRS1 EXEC 12 deadbeef\r\n").unwrap(),
+            ServiceRequest::Execute {
+                bytes: 12,
+                crc32: 0xdead_beef
+            }
+        );
+        assert!(parse_service_request(b"PRS1 SHELL 0 00000000\n").is_err());
+        assert!(parse_service_request(b"PRS1 UNKNOWN\n").is_err());
+    }
+
+    #[test]
+    fn receives_payload_and_acknowledges_each_chunk() {
+        let payload = b"test payload";
+        let crc = !crc32_update(0xffff_ffff, payload);
+        let mut input = Cursor::new(payload.to_vec());
+        let mut output = Vec::new();
+        let received = receive_payload_from(
+            &mut input,
+            &mut output,
+            payload.len(),
+            crc,
+            "SHELL",
+        )
+        .unwrap();
+        assert_eq!(received, payload);
+        assert_eq!(output, b"PRS1 ACK SHELL bytes=12\n");
     }
 }
