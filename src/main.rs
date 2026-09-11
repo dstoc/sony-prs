@@ -6,6 +6,7 @@ use prsctl::SonyExtendedTransport;
 use std::env;
 use std::fs::{self, OpenOptions};
 use std::io::Read;
+use std::time::Duration;
 
 fn main() {
     if let Err(error) = run() {
@@ -66,6 +67,34 @@ fn run() -> Result<()> {
             let path = required(&mut args, "serial-reboot requires /dev/ttyACM0")?;
             reject_extra(&mut args)?;
             serial_reboot(&path)
+        }
+        "serial-probe" => {
+            let path = required(&mut args, "serial-probe requires /dev/ttyACM0")?;
+            reject_extra(&mut args)?;
+            serial_probe(&path)
+        }
+        "serial-render" => {
+            let path = required(&mut args, "serial-render requires /dev/ttyACM0")?;
+            reject_extra(&mut args)?;
+            serial_render(&path)
+        }
+        "serial-screenshot" => {
+            let path = required(&mut args, "serial-screenshot requires /dev/ttyACM0")?;
+            let output = required(&mut args, "serial-screenshot requires an output .pgm path")?;
+            reject_extra(&mut args)?;
+            serial_screenshot(&path, &output)
+        }
+        "serial-exec" => {
+            let path = required(&mut args, "serial-exec requires /dev/ttyACM0")?;
+            let binary = required(&mut args, "serial-exec requires an ARM binary path")?;
+            reject_extra(&mut args)?;
+            serial_exec(&path, &binary)
+        }
+        "serial-shell" => {
+            let path = required(&mut args, "serial-shell requires /dev/ttyACM0")?;
+            let command = required(&mut args, "serial-shell requires a command")?;
+            reject_extra(&mut args)?;
+            serial_shell(&path, &command)
         }
         "decode-request" => {
             let path = required(&mut args, "decode-request requires a packet file")?;
@@ -189,6 +218,49 @@ fn serial_reboot(path: &str) -> Result<()> {
     Ok(())
 }
 
+fn serial_probe(path: &str) -> Result<()> {
+    let mut client = SerialClient::open(path)?;
+    let probe = client.probe()?;
+    println!("{}: {}", client.path().display(), probe);
+    Ok(())
+}
+
+fn serial_render(path: &str) -> Result<()> {
+    let mut client = SerialClient::open(path)?;
+    let result = client.render()?;
+    println!("{}: {}", client.path().display(), result);
+    Ok(())
+}
+
+fn serial_screenshot(path: &str, output: &str) -> Result<()> {
+    let mut client = SerialClient::open(path)?.with_timeout(Duration::from_secs(120));
+    let header = client.screenshot(output)?;
+    println!(
+        "{}: captured {}x{} {} to {}",
+        client.path().display(),
+        header.width,
+        header.height,
+        header.format,
+        output
+    );
+    Ok(())
+}
+
+fn serial_exec(path: &str, binary: &str) -> Result<()> {
+    let mut client = SerialClient::open(path)?.with_timeout(Duration::from_secs(180));
+    let result = client.execute(binary)?;
+    println!("{}: {}", client.path().display(), result);
+    Ok(())
+}
+
+fn serial_shell(path: &str, command: &str) -> Result<()> {
+    let mut client = SerialClient::open(path)?.with_timeout(Duration::from_secs(30));
+    let result = client.shell(command)?;
+    println!("{}: {}", client.path().display(), result.status);
+    std::io::Write::write_all(&mut std::io::stdout(), &result.output)?;
+    Ok(())
+}
+
 fn required(args: &mut impl Iterator<Item = String>, message: &str) -> Result<String> {
     args.next()
         .ok_or_else(|| Error::InvalidArgument(message.into()))
@@ -219,7 +291,7 @@ fn hex_preview(bytes: &[u8], max: usize) -> String {
 
 fn print_usage() {
     println!(
-        "prsctl {}\n\nUsage:\n  prsctl scan\n  prsctl probe /dev/sgN\n  prsctl get /dev/sgN DEVICE_PATH OUTPUT\n  prsctl serial-ping /dev/ttyACM0\n  prsctl serial-info /dev/ttyACM0\n  prsctl serial-status /dev/ttyACM0\n  prsctl serial-reboot /dev/ttyACM0\n  prsctl decode-request PACKET\n  prsctl decode-answer PACKET\n\nThe tool is read-only except for the explicit serial-reboot command. OUTPUT is created exclusively and is never overwritten.",
+        "prsctl {}\n\nUsage:\n  prsctl scan\n  prsctl probe /dev/sgN\n  prsctl get /dev/sgN DEVICE_PATH OUTPUT\n  prsctl serial-ping /dev/ttyACM0\n  prsctl serial-info /dev/ttyACM0\n  prsctl serial-status /dev/ttyACM0\n  prsctl serial-reboot /dev/ttyACM0\n  prsctl serial-probe /dev/ttyACM0\n  prsctl serial-render /dev/ttyACM0\n  prsctl serial-screenshot /dev/ttyACM0 OUTPUT.pgm\n  prsctl serial-exec /dev/ttyACM0 ARM_BINARY\n  prsctl serial-shell /dev/ttyACM0 COMMAND\n  prsctl decode-request PACKET\n  prsctl decode-answer PACKET\n\nThe tool is read-only except for the explicit serial-reboot, serial-render,\nserial-exec, and serial-shell commands. Screenshot and other output files are created exclusively\nand are never overwritten.",
         env!("CARGO_PKG_VERSION")
     );
 }

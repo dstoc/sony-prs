@@ -49,6 +49,11 @@ group owning SCSI generic devices.
   prsctl serial-info /dev/ttyACM0
   prsctl serial-status /dev/ttyACM0
   prsctl serial-reboot /dev/ttyACM0
+  prsctl serial-probe /dev/ttyACM0
+  prsctl serial-render /dev/ttyACM0
+  prsctl serial-screenshot /dev/ttyACM0 screen.pgm
+  prsctl serial-exec /dev/ttyACM0 ./my-arm-test
+  prsctl serial-shell /dev/ttyACM0 'cat /proc/cmdline'
   prsctl decode-request captured-request.bin
   prsctl decode-answer captured-answer.bin
 ```
@@ -59,16 +64,20 @@ Output files are created exclusively and are never overwritten.
 
 The SCSI remote command enum intentionally contains no write-capable operation.
 There is no CLI path for `FileWrite`, delete, update-mode changes, partition
-writes, or arbitrary SCSI commands. The serial protocol has one separate,
-explicit control operation, `serial-reboot`, which requests a normal device
-reboot and does not execute arbitrary input. The local output file is the only
-thing the read-only SCSI path creates.
+writes, or arbitrary SCSI commands. The serial protocol has separate explicit
+experimental controls for reboot, framebuffer rendering, and uploading/executing
+a bounded ARM test binary. Those commands are intended only for the temporary
+root service package used during development; they are not part of the
+read-only SCSI interface. Local output files are created exclusively.
 
 See [the protocol ledger](docs/protocol.md) for the known wire format and the
 questions that remain device-dependent. See [the artifact list](docs/artifacts.md)
 for the historical source and binary references.
 
 The reproducible download helper is [tools/fetch-historical.sh](tools/fetch-historical.sh).
+The development sidecar and package builder are in
+[tools/](tools/); they require the historical Sony updater tools and a local
+shadow file, neither of which is committed.
 The first-device checklist is [docs/device-session.md](docs/device-session.md).
 The first complete PRS-350 image and filesystem findings are recorded in
 [docs/mtdblock15-analysis.md](docs/mtdblock15-analysis.md).

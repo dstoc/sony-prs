@@ -1,6 +1,6 @@
 use crate::error::{Error, Result};
-use crate::serial_protocol::{self, Request, Response, MAX_LINE_LEN};
-use std::fs::{File, OpenOptions};
+use crate::serial_protocol::{self, FramebufferHeader, Request, Response, MAX_LINE_LEN};
+use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -13,6 +13,12 @@ pub struct SerialClient {
     reader: File,
     writer: File,
     timeout: Duration,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShellResult {
+    pub status: String,
+    pub output: Vec<u8>,
 }
 
 impl SerialClient {
@@ -86,14 +92,192 @@ impl SerialClient {
         }
     }
 
+    pub fn probe(&mut self) -> Result<String> {
+        match self.exchange(Request::Probe)? {
+            Response::Probe(value) => Ok(value),
+            Response::Error(message) => {
+                Err(Error::Protocol(format!("reader rejected probe: {message}")))
+            }
+            response => Err(Error::Protocol(format!(
+                "unexpected probe response: {response:?}"
+            ))),
+        }
+    }
+
+    pub fn render(&mut self) -> Result<String> {
+        match self.exchange(Request::Render)? {
+            Response::Rendered(value) => Ok(value),
+            Response::Error(message) => Err(Error::Protocol(format!(
+                "reader rejected render: {message}"
+            ))),
+            response => Err(Error::Protocol(format!(
+                "unexpected render response: {response:?}"
+            ))),
+        }
+    }
+
+    pub fn screenshot(&mut self, output_path: impl AsRef<Path>) -> Result<FramebufferHeader> {
+        self.writer
+            .write_all(&serial_protocol::encode_request(Request::Capture))?;
+        self.writer.flush()?;
+
+        let response = self.read_response_line()?;
+        let header = match response {
+            Response::Framebuffer(header) => header,
+            Response::Error(message) => {
+                return Err(Error::Protocol(format!(
+                    "reader rejected framebuffer capture: {message}"
+                )))
+            }
+            response => {
+                return Err(Error::Protocol(format!(
+                    "unexpected framebuffer response: {response:?}"
+                )))
+            }
+        };
+        if header.format != "gray8" {
+            return Err(Error::Unsupported(format!(
+                "reader framebuffer format is {}, expected gray8",
+                header.format
+            )));
+        }
+        let expected_bytes = header.width as usize * header.height as usize;
+        if header.bytes != expected_bytes {
+            return Err(Error::Protocol(format!(
+                "reader framebuffer byte count is {}, expected {expected_bytes}",
+                header.bytes
+            )));
+        }
+
+        let mut output = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(output_path)?;
+        writeln!(output, "P5")?;
+        writeln!(output, "{} {}", header.width, header.height)?;
+        writeln!(output, "255")?;
+        self.read_exact_with_deadline(&mut output, header.bytes)?;
+        Ok(header)
+    }
+
+    pub fn execute(&mut self, binary_path: impl AsRef<Path>) -> Result<String> {
+        let binary_path = binary_path.as_ref();
+        let data = fs::read(binary_path)?;
+        if data.is_empty() || data.len() > serial_protocol::MAX_EXEC_BYTES {
+            return Err(Error::InvalidArgument(format!(
+                "ARM binary must be between 1 and {} bytes",
+                serial_protocol::MAX_EXEC_BYTES
+            )));
+        }
+        let crc32 = crc32(&data);
+        self.writer
+            .write_all(&serial_protocol::encode_request(Request::Execute {
+                bytes: data.len() as u32,
+                crc32,
+            }))?;
+        self.writer.flush()?;
+
+        match self.read_response_line()? {
+            Response::Ready(value) if value == "EXEC" => {}
+            Response::Error(message) => {
+                return Err(Error::Protocol(format!(
+                    "reader rejected exec setup: {message}"
+                )))
+            }
+            response => {
+                return Err(Error::Protocol(format!(
+                    "unexpected exec setup response: {response:?}"
+                )))
+            }
+        }
+
+        self.writer.write_all(&data)?;
+        self.writer.flush()?;
+
+        match self.read_response_line()? {
+            Response::Executed(value) => Ok(value),
+            Response::Error(message) => Err(Error::Protocol(format!(
+                "reader rejected execution: {message}"
+            ))),
+            response => Err(Error::Protocol(format!(
+                "unexpected exec response: {response:?}"
+            ))),
+        }
+    }
+
+    pub fn shell(&mut self, command: &str) -> Result<ShellResult> {
+        let data = command.as_bytes();
+        if data.is_empty() || data.len() > serial_protocol::MAX_SHELL_BYTES {
+            return Err(Error::InvalidArgument(format!(
+                "shell command must be between 1 and {} bytes",
+                serial_protocol::MAX_SHELL_BYTES
+            )));
+        }
+        let crc32 = crc32(data);
+        self.writer
+            .write_all(&serial_protocol::encode_request(Request::Shell {
+                bytes: data.len() as u32,
+                crc32,
+            }))?;
+        self.writer.flush()?;
+
+        match self.read_response_line()? {
+            Response::Ready(value) if value == "SHELL" => {}
+            Response::Error(message) => {
+                return Err(Error::Protocol(format!(
+                    "reader rejected shell setup: {message}"
+                )))
+            }
+            response => {
+                return Err(Error::Protocol(format!(
+                    "unexpected shell setup response: {response:?}"
+                )))
+            }
+        }
+
+        self.writer.write_all(data)?;
+        self.writer.flush()?;
+        let response = self.read_response_line()?;
+        let (bytes, status) = match response {
+            Response::Shell { bytes, status } => (bytes, status),
+            Response::Error(message) => {
+                return Err(Error::Protocol(format!(
+                    "reader rejected shell command: {message}"
+                )))
+            }
+            response => {
+                return Err(Error::Protocol(format!(
+                    "unexpected shell response: {response:?}"
+                )))
+            }
+        };
+        if bytes > serial_protocol::MAX_SHELL_OUTPUT_BYTES {
+            return Err(Error::Protocol(format!(
+                "reader shell output is {bytes} bytes, maximum is {}",
+                serial_protocol::MAX_SHELL_OUTPUT_BYTES
+            )));
+        }
+        let output = self.read_exact_bytes(bytes)?;
+        Ok(ShellResult { status, output })
+    }
+
     fn exchange(&mut self, request: Request) -> Result<Response> {
         self.writer
             .write_all(&serial_protocol::encode_request(request))?;
         self.writer.flush()?;
 
-        let deadline = Instant::now() + self.timeout;
+        self.read_response_line()
+    }
+
+    fn read_response_line(&mut self) -> Result<Response> {
+        let line = self.read_line()?;
+        serial_protocol::decode_response(&line)
+    }
+
+    fn read_line(&mut self) -> Result<Vec<u8>> {
         let mut line = Vec::new();
         let mut byte = [0u8; 1];
+        let deadline = Instant::now() + self.timeout;
         loop {
             if Instant::now() >= deadline {
                 return Err(Error::Protocol(format!(
@@ -111,7 +295,7 @@ impl SerialClient {
                         )));
                     }
                     if byte[0] == b'\n' {
-                        return serial_protocol::decode_response(&line);
+                        return Ok(line);
                     }
                 }
                 Ok(_) => unreachable!(),
@@ -119,6 +303,60 @@ impl SerialClient {
                 Err(error) => return Err(error.into()),
             }
         }
+    }
+
+    fn read_exact_with_deadline(&mut self, output: &mut File, length: usize) -> Result<()> {
+        let data = self.read_exact_bytes(length)?;
+        output.write_all(&data)?;
+        Ok(())
+    }
+
+    fn read_exact_bytes(&mut self, length: usize) -> Result<Vec<u8>> {
+        let deadline = Instant::now() + self.timeout;
+        let mut remaining = length;
+        let mut buffer = [0u8; 16 * 1024];
+        let mut output = Vec::with_capacity(length);
+        while remaining != 0 {
+            if Instant::now() >= deadline {
+                return Err(Error::Protocol(format!(
+                    "timed out waiting for framebuffer data from {}",
+                    self.path.display()
+                )));
+            }
+            let requested = remaining.min(buffer.len());
+            match self.reader.read(&mut buffer[..requested]) {
+                Ok(0) => continue,
+                Ok(bytes) => {
+                    output.extend_from_slice(&buffer[..bytes]);
+                    remaining -= bytes;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Ok(output)
+    }
+}
+
+fn crc32(bytes: &[u8]) -> u32 {
+    let mut crc = 0xffff_ffffu32;
+    for &byte in bytes {
+        crc ^= byte as u32;
+        for _ in 0..8 {
+            let mask = 0u32.wrapping_sub(crc & 1);
+            crc = (crc >> 1) ^ (0xedb8_8320 & mask);
+        }
+    }
+    !crc
+}
+
+#[cfg(test)]
+mod tests {
+    use super::crc32;
+
+    #[test]
+    fn crc32_matches_standard_vector() {
+        assert_eq!(crc32(b"123456789"), 0xcbf4_3926);
     }
 }
 

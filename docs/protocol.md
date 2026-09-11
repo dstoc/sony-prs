@@ -243,6 +243,85 @@ the normal boot script's `/etc/shadow` tmpfs setup. That supplied a root serial
 console during debugging; the final protocol service itself does not launch a
 getty and the shadow override must not be retained in a production package.
 
+### Experimental binary development channel
+
+The temporary root service now has two binary-transfer commands for iterating
+on a replacement UI without rebuilding and signing an updater package for every
+run. They are deliberately separate from the read-only SCSI transport and are
+available only while the development service package is installed.
+
+`serial-screenshot` sends `PRS1 CAPTURE\n`. The reader replies with a header such
+as:
+
+```text
+PRS1 OK FRAMEBUFFER width=600 height=800 format=gray8 bytes=480000\n
+```
+
+It then sends exactly `bytes` of row-major 8-bit framebuffer data. The host
+wraps those rows in a PGM (`P5`) file, so the result can be opened by common
+image tools without a third-party dependency. The device-side capture uses the
+same `/dev/fb0` mapping as the render probe and does not refresh the panel.
+
+`serial-exec` first sends an ARM-binary header and waits for the reader to
+switch the tty to raw mode:
+
+```text
+PRS1 EXEC <byte-count> <crc32>\n
+reader -> host: PRS1 READY EXEC\n
+host -> reader: <exactly byte-count raw bytes>
+```
+
+The payload is capped at 1 MiB and the reader verifies CRC32 before writing
+`/tmp/prs350-upload`, marking it executable, and spawning it with standard
+input, output, and error detached from the protocol. The response reports its
+PID; this is intentional because a replacement UI is expected to remain
+running. At the current 9600-baud service setting, a 1 MiB transfer is expected
+to take on the order of minutes; the nominal CDC-ACM line rate can be raised in
+a controlled test, but the old gadget implementation may ignore that setting.
+The upload command is intentionally powerful and should not be enabled in a
+normal production image.
+
+The host commands are:
+
+```text
+prsctl serial-screenshot /dev/ttyACM0 screen.pgm
+prsctl serial-exec /dev/ttyACM0 ./prs350-agent-test
+prsctl serial-shell /dev/ttyACM0 'cat /proc/cmdline'
+```
+
+`serial-shell` uses the same ready/raw framing with a 4 KiB command limit and
+returns up to 64 KiB of combined standard output and standard error. It runs
+`/bin/sh -c` as root in the development service, so it is intentionally a
+debug-only facility and must not be included in a production image.
+
+### Rebuilding the development package
+
+The package sidecar is tracked in `tools/prs350-serial-service.sh`,
+`tools/prs350-serial-gadget.sh`, and `tools/prs350-update.sh`. The package
+builder copies those files and the cross-built `device-agent` into a fresh
+directory, then invokes the externally obtained Sony signing helpers:
+
+```text
+tools/build-prs350-dev-package.sh \
+  /path/to/PRS350_update_tools/login_update \
+  /path/to/shadow \
+  device-agent/target/armv5te-unknown-linux-musleabi/release/prs350-agent \
+  /tmp/prs350-dev-package
+```
+
+If the host OpenSSL needs the legacy-provider wrapper used during this
+development session, set `PRS350_OPENSSL_WRAPPER_DIR` before invoking the
+builder. The builder refuses to reuse an existing output directory, verifies
+the package with `update_test.sh`, prints its SHA-256, and truncates the
+temporary signing key on exit. The historical updater tools, `Info.img`, and
+the shadow file remain external inputs and are not stored in Git.
+
+The ARM helper remains conservatively built for ARM926EJ-S/ARMv5TE because the
+reader rejected an ARM1176JZF-S build with `Illegal instruction`. Its static
+Rust bootstrap currently supplies the atomic helper symbols needed by the
+single-process test agent; a long-running UI should use a proper target runtime
+and synchronization implementation.
+
 ## First device-session questions
 
 1. Does the exact x50 file service vary across PRS-x50 firmware versions?
