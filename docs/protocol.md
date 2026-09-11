@@ -202,7 +202,7 @@ state and needs a separate test. The package's bind mount lives in `/tmp`, so a
 normal reboot removes the test and restores the stock `gadget.sh`; the temporary
 root getty should not be retained in a production package.
 
-### Proposed CDC-ACM application protocol
+### Validated CDC-ACM application protocol
 
 The first replacement-UI transport is deliberately line-oriented so it can be
 debugged from a terminal before a binary framing layer is needed:
@@ -217,9 +217,21 @@ reader -> host: PRS1 OK INFO model=PRS-350 transport=cdc-acm\n
 Unsupported requests return `PRS1 ERR unsupported-request`. The host
 implementation is in `src/serial_protocol.rs` and `src/serial.rs`; the
 read-only CLI exposes it as `prsctl serial-ping /dev/ttyACM0` and
-`prsctl serial-info /dev/ttyACM0`. The protocol service is intentionally not
-part of the installed firmware; it is used by a temporary signed test package
-so that the UI can be validated independently of the host transport.
+`prsctl serial-info /dev/ttyACM0`.
+
+This was validated end-to-end on the reader. The final temporary package was
+11,280 bytes, passed the offline package verifier, and had SHA-256
+`303338d7eeb0552a68a97f7d1c777adf121e06607626364c2af4cd288167b091`. With
+the reader connected, the host observed only `/dev/ttyACM0` (no `/dev/sg*` or
+`/dev/sd*`), and both CLI commands returned the expected responses. The
+device-side service must inherit `ttygserial` as stdin/stdout and use the
+BusyBox shell's `printf`; this firmware has no `/bin/printf`, and reopening
+the tty from a background shell process did not provide a usable endpoint.
+
+The package also carried the temporary empty-password shadow file, bound after
+the normal boot script's `/etc/shadow` tmpfs setup. That supplied a root serial
+console during debugging; the final protocol service itself does not launch a
+getty and the shadow override must not be retained in a production package.
 
 ## First device-session questions
 
