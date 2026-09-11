@@ -7,6 +7,7 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{compiler_fence, Ordering};
+use std::time::{Duration, Instant};
 
 const FBIOGET_VSCREENINFO: c_ulong = 0x4600;
 const EINKFB_UPDATE_PIC: c_ulong = 0x4700;
@@ -20,9 +21,13 @@ const MAX_SHELL_BYTES: usize = 4096;
 const MAX_SHELL_OUTPUT_BYTES: usize = 64 * 1024;
 const TRANSFER_CHUNK_SIZE: usize = 1024;
 const O_NONBLOCK: i32 = 0x800;
+const POLLIN: i16 = 0x0001;
 const POLLERR: i16 = 0x0008;
 const POLLHUP: i16 = 0x0010;
 const POLLNVAL: i16 = 0x0020;
+const SUBCPU_PACKET_SIZE: usize = 8;
+const SUBCPU_SCAN_ON_PACKET: [u8; SUBCPU_PACKET_SIZE] =
+    pack_subcpu_packet([0x86, 0x03, 0x31, 0x00, 0x00, 0x00, 0xb4]);
 
 #[repr(C)]
 #[derive(Default)]
@@ -97,6 +102,89 @@ struct EinkUpdate {
     h: u32,
 }
 
+#[derive(Clone, Copy, Debug)]
+enum InputEvent {
+    Touch { pressed: bool, x: u16, y: u16 },
+    Key { code: u8, state: u8 },
+}
+
+#[derive(Default)]
+struct UiState {
+    touch: Option<(u16, u16, bool)>,
+    key: Option<(u8, u8)>,
+}
+
+struct SubCpuInput {
+    file: std::fs::File,
+    pending: Vec<u8>,
+}
+
+impl SubCpuInput {
+    fn open() -> io::Result<Self> {
+        let mut file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(O_NONBLOCK)
+            .open("/dev/subcpu")?;
+        file.write_all(&SUBCPU_SCAN_ON_PACKET)?;
+        Ok(Self {
+            file,
+            pending: Vec::with_capacity(SUBCPU_PACKET_SIZE * 2),
+        })
+    }
+
+    fn next_event(&mut self) -> io::Result<Option<InputEvent>> {
+        let mut descriptor = PollFd {
+            fd: self.file.as_raw_fd(),
+            events: POLLIN,
+            revents: 0,
+        };
+        let result = unsafe { poll(&mut descriptor, 1, 100) };
+        if result < 0 {
+            let error = io::Error::last_os_error();
+            if error.kind() == io::ErrorKind::Interrupted {
+                return Ok(None);
+            }
+            return Err(error);
+        }
+        if result == 0 {
+            return Ok(None);
+        }
+        if descriptor.revents & (POLLERR | POLLHUP | POLLNVAL) != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "subcpu input stream closed",
+            ));
+        }
+        if descriptor.revents & POLLIN == 0 {
+            return Ok(None);
+        }
+
+        let mut bytes = [0u8; 64];
+        match self.file.read(&mut bytes) {
+            Ok(0) => return Ok(None),
+            Ok(length) => self.pending.extend_from_slice(&bytes[..length]),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(None),
+            Err(error) => return Err(error),
+        }
+
+        while self.pending.len() >= SUBCPU_PACKET_SIZE {
+            if self.pending[0] & 0x80 == 0 {
+                self.pending.remove(0);
+                continue;
+            }
+            let packet: [u8; SUBCPU_PACKET_SIZE] = self.pending[..SUBCPU_PACKET_SIZE]
+                .try_into()
+                .expect("packet length checked");
+            self.pending.drain(..SUBCPU_PACKET_SIZE);
+            if let Some(event) = decode_subcpu_packet(packet) {
+                return Ok(Some(event));
+            }
+        }
+        Ok(None)
+    }
+}
+
 fn main() {
     match std::env::args().nth(1).as_deref() {
         Some("render") => println!("PRS1 OK RENDERED {}", render_test()),
@@ -114,17 +202,56 @@ fn main() {
 }
 
 fn run_ui() {
-    if let Err(error) = draw_ui() {
+    let mut state = UiState::default();
+    if let Err(error) = draw_ui(&state) {
         eprintln!("Rust UI failed: {error}");
         return;
     }
 
+    let mut input = None;
+    let mut retry_input_at = Instant::now();
     loop {
-        std::thread::sleep(std::time::Duration::from_secs(60));
+        if input.is_none() && retry_input_at.elapsed() >= Duration::from_secs(1) {
+            match SubCpuInput::open() {
+                Ok(device) => input = Some(device),
+                Err(error) => eprintln!("Rust UI input unavailable: {error}"),
+            }
+            retry_input_at = Instant::now();
+        }
+
+        let Some(device) = input.as_mut() else {
+            std::thread::sleep(Duration::from_millis(100));
+            continue;
+        };
+        match device.next_event() {
+            Ok(Some(event)) => {
+                let redraw = match event {
+                    InputEvent::Touch { pressed, x, y } => {
+                        state.touch = Some((x, y, pressed));
+                        !pressed
+                    }
+                    InputEvent::Key { code, state: key_state } => {
+                        state.key = Some((code, key_state));
+                        true
+                    }
+                };
+                if redraw {
+                    if let Err(error) = draw_ui(&state) {
+                        eprintln!("Rust UI input redraw failed: {error}");
+                    }
+                }
+            }
+            Ok(None) => {}
+            Err(error) => {
+                eprintln!("Rust UI input stopped: {error}");
+                input = None;
+                retry_input_at = Instant::now();
+            }
+        }
     }
 }
 
-fn draw_ui() -> io::Result<()> {
+fn draw_ui(state: &UiState) -> io::Result<()> {
     let path = Path::new("/dev/fb0");
     let file = OpenOptions::new().read(true).write(true).open(path)?;
     let mut info = FbVarScreeninfo::default();
@@ -171,12 +298,29 @@ fn draw_ui() -> io::Result<()> {
     draw_text(pixels, stride, width, height, 52, 414, "FRAMEBUFFER", 3, 0x00);
     draw_text(pixels, stride, width, height, 52, 462, "600 X 800 GRAY8", 3, 0x00);
 
+    draw_text(pixels, stride, width, height, 32, 558, "INPUT READY", 3, 0x00);
+    if let Some((x, y, pressed)) = state.touch {
+        let touch = format!("TOUCH {} {} {}", x, y, if pressed { 1 } else { 0 });
+        draw_text(pixels, stride, width, height, 32, 606, &touch, 3, 0x00);
+    } else {
+        draw_text(pixels, stride, width, height, 32, 606, "TOUCH WAIT", 3, 0x00);
+    }
+    if let Some((code, key_state)) = state.key {
+        let key = format!("KEY {} {}", code, key_state);
+        draw_text(pixels, stride, width, height, 32, 654, &key, 3, 0x00);
+    } else {
+        draw_text(pixels, stride, width, height, 32, 654, "KEY WAIT", 3, 0x00);
+    }
     draw_text(pixels, stride, width, height, 32, height.saturating_sub(64), "USB DIAGNOSTICS", 3, 0x00);
 
     let power_result = unsafe { ioctl(file.as_raw_fd(), EINKFB_SET_POWER_MODE, 1u32) };
     if power_result != 0 {
+        let error = io::Error::last_os_error();
         unsafe { munmap(mapping, length) };
-        return Err(io::Error::last_os_error());
+        return Err(io::Error::new(
+            error.kind(),
+            format!("set E-Ink power mode: {error}"),
+        ));
     }
     std::thread::sleep(std::time::Duration::from_secs(1));
     let mut update = EinkUpdate {
@@ -197,12 +341,83 @@ fn draw_ui() -> io::Result<()> {
     let update_error = io::Error::last_os_error();
     let unmap_result = unsafe { munmap(mapping, length) };
     if update_result != 0 {
-        return Err(update_error);
+        return Err(io::Error::new(
+            update_error.kind(),
+            format!("update E-Ink picture: {update_error}"),
+        ));
     }
     if unmap_result != 0 {
         return Err(io::Error::last_os_error());
     }
     Ok(())
+}
+
+const fn pack_subcpu_packet(raw: [u8; 7]) -> [u8; SUBCPU_PACKET_SIZE] {
+    [
+        0x80 | (raw[0] >> 1),
+        ((raw[0] << 6) | (raw[1] >> 2)) & 0x7f,
+        ((raw[1] << 5) | (raw[2] >> 3)) & 0x7f,
+        ((raw[2] << 4) | (raw[3] >> 4)) & 0x7f,
+        ((raw[3] << 3) | (raw[4] >> 5)) & 0x7f,
+        ((raw[4] << 2) | (raw[5] >> 6)) & 0x7f,
+        ((raw[5] << 1) | (raw[6] >> 7)) & 0x7f,
+        raw[6] & 0x7f,
+    ]
+}
+
+fn unpack_subcpu_packet(packet: [u8; SUBCPU_PACKET_SIZE]) -> [u8; 7] {
+    [
+        (packet[0] << 1) | (packet[1] >> 6),
+        (packet[1] << 2) | (packet[2] >> 5),
+        (packet[2] << 3) | (packet[3] >> 4),
+        (packet[3] << 4) | (packet[4] >> 3),
+        (packet[4] << 5) | (packet[5] >> 2),
+        (packet[5] << 6) | (packet[6] >> 1),
+        (packet[6] << 7) | packet[7],
+    ]
+}
+
+fn decode_subcpu_packet(packet: [u8; SUBCPU_PACKET_SIZE]) -> Option<InputEvent> {
+    let raw = unpack_subcpu_packet(packet);
+    if raw.iter().fold(0u8, |checksum, byte| checksum ^ byte) != 0 {
+        return None;
+    }
+
+    let category = raw[0] & 0x3f;
+    let command = raw[1] & 0x3f;
+    match (category, command) {
+        (3, 1) => Some(InputEvent::Key {
+            code: raw[2],
+            state: raw[3],
+        }),
+        (6, 4) | (6, 5) | (6, 6) => {
+            let x = (((raw[2] & 0x0f) as u16) << 8) | raw[3] as u16;
+            let y = (((raw[4] & 0x0f) as u16) << 8) | raw[5] as u16;
+            let x = interpolate_touch(x, 513, 3588, 100, 500, 599);
+            let y = interpolate_touch(y, 3411, 677, 100, 700, 799);
+            Some(InputEvent::Touch {
+                pressed: command != 5,
+                x,
+                y,
+            })
+        }
+        _ => None,
+    }
+}
+
+fn interpolate_touch(
+    value: u16,
+    raw_start: i32,
+    raw_end: i32,
+    screen_start: i32,
+    screen_end: i32,
+    screen_max: i32,
+) -> u16 {
+    let value = i32::from(value);
+    let numerator = (value - raw_start) * (screen_end - screen_start);
+    let denominator = raw_end - raw_start;
+    let mapped = screen_start + numerator / denominator;
+    mapped.clamp(0, screen_max) as u16
 }
 
 fn fill_rect(pixels: &mut [u8], stride: usize, width: usize, height: usize, x: usize, y: usize, rect_width: usize, rect_height: usize, value: u8) {
@@ -765,4 +980,59 @@ pub unsafe extern "C" fn __sync_lock_test_and_set_1(pointer: *mut i8, value: i8)
 #[no_mangle]
 pub extern "C" fn __sync_synchronize() {
     compiler_fence(Ordering::SeqCst);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        decode_subcpu_packet, interpolate_touch, pack_subcpu_packet, InputEvent, SUBCPU_PACKET_SIZE,
+    };
+
+    #[test]
+    fn scan_packet_matches_firmware_encoding() {
+        assert_eq!(
+            pack_subcpu_packet([0x86, 0x03, 0x31, 0x00, 0x00, 0x00, 0xb4]),
+            [0xc3, 0x00, 0x66, 0x10, 0x00, 0x00, 0x01, 0x34]
+        );
+    }
+
+    #[test]
+    fn decodes_touch_release_and_calibrates_coordinates() {
+        let packet = [0x83, 0x01, 0x29, 0x01, 0x40, 0x20, 0x1e, 0x54];
+        assert!(matches!(
+            decode_subcpu_packet(packet),
+            Some(InputEvent::Touch {
+                pressed: false,
+                x: 302,
+                y: 395
+            })
+        ));
+    }
+
+    #[test]
+    fn decodes_key_packet() {
+        let packet = [0x81, 0x40, 0x25, 0x30, 0x10, 0x00, 0x00, 0x2b];
+        assert!(matches!(
+            decode_subcpu_packet(packet),
+            Some(InputEvent::Key {
+                code: 0x2b,
+                state: 0x02
+            })
+        ));
+        assert_eq!(SUBCPU_PACKET_SIZE, 8);
+    }
+
+    #[test]
+    fn ignores_bad_checksum() {
+        let packet = [0x83, 0x01, 0x29, 0x01, 0x40, 0x20, 0x1e, 0x55];
+        assert_eq!(decode_subcpu_packet(packet), None);
+    }
+
+    #[test]
+    fn calibration_preserves_panel_dimensions() {
+        assert_eq!(interpolate_touch(513, 513, 3588, 100, 500, 599), 100);
+        assert_eq!(interpolate_touch(3588, 513, 3588, 100, 500, 599), 500);
+        assert_eq!(interpolate_touch(3411, 3411, 677, 100, 700, 799), 100);
+        assert_eq!(interpolate_touch(677, 3411, 677, 100, 700, 799), 700);
+    }
 }

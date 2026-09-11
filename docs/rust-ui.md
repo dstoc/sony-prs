@@ -10,9 +10,25 @@ hook stops the stock `tinyhttp` UI and starts `/tmp/prs350-agent ui` after the
 signed package has been installed. It intentionally remains alive after the
 first refresh so the stock UI cannot immediately reclaim the framebuffer.
 
-This milestone is display-only. Touch and button input are not yet dispatched;
-the next UI increment should identify the input devices exposed during a normal
-non-USB boot and add a small event loop before replacing the static screen.
+The next increment now includes a small input loop. The PRS-350 does not expose
+Linux `evdev` nodes for these controls; the firmware uses `/dev/subcpu`. The
+agent enables touch scanning, decodes the firmware's 8-byte packed packets,
+and maps the touch coordinates with the calibration points from
+`deviceConfig.xml`. The screen reports the last touch position and raw key
+code/state. Navigation actions are intentionally not assigned yet while the
+physical key mapping is being confirmed.
+
+The observed packet families are category `6`, commands `4/5/6` for touch
+samples, and category `3`, command `1` for keys. The scan-enable packet is
+encoded in the agent rather than relying on the stock application to
+initialize the controller.
+
+The packet decoder is covered by host-side tests using captured device traffic,
+including checksum rejection and the full 600x800 calibration range. The ARM
+binary also cross-compiles successfully. Device-side framebuffer and physical
+input validation remain pending; the next deployment will report whether a
+failure occurs while opening the framebuffer, setting E-Ink power, or refreshing
+the picture.
 
 Build the ARM binary with:
 
