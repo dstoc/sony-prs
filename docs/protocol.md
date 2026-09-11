@@ -212,21 +212,31 @@ host -> reader: PRS1 PING\n
 reader -> host: PRS1 OK PONG\n
 host -> reader: PRS1 INFO\n
 reader -> host: PRS1 OK INFO model=PRS-350 transport=cdc-acm\n
+host -> reader: PRS1 STATUS\n
+reader -> host: PRS1 OK STATUS ui=stock-alive\n
+host -> reader: PRS1 REBOOT\n
+reader -> host: PRS1 OK REBOOTING\n
 ```
 
 Unsupported requests return `PRS1 ERR unsupported-request`. The host
 implementation is in `src/serial_protocol.rs` and `src/serial.rs`; the
-read-only CLI exposes it as `prsctl serial-ping /dev/ttyACM0` and
-`prsctl serial-info /dev/ttyACM0`.
+CLI exposes it as `prsctl serial-ping /dev/ttyACM0`,
+`prsctl serial-info /dev/ttyACM0`, and `prsctl serial-status /dev/ttyACM0`.
+The separate `prsctl serial-reboot /dev/ttyACM0` command sends only the
+explicit reboot request; it does not provide a shell or arbitrary command
+execution.
 
-This was validated end-to-end on the reader. The final temporary package was
-11,280 bytes, passed the offline package verifier, and had SHA-256
-`303338d7eeb0552a68a97f7d1c777adf121e06607626364c2af4cd288167b091`. With
-the reader connected, the host observed only `/dev/ttyACM0` (no `/dev/sg*` or
-`/dev/sd*`), and both CLI commands returned the expected responses. The
-device-side service must inherit `ttygserial` as stdin/stdout and use the
-BusyBox shell's `printf`; this firmware has no `/bin/printf`, and reopening
-the tty from a background shell process did not provide a usable endpoint.
+This was validated end-to-end on the reader. The current temporary package is
+11,280 bytes, passed the offline package verifier, and has SHA-256
+`2c206776fbeb8cccf5e30d9eb1ab4cd3adb90d3ecf8ee81918081629dc9888bb`. With
+the reader connected, the host observed `/dev/ttyACM0` (no `/dev/sg*` or
+`/dev/sd*`), and all three read-only commands returned the expected responses;
+the reboot command returned the reader to normal mass-storage mode before the
+package was reapplied. The device-side service must inherit `ttygserial` as
+stdin/stdout and use the BusyBox shell's `printf`; this firmware has no
+`/bin/printf`, and reopening the tty from a background shell process did not
+provide a usable endpoint. The firmware also lacks a `/bin/ps` applet, so the
+status probe checks `/proc/*/cmdline` directly for the stock `tinyhttp` UI.
 
 The package also carried the temporary empty-password shadow file, bound after
 the normal boot script's `/etc/shadow` tmpfs setup. That supplied a root serial

@@ -8,6 +8,7 @@ pub enum Request {
     Ping,
     Info,
     Status,
+    Reboot,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -15,6 +16,7 @@ pub enum Response {
     Pong,
     Info(String),
     Status(String),
+    Rebooting,
     Error(String),
 }
 
@@ -23,6 +25,7 @@ pub fn encode_request(request: Request) -> Vec<u8> {
         Request::Ping => "PING",
         Request::Info => "INFO",
         Request::Status => "STATUS",
+        Request::Reboot => "REBOOT",
     };
     format!("{PREFIX} {command}\n").into_bytes()
 }
@@ -33,6 +36,7 @@ pub fn decode_request(line: &[u8]) -> Result<Request> {
         "PRS1 PING" => Ok(Request::Ping),
         "PRS1 INFO" => Ok(Request::Info),
         "PRS1 STATUS" => Ok(Request::Status),
+        "PRS1 REBOOT" => Ok(Request::Reboot),
         _ => Err(Error::Protocol(format!(
             "unsupported serial request: {line:?}"
         ))),
@@ -50,6 +54,7 @@ pub fn encode_response(response: &Response) -> Result<Vec<u8>> {
             validate_text(value, "serial status")?;
             format!("{PREFIX} OK STATUS {value}")
         }
+        Response::Rebooting => format!("{PREFIX} OK REBOOTING"),
         Response::Error(value) => {
             validate_text(value, "serial error")?;
             format!("{PREFIX} ERR {value}")
@@ -74,6 +79,9 @@ pub fn decode_response(line: &[u8]) -> Result<Response> {
             return Err(Error::Protocol("serial status response is empty".into()));
         }
         return Ok(Response::Status(value.into()));
+    }
+    if line == "PRS1 OK REBOOTING" {
+        return Ok(Response::Rebooting);
     }
     if let Some(value) = line.strip_prefix("PRS1 ERR ") {
         if value.is_empty() {
@@ -146,6 +154,17 @@ mod tests {
         let bytes = encode_response(&response).unwrap();
         assert_eq!(bytes, b"PRS1 OK STATUS ui=stock-alive\n");
         assert_eq!(decode_response(&bytes).unwrap(), response);
+    }
+
+    #[test]
+    fn reboot_round_trips() {
+        let request = encode_request(Request::Reboot);
+        assert_eq!(request, b"PRS1 REBOOT\n");
+        assert_eq!(decode_request(&request).unwrap(), Request::Reboot);
+
+        let response = encode_response(&Response::Rebooting).unwrap();
+        assert_eq!(response, b"PRS1 OK REBOOTING\n");
+        assert_eq!(decode_response(&response).unwrap(), Response::Rebooting);
     }
 
     #[test]

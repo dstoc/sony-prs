@@ -48,6 +48,7 @@ group owning SCSI generic devices.
   prsctl serial-ping /dev/ttyACM0
   prsctl serial-info /dev/ttyACM0
   prsctl serial-status /dev/ttyACM0
+  prsctl serial-reboot /dev/ttyACM0
   prsctl decode-request captured-request.bin
   prsctl decode-answer captured-answer.bin
 ```
@@ -56,10 +57,12 @@ Output files are created exclusively and are never overwritten.
 
 ## Safety boundary
 
-The remote command enum intentionally contains no write-capable operation.
+The SCSI remote command enum intentionally contains no write-capable operation.
 There is no CLI path for `FileWrite`, delete, update-mode changes, partition
-writes, or arbitrary SCSI commands. The local output file is the only thing
-the program creates.
+writes, or arbitrary SCSI commands. The serial protocol has one separate,
+explicit control operation, `serial-reboot`, which requests a normal device
+reboot and does not execute arbitrary input. The local output file is the only
+thing the read-only SCSI path creates.
 
 See [the protocol ledger](docs/protocol.md) for the known wire format and the
 questions that remain device-dependent. See [the artifact list](docs/artifacts.md)

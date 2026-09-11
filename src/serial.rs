@@ -74,6 +74,18 @@ impl SerialClient {
         }
     }
 
+    pub fn reboot(&mut self) -> Result<()> {
+        match self.exchange(Request::Reboot)? {
+            Response::Rebooting => Ok(()),
+            Response::Error(message) => Err(Error::Protocol(format!(
+                "reader rejected reboot: {message}"
+            ))),
+            response => Err(Error::Protocol(format!(
+                "unexpected reboot response: {response:?}"
+            ))),
+        }
+    }
+
     fn exchange(&mut self, request: Request) -> Result<Response> {
         self.writer
             .write_all(&serial_protocol::encode_request(request))?;
