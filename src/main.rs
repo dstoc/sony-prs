@@ -1,5 +1,6 @@
 use prsctl::error::{Error, Result};
 use prsctl::protocol::{Answer, Request};
+use prsctl::serial::SerialClient;
 use prsctl::sg::SgDevice;
 use prsctl::SonyExtendedTransport;
 use std::env;
@@ -45,6 +46,16 @@ fn run() -> Result<()> {
             let path = required(&mut args, "decode-answer requires a packet file")?;
             reject_extra(&mut args)?;
             decode_answer(&path)
+        }
+        "serial-ping" => {
+            let path = required(&mut args, "serial-ping requires /dev/ttyACM0")?;
+            reject_extra(&mut args)?;
+            serial_ping(&path)
+        }
+        "serial-info" => {
+            let path = required(&mut args, "serial-info requires /dev/ttyACM0")?;
+            reject_extra(&mut args)?;
+            serial_info(&path)
         }
         "decode-request" => {
             let path = required(&mut args, "decode-request requires a packet file")?;
@@ -140,6 +151,20 @@ fn decode_request(path: &str) -> Result<()> {
     Ok(())
 }
 
+fn serial_ping(path: &str) -> Result<()> {
+    let mut client = SerialClient::open(path)?;
+    client.ping()?;
+    println!("{}: PONG", client.path().display());
+    Ok(())
+}
+
+fn serial_info(path: &str) -> Result<()> {
+    let mut client = SerialClient::open(path)?;
+    let info = client.info()?;
+    println!("{}: {}", client.path().display(), info);
+    Ok(())
+}
+
 fn required(args: &mut impl Iterator<Item = String>, message: &str) -> Result<String> {
     args.next()
         .ok_or_else(|| Error::InvalidArgument(message.into()))
@@ -170,7 +195,7 @@ fn hex_preview(bytes: &[u8], max: usize) -> String {
 
 fn print_usage() {
     println!(
-        "prsctl {}\n\nUsage:\n  prsctl scan\n  prsctl probe /dev/sgN\n  prsctl get /dev/sgN DEVICE_PATH OUTPUT\n  prsctl decode-request PACKET\n  prsctl decode-answer PACKET\n\nThe tool is read-only. OUTPUT is created exclusively and is never overwritten.",
+        "prsctl {}\n\nUsage:\n  prsctl scan\n  prsctl probe /dev/sgN\n  prsctl get /dev/sgN DEVICE_PATH OUTPUT\n  prsctl serial-ping /dev/ttyACM0\n  prsctl serial-info /dev/ttyACM0\n  prsctl decode-request PACKET\n  prsctl decode-answer PACKET\n\nThe tool is read-only. OUTPUT is created exclusively and is never overwritten.",
         env!("CARGO_PKG_VERSION")
     );
 }

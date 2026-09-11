@@ -7,6 +7,8 @@
 pub mod client;
 pub mod error;
 pub mod protocol;
+pub mod serial;
+pub mod serial_protocol;
 pub mod sg;
 pub mod sony;
 

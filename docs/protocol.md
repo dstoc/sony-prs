@@ -202,6 +202,25 @@ state and needs a separate test. The package's bind mount lives in `/tmp`, so a
 normal reboot removes the test and restores the stock `gadget.sh`; the temporary
 root getty should not be retained in a production package.
 
+### Proposed CDC-ACM application protocol
+
+The first replacement-UI transport is deliberately line-oriented so it can be
+debugged from a terminal before a binary framing layer is needed:
+
+```text
+host -> reader: PRS1 PING\n
+reader -> host: PRS1 OK PONG\n
+host -> reader: PRS1 INFO\n
+reader -> host: PRS1 OK INFO model=PRS-350 transport=cdc-acm\n
+```
+
+Unsupported requests return `PRS1 ERR unsupported-request`. The host
+implementation is in `src/serial_protocol.rs` and `src/serial.rs`; the
+read-only CLI exposes it as `prsctl serial-ping /dev/ttyACM0` and
+`prsctl serial-info /dev/ttyACM0`. The protocol service is intentionally not
+part of the installed firmware; it is used by a temporary signed test package
+so that the UI can be validated independently of the host transport.
+
 ## First device-session questions
 
 1. Does the exact x50 file service vary across PRS-x50 firmware versions?

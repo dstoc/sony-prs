@@ -45,6 +45,8 @@ group owning SCSI generic devices.
   prsctl probe /dev/sgN
   prsctl scan
   prsctl get /dev/sgN /dev/mtdblock1 mtdblock1.img
+  prsctl serial-ping /dev/ttyACM0
+  prsctl serial-info /dev/ttyACM0
   prsctl decode-request captured-request.bin
   prsctl decode-answer captured-answer.bin
 ```
