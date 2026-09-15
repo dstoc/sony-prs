@@ -475,12 +475,36 @@ full-screen update after resume. The source is from Sony's [PRS-T1 Linux
 source archive](https://oss.sony.net/Products/Linux/Audio/PRS-T1JP_20140702.html).
 
 The hardware reset restored the normal framework and USB ADB interface. The
-saved native runtime log contains `error: Invalid argument (os error 22)` after
-the initial standalone-test banner, consistent with the process exiting on
-its first post-resume display operation; the exact failing ioctl was not
-logged by this build. The next implementation step is to add per-stage
-display error reporting and make the post-resume full-screen update tolerant
-of the EPDC's resume transition.
+saved native runtime log from that first run contained `error: Invalid
+argument (os error 22)` after the initial standalone-test banner, consistent
+with the process exiting on its first post-resume framebuffer operation. The
+instrumented build identified that failure as a second mmap of `/dev/graphics/fb0`:
+the driver reported normal `600x800`, `smem_len=2179072` metadata but rejected
+the new mapping on every retry.
+
+The standby test was then extended to supply a native image through
+`MXCFB_WRITE_SSCREEN` immediately before suspend. The reader displayed
+`KERNEL STANDBY IMAGE`, proving that the native process can replace the stock
+standby screen. The runtime was corrected to retain the original framebuffer
+mapping across suspend and re-query only the framebuffer metadata after wake.
+
+A subsequent manual test produced the following complete sequence in the
+detached log:
+
+```text
+suspend request returned: Ok(())
+wake lock reacquire returned: Ok(())
+post-resume framebuffer 600x800 virtual=608x1792 smem_len=2179072 stride=1216 offsets=(0, 0)
+framebuffer mapping retained across resume
+framebuffer remap returned: Ok(())
+```
+
+The display showed `WOKE - INPUT READY`, confirming that the native process
+survived suspend, refreshed the post-resume offsets, and reached its redraw
+path. The user reported that this appeared immediately while testing the
+power button; the exact wake source (a second power transition versus USB
+resume during the same interaction) still needs event-level logging if that
+distinction matters. The retained-mapping fix is committed as `4ad50fc`.
 
 ## Exposed storage
 
