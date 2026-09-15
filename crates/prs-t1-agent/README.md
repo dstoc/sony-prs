@@ -195,6 +195,32 @@ leave the sub-CPU power-button wake path usable. The current test uses EINK
 hardware reset or `adb reboot` recovery route. After any zygote stop, a normal
 reboot is the supported way to restore Android.
 
+### Vendor power-state bridge
+
+The T1's `/system/lib/libhardware_legacy.so` exports Sony's
+`set_screen_state(int)` function. Its state values are `1=on`, `0=mem`, and
+`2=standby`. The native runtime uses a helper for this API when
+`/data/local/tmp/prs-t1-power-state` is present and falls back to writing
+`/sys/power/state` directly when it is absent.
+
+Android 2.2's dynamic linker does not support the modern PIE executable form.
+The compatibility helper is therefore built as an old-style ARM `ET_EXEC`
+with `/system/bin/linker` as its interpreter. Pull the device's `libdl` stub
+once, build the helper, and deploy it beside the native agent:
+
+```sh
+adb pull /system/lib/libdl.so /tmp/prs-t1-libdl.so
+./crates/prs-t1-agent/tools/build-power-state-helper.sh \
+    /tmp/prs-t1-libdl.so target/prs-t1-power-state
+adb push target/prs-t1-power-state /data/local/tmp/prs-t1-power-state
+adb shell chmod 755 /data/local/tmp/prs-t1-power-state
+```
+
+The helper only bridges into the installed vendor library; it does not
+replace the native runtime. The stock-framework test confirmed that the
+vendor transition can enter and leave the T1 sleep screen. The zygote-stopped
+native test still needs to verify the complete bridge-assisted wake handoff.
+
 ## What we know about this T1
 
 - Sony firmware reports `1.0.00.09270`.

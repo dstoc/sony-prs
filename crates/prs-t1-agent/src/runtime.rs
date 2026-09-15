@@ -18,6 +18,7 @@ const ABS_MT_POSITION_Y: u16 = 54;
 const KEY_POWER: u16 = 116;
 const LONG_PRESS_MICROS: u64 = 2_000_000;
 const WAKE_LOCK_NAME: &str = "prs-t1-native-test";
+const POWER_STATE_HELPER: &str = "/data/local/tmp/prs-t1-power-state";
 const O_NONBLOCK: i32 = 0x800;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -42,6 +43,13 @@ impl SuspendMode {
         match self {
             Self::EInk => b"standby\n",
             Self::Normal => b"mem\n",
+        }
+    }
+
+    fn helper_arg(self) -> &'static str {
+        match self {
+            Self::EInk => "standby",
+            Self::Normal => "mem",
         }
     }
 
@@ -227,6 +235,18 @@ fn sleep_cycle(
 }
 
 fn request_suspend(mode: SuspendMode) -> io::Result<()> {
+    if Path::new(POWER_STATE_HELPER).exists() {
+        eprintln!(
+            "standalone-test: requesting vendor suspend helper state={}",
+            mode.helper_arg()
+        );
+        return run_power_state_helper(mode.helper_arg());
+    }
+
+    eprintln!(
+        "standalone-test: vendor suspend helper unavailable; using raw sysfs state={} fallback",
+        mode.label()
+    );
     let mut state = OpenOptions::new().write(true).open("/sys/power/state")?;
     state.write_all(mode.state_bytes())?;
     state.flush()
@@ -282,9 +302,29 @@ fn wait_for_display_wake(inputs: &mut InputSet, state: &mut UiState) -> io::Resu
 }
 
 fn request_resume() -> io::Result<()> {
+    if Path::new(POWER_STATE_HELPER).exists() {
+        eprintln!("standalone-test: requesting vendor resume helper state=on");
+        return run_power_state_helper("on");
+    }
+
+    eprintln!(
+        "standalone-test: vendor resume helper unavailable; using raw sysfs on fallback"
+    );
     let mut state = OpenOptions::new().write(true).open("/sys/power/state")?;
     state.write_all(b"on\n")?;
     state.flush()
+}
+
+fn run_power_state_helper(state: &str) -> io::Result<()> {
+    let status = Command::new(POWER_STATE_HELPER).arg(state).status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!("power-state helper exited with {status}"),
+        ))
+    }
 }
 
 fn request_reboot() -> io::Result<()> {
