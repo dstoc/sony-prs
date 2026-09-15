@@ -2,7 +2,7 @@ use crate::display;
 use crate::framebuffer::NativeDisplay;
 use crate::input::{EventReader, RawEvent};
 use std::fs::OpenOptions;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::Path;
 use std::process::Command;
 use std::thread;
@@ -150,10 +150,12 @@ fn sleep_cycle(
 
     eprintln!("standalone-test: requesting suspend");
     let suspend_started = Instant::now();
-    let sleep_result = wake_lock.release().and_then(|_| request_suspend());
+    let suspend_result = wake_lock.release().and_then(|_| request_suspend());
+    eprintln!("standalone-test: suspend request queued: {suspend_result:?}");
+    let sleep_result = suspend_result.and_then(|_| wait_for_display_wake());
     let suspend_elapsed_ms = suspend_started.elapsed().as_millis() as u64;
     eprintln!(
-        "standalone-test: suspend request returned: {sleep_result:?} elapsed_ms={suspend_elapsed_ms}"
+        "standalone-test: suspend/wake wait returned: {sleep_result:?} elapsed_ms={suspend_elapsed_ms}"
     );
     let acquire_result = wake_lock.acquire();
     eprintln!("standalone-test: wake lock reacquire returned: {acquire_result:?}");
@@ -176,6 +178,16 @@ fn request_suspend() -> io::Result<()> {
     let mut state = OpenOptions::new().write(true).open("/sys/power/state")?;
     state.write_all(b"mem\n")?;
     state.flush()
+}
+
+fn wait_for_display_wake() -> io::Result<()> {
+    let mut wake = OpenOptions::new()
+        .read(true)
+        .open("/sys/power/wait_for_fb_wake")?;
+    let mut buffer = [0u8; 16];
+    let bytes = wake.read(&mut buffer)?;
+    eprintln!("standalone-test: display wake barrier released bytes={bytes}");
+    Ok(())
 }
 
 fn request_reboot() -> io::Result<()> {
