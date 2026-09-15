@@ -190,8 +190,12 @@ The inner package contains `PRS-T1 Updater.package`, the Windows helper files,
 `sdcard/updates`, `sdcard/tmp/do_update.sh`, and the recovery helper. The
 updater package SHA-256 is
 `0018a4d3246dab24b79e8643bd0e6dff6546eed4c707491aa7473bfd18e31415`.
-It has only been downloaded and inspected; no package files have been copied
-to the reader and no rooting or flashing operation has been started.
+On 2026-09-15, after confirming the Sony UI firmware version
+`1.0.00.09270`, the contents of `sdcard/` and `PRS-T1 Updater.package` were
+copied to the internal `READER` volume. The destination contains the expected
+`tmp/`, `updates/`, and updater marker, and all 28 payload files compare
+byte-for-byte with the package. The reader has not yet been shut down or
+rebooted, so no rooting or flashing operation has been started.
 
 ## USB failure evidence
 
