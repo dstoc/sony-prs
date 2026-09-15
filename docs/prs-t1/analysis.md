@@ -572,6 +572,29 @@ now polls the power evdev nodes during the wake wait and writes `on` when the
 first wake-side power event arrives; the display barrier is still used before
 the framebuffer is redrawn.
 
+### Vendor power-state bridge
+
+The installed `/system/lib/libhardware_legacy.so` was pulled from the reader
+and inspected. It exports Sony's `set_screen_state(int)` entry point, with
+state values `1=on`, `0=mem`, and `2=standby`. The function opens the legacy
+power-state files and writes the selected state through Android's vendor
+library rather than through Java code.
+
+A small old-style ARM executable was built with the T1's `/system/bin/linker`
+as its interpreter and dynamically resolved `set_screen_state()` with
+`dlopen()`/`dlsym()`. A modern PIE build crashed in the Android 2.2 linker;
+the non-PIE `ET_EXEC` build ran successfully. Invoking the helper with
+`standby` queued `request_suspend_state: standby`. After the reader showed its
+sleep screen, a second physical power-button press woke it while the stock
+Android framework was still running. This confirms the vendor transition and
+the stock wake path independently, but does not yet prove that the helper
+alone resolves the zygote-stopped native wake failure.
+
+The native runtime now uses `/data/local/tmp/prs-t1-power-state` when present
+for both the suspend state and the wake-side `on` handoff, with the direct
+`/sys/power/state` write retained as a fallback. The helper source and build
+script are kept with the T1 crate for the next isolated zygote-stopped test.
+
 ## Exposed storage
 
 The T1 file service exposes the internal eMMC as
