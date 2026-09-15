@@ -12,8 +12,9 @@ SCSI INQUIRY, initialization, partition-size queries, and filesystem reads all
 work while the reader is in its on-device `data transfer mode`. A complete
 read-only image set was acquired after a physical reconnect.
 
-No write, update-mode, reboot, or partition-mutating command has been sent to
-the T1.
+No filesystem write, package copy, or partition-mutating command has been sent
+to the T1. One documented stock recovery-selector request was tested and the
+normal boot selector was restored afterward.
 
 ## Host access
 
@@ -140,6 +141,23 @@ contains only its remote path and size header; no failed ranges were recorded.
 compressed ROMFS images, p4 and p7 as FAT filesystems, p10 as ext2, and p3 as
 an MBR/extended partition-table container. The total image set is
 1,932,477,440 bytes.
+
+## Recovery selector experiment
+
+With the reader in data-transfer mode, the documented Sony `0x70` selector was
+sent to `/dev/sg1` with mode `1` (recovery) as a four-byte little-endian value.
+The T1 returned a zero result and then displayed its shutdown/boot sequence.
+After boot, however, the host saw only the single-interface USB mass-storage
+gadget again: no `/dev/ttyACM*`, no `/dev/ttyUSB*`, and no ADB interface. ADB
+is also not installed on this host. Thus no recovery root shell was exposed by
+this attempt.
+
+The normal selector (mode `0`) was then sent once. The T1 rebooted again and
+returned as the normal mass-storage device with the three expected SCSI LUNs.
+The recovery selector was not resent. The likely next route is the T1-specific
+physical recovery-button sequence or a known T1 rescue/ADB-enabled recovery
+payload; the PRS-350 updater-package route is not assumed to apply to this
+Android-based T1.
 
 ## USB failure evidence
 
