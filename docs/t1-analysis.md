@@ -266,3 +266,37 @@ device status or driver status. After the reset, the USB interface is bound to
 the `usb-storage` driver. The reset-aware, chunk-addressable reader remains
 implemented in the host client for future recovery work, but it was not needed
 during the complete data-transfer-mode pass.
+
+## Minimal-root application cleanup
+
+Once root ADB was available, the minimal-root additions were inventoried by
+their package paths and backed up locally under
+`device-dumps/prs-t1/packages/minimal-root-installed-apks/`. The following
+packages were then removed with `pm uninstall`:
+
+```text
+com.android.calculator2
+org.adwfreak.launcher
+jackpal.androidterm
+com.speedsoftware.rootexplorer
+org.geometerplus.zlibrary.ui.android
+org.coolreader
+org.ebookdroid
+com.dropbox.android
+com.menny.android.anysoftkeyboard
+com.socialnmobile.colordict
+com.cooliris.media
+com.coinsoft.android.barshortcuts
+com.citc.colors
+com.android.packageinstaller
+```
+
+`com.noshufou.android.su` was a system APK, so Android refused a normal
+package uninstall. Its `Superuser.apk` was copied to the T1's
+`/data/local/tmp/Superuser.apk.minimal-root.backup` and removed from
+`/system/app/`; the host-side APK backup is the preferred recovery copy.
+
+After reboot, all 15 minimal-root package names were absent from
+`pm list packages -f`. `/system` was read-only again, ADB still provided a
+root shell, `/system/bin/su` remained setuid-root, and
+`/system/xbin/su` remained a symlink to it. Neither `su` path was modified.
