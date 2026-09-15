@@ -443,6 +443,26 @@ started `system_server` repeatedly crashed in `PackageManager` with a
 `system_server`, and `dispd`. We therefore must use a reboot-based recovery
 after any zygote stop until a cleaner framework restart sequence is found.
 
+### Detached suspend and wake observation
+
+The detached standalone test was then run with zygote stopped and USB
+disconnected so that the firmware power-key gate would permit the physical
+button. A brief press put the reader to sleep. On suspend, however, the
+display immediately changed from the native diagnostic pattern to the stock
+Reader sleep screen (the “Reader is in sleep mode ...” message and a book
+cover). This shows that at least one suspend-time vendor or kernel display
+path can replace the framebuffer contents even though zygote and the Android
+framework were stopped.
+
+Pressing the physical power button again while the stock sleep screen was
+shown produced no visible change. Reconnecting USB woke the reader, but it
+still displayed the stock sleep screen. The reconnect again exposed only the
+Mass Storage USB interface; ADB was therefore unavailable for the pending
+post-wake inspection of `prs-t1-agent`, zygote, `system_server`, `dispd`, and
+the native runtime log. The next test step is to restore the ADB-enabled USB
+configuration and determine whether the native process resumed and failed to
+redraw, or whether it was stopped/replaced during suspend.
+
 ## Exposed storage
 
 The T1 file service exposes the internal eMMC as
