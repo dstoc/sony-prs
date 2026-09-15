@@ -524,6 +524,40 @@ and record the displayed duration and persisted event log. A sub-second
 duration with a power event would justify a release/debounce guard; a longer
 duration with no power event would point to another wake source such as USB.
 
+### Native EINK standby wake failure
+
+The vendor power-state bridge was then installed at
+`/data/local/tmp/prs-t1-power-state`. Its `on` operation returned success while
+the reader was awake, and the native runtime logged that it selected the
+vendor `standby` operation rather than the raw `/sys/power/state` fallback.
+The reader displayed the native pre-suspend/standby status, so both the
+framebuffer standby image and the vendor suspend request were reached.
+
+With zygote stopped, USB disconnected, and the native runtime running, the
+power-key log was:
+
+```text
+power event source=E4 value=1 ... mode=ACTIVE
+power event source=E4 value=0 ... mode=ACTIVE
+power release source=E4 duration_ms=255 action=SLEEP
+drawing pre-suspend screen
+standby screen supplied
+requesting suspend mode=EINK_STANDBY
+requesting vendor suspend helper state=standby
+suspend request queued: Ok(())
+```
+
+The second physical power press produced no wake-side event, no
+`wait_for_fb_wake` return, and no post-resume redraw before the reader had to
+be reset. Reconnecting USB while suspended did not wake or re-enumerate the
+ADB interface; after reset, ADB returned and the log was preserved. This
+distinguishes the current failure from a post-resume framebuffer redraw bug:
+the native process never reached its wake handler. The current evidence does
+not yet identify whether the physical button failed to assert a Linux wake
+interrupt in this zygote-free EINK path or whether the kernel resumed without
+delivering the event. A direct vendor-resume/control experiment and kernel
+wake-source observation are the next steps.
+
 The 9 ms result then identified a more fundamental issue: on this early-suspend
 kernel, writing `mem` to `/sys/power/state` only queues the suspend work and
 returns; it does not wait for suspend or wake. The native runtime was therefore
