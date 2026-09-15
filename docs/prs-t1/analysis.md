@@ -408,6 +408,16 @@ pin, but the device's symptoms point toward the gated sub-CPU path. The next
 non-invasive verification is to run detached event readers, unplug USB, press
 the button, reconnect USB, and inspect their persisted logs and the IRQ delta.
 
+That verification was performed in normal Android: with USB connected, an
+approximately eight-second hold produced no power action; after USB was
+unplugged, a brief physical press put the reader to sleep, and reconnecting
+USB woke it again. The reconnect enumerated as mass storage only, so ADB was
+not available to retrieve the detached logs, but the reader-side behavior
+confirms that the earlier no-event result was caused by the USB/charger gate,
+not by a dead physical switch. A native test must either run with USB
+disconnected or account for this firmware policy; development recovery should
+use Wi-Fi ADB or a separate non-USB route when testing power behavior.
+
 ### Raw input injection
 
 Root ADB can invoke the T1's `/system/bin/input`, but this old build only
