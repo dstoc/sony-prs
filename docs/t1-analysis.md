@@ -159,6 +159,33 @@ physical recovery-button sequence or a known T1 rescue/ADB-enabled recovery
 payload; the PRS-350 updater-package route is not assumed to apply to this
 Android-based T1.
 
+## Western minimal root package
+
+The Western Flavor link on the [MobileRead PRST1 rooting page](https://wiki.mobileread.com/wiki/PRST1_Rooting_and_Tweaks)
+was downloaded from:
+
+```text
+https://projects.mobileread.com/reader/users/porkupan/PRST1/flash_packages/minimal-root.zip
+```
+
+The download is a 14,481,424-byte outer ZIP containing a password-protected
+inner `minimal-root.zip`. The public archive password is `mrdev`. The usable
+inner archive is preserved as
+`device-dumps/prs-t1/packages/minimal-root-western.zip`:
+
+```text
+outer sha256: 13e7356f8a41dbf5f52e95cffeab6cebd1d0f22618646d3ac03f86cde4dfaf78
+inner sha256: 96f90c7271f2406ac7f4405e311f70b61bab34b6faa2ba1a7948f6bfe09a5bae
+inner size:  14,481,214 bytes (59 files)
+```
+
+The inner package contains `PRS-T1 Updater.package`, the Windows helper files,
+`sdcard/updates`, `sdcard/tmp/do_update.sh`, and the recovery helper. The
+updater package SHA-256 is
+`0018a4d3246dab24b79e8643bd0e6dff6546eed4c707491aa7473bfd18e31415`.
+It has only been downloaded and inspected; no package files have been copied
+to the reader and no rooting or flashing operation has been started.
+
 ## USB failure evidence
 
 During the larger reads, the host reported:
