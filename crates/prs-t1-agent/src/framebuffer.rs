@@ -702,8 +702,50 @@ impl NativeDisplay {
 
     pub fn resume_after_suspend(&mut self) -> io::Result<()> {
         self.mapping.take();
+        let mut last_error = None;
+        for attempt in 0..20 {
+            match self.try_resume_after_suspend() {
+                Ok(()) => {
+                    if attempt != 0 {
+                        eprintln!(
+                            "standalone-test: framebuffer remap succeeded after {} retries",
+                            attempt
+                        );
+                    }
+                    return Ok(());
+                }
+                Err(error) => {
+                    eprintln!(
+                        "standalone-test: framebuffer remap attempt {} failed: {error}",
+                        attempt + 1
+                    );
+                    if error.raw_os_error() != Some(22) || attempt == 19 {
+                        return Err(error);
+                    }
+                    last_error = Some(error);
+                    thread::sleep(Duration::from_millis(100));
+                }
+            }
+        }
+        Err(last_error.unwrap_or_else(|| {
+            io::Error::new(io::ErrorKind::Other, "framebuffer remap retries exhausted")
+        }))
+    }
+
+    fn try_resume_after_suspend(&mut self) -> io::Result<()> {
         self.var = query_var(&self.file)?;
         self.fix = query_fix(&self.file)?;
+        eprintln!(
+            "standalone-test: post-resume framebuffer {}x{} virtual={}x{} smem_len={} stride={} offsets=({}, {})",
+            self.var.xres,
+            self.var.yres,
+            self.var.xres_virtual,
+            self.var.yres_virtual,
+            self.fix.smem_len,
+            self.fix.line_length,
+            self.var.xoffset,
+            self.var.yoffset,
+        );
         validate(&self.var, &self.fix)?;
         validate_rgb565(&self.var)?;
         self.mapping = Some(MappedFramebuffer::new_with_protection(
