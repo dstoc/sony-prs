@@ -73,7 +73,8 @@ db5f06eab591be67d4257ca518a91ec8128bbe48ba945c3395ad575b36b05a04
 ```
 
 The first p10 attempt through `/dev/sg0` produced 352,256 bytes before the
-reader timed out. It is preserved as:
+reader timed out. It was temporarily preserved as, then moved to Trash during
+cleanup:
 `device-dumps/prs-t1/raw/mmcblk2p10.partial.img`.
 
 ```text
@@ -100,13 +101,15 @@ The host client now has a reconnect-and-resume copier and an explicit forensic
 512-byte reads around persistent failures, and records any final unreadable
 sectors in a sidecar bad-range map while zero-filling only those sectors in the
 output image. Several test passes were intentionally stopped before completion
-to avoid producing a mostly zero-filled image while the reader was wedged:
+to avoid producing a mostly zero-filled image while the reader was wedged. These
+historical artifacts were moved to Trash after the complete pass; their sizes
+and hashes remain here for reference:
 
-| Artifact | Size | SHA-256 / note |
+| Historical artifact (removed) | Size | SHA-256 / note |
 |---|---:|---|
 | `mmcblk2p1.partial.img` | 49,152 | `073ccffff8ad2cd21dd09eeb1357d6f0e9955ca04cde1baee407a7a92d410c5f` |
-| `mmcblk2p1.dump3.img` | 692,224 | interrupted forensic pass; bad map retained |
-| `mmcblk2p1.dump5.img` | 147,456 | interrupted after the reader wedged at offset 0 |
+| `mmcblk2p1.dump3.img` | 724,480 | interrupted forensic pass |
+| `mmcblk2p1.dump5.img` | 233,472 | interrupted after the reader wedged at offset 0 |
 
 The `dump3` and `dump5` images are incomplete diagnostics, not complete
 filesystems. The next pass used a fresh physical reconnect and the reader's
