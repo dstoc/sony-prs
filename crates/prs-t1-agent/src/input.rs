@@ -79,10 +79,7 @@ pub fn print_inventory() {
 }
 
 pub fn capture_events(path: &Path, duration: Duration) -> io::Result<()> {
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(O_NONBLOCK)
-        .open(path)?;
+    let mut reader = EventReader::open(path)?;
     println!("event_capture={}", path.display());
     println!("duration_seconds={}", duration.as_secs());
     println!("event_size={EVENT_SIZE}");
@@ -90,29 +87,17 @@ pub fn capture_events(path: &Path, duration: Duration) -> io::Result<()> {
     println!("event_injection=false");
 
     let deadline = Instant::now() + duration;
-    let mut buffer = [0u8; EVENT_SIZE];
     let mut count = 0usize;
     while Instant::now() < deadline {
-        match (&file).read(&mut buffer) {
-            Ok(EVENT_SIZE) => {
-                let event = decode_event(&buffer);
+        match reader.read_one()? {
+            Some(event) => {
                 println!(
                     "event index={} sec={} usec={} type={} code={} value={}",
                     count, event.sec, event.usec, event.event_type, event.code, event.value
                 );
                 count += 1;
             }
-            Ok(0) => break,
-            Ok(_) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "evdev returned a partial event",
-                ));
-            }
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                thread::sleep(Duration::from_millis(20));
-            }
-            Err(error) => return Err(error),
+            None => thread::sleep(Duration::from_millis(20)),
         }
     }
     println!("event_count={count}");
@@ -130,12 +115,47 @@ fn print_node(path: &Path) {
     }
 }
 
-struct RawEvent {
-    sec: u32,
-    usec: u32,
-    event_type: u16,
-    code: u16,
-    value: i32,
+#[derive(Debug, Clone, Copy)]
+pub struct RawEvent {
+    pub sec: u32,
+    pub usec: u32,
+    pub event_type: u16,
+    pub code: u16,
+    pub value: i32,
+}
+
+impl RawEvent {
+    pub fn timestamp_micros(self) -> u64 {
+        u64::from(self.sec) * 1_000_000 + u64::from(self.usec)
+    }
+}
+
+pub struct EventReader {
+    file: File,
+}
+
+impl EventReader {
+    pub fn open(path: &Path) -> io::Result<Self> {
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(O_NONBLOCK)
+            .open(path)?;
+        Ok(Self { file })
+    }
+
+    pub fn read_one(&mut self) -> io::Result<Option<RawEvent>> {
+        let mut buffer = [0u8; EVENT_SIZE];
+        match self.file.read(&mut buffer) {
+            Ok(EVENT_SIZE) => Ok(Some(decode_event(&buffer))),
+            Ok(0) => Ok(None),
+            Ok(_) => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "evdev returned a partial event",
+            )),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
 }
 
 fn decode_event(bytes: &[u8; EVENT_SIZE]) -> RawEvent {

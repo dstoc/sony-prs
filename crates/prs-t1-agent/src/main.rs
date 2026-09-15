@@ -1,6 +1,8 @@
 mod android;
+mod display;
 mod framebuffer;
 mod input;
+mod runtime;
 
 use std::env;
 use std::io;
@@ -113,6 +115,16 @@ fn run() -> io::Result<()> {
                 &mut stdout,
             )
         }
+        Some("standalone-test") => {
+            let device = args.next().unwrap_or_else(|| DEFAULT_FRAMEBUFFER.into());
+            if args.next().is_some() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "standalone-test accepts at most one framebuffer path",
+                ));
+            }
+            runtime::run(Path::new(&device))
+        }
         Some(command) => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!("unknown command {command:?}; run `prs-t1-agent help`"),
@@ -132,7 +144,7 @@ fn probe(device: &Path) {
 
 fn print_usage() {
     println!(
-        "prs-t1-agent {}\n\nUsage:\n  prs-t1-agent probe [FRAMEBUFFER]\n  prs-t1-agent input\n  prs-t1-agent events [EVENT_DEVICE] [SECONDS]\n  prs-t1-agent capture [FRAMEBUFFER] > screen.pgm\n  prs-t1-agent render-test [FRAMEBUFFER] [SECONDS] > render-test.pgm\n\n`probe`, `input`, `events`, and `capture` are read-only. `events` logs a\nbounded raw evdev stream without grabbing or injecting events. `capture` emits\nan 8-bit grayscale PGM. `render-test` is the only write-capable command: it\nbriefly writes a centered RGB565 marker, requests a T1 e-ink update, captures\nthe framebuffer, and restores the original rectangle.",
+        "prs-t1-agent {}\n\nUsage:\n  prs-t1-agent probe [FRAMEBUFFER]\n  prs-t1-agent input\n  prs-t1-agent events [EVENT_DEVICE] [SECONDS]\n  prs-t1-agent capture [FRAMEBUFFER] > screen.pgm\n  prs-t1-agent render-test [FRAMEBUFFER] [SECONDS] > render-test.pgm\n  prs-t1-agent standalone-test [FRAMEBUFFER]\n\n`probe`, `input`, `events`, and `capture` are read-only. `events` logs a\nbounded raw evdev stream without grabbing or injecting events. `capture` emits\nan 8-bit grayscale PGM. `render-test` is a write-capable command that briefly\nwrites a centered RGB565 marker, requests a T1 e-ink update, captures the\nframebuffer, and restores the original rectangle. `standalone-test` is a\nlong-running write-capable native UI test for use after stopping zygote; it\nholds a kernel wake lock, displays input data, sleeps on a short power press,\nand reboots on a long power press.",
         env!("CARGO_PKG_VERSION")
     );
 }

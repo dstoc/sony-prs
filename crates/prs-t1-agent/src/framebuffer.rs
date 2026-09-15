@@ -579,6 +579,220 @@ impl MappedFramebuffer {
     }
 }
 
+/// A write-capable T1 framebuffer session for the native runtime.
+pub struct NativeDisplay {
+    file: File,
+    var: FbVarScreeninfo,
+    fix: FbFixScreeninfo,
+    mapping: Option<MappedFramebuffer>,
+    next_marker: u32,
+}
+
+impl NativeDisplay {
+    pub fn open(path: &Path) -> io::Result<Self> {
+        let file = OpenOptions::new().read(true).write(true).open(path)?;
+        let var = query_var(&file)?;
+        let fix = query_fix(&file)?;
+        validate(&var, &fix)?;
+        validate_rgb565(&var)?;
+        let mapping = Some(MappedFramebuffer::new_with_protection(
+            &file,
+            map_length(&fix)?,
+            PROT_READ | PROT_WRITE,
+        )?);
+        Ok(Self {
+            file,
+            var,
+            fix,
+            mapping,
+            next_marker: 10,
+        })
+    }
+
+    pub fn width(&self) -> u32 {
+        self.var.xres
+    }
+
+    pub fn height(&self) -> u32 {
+        self.var.yres
+    }
+
+    pub fn draw<F>(&mut self, paint: F) -> io::Result<()>
+    where
+        F: FnOnce(&mut DisplayCanvas<'_>),
+    {
+        let width = usize::try_from(self.var.xres)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid display width"))?;
+        let height = usize::try_from(self.var.yres)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid display height"))?;
+        let stride = usize::try_from(self.fix.line_length)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid display stride"))?;
+        let xoffset = usize::try_from(self.var.xoffset)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid display x offset"))?;
+        let yoffset = usize::try_from(self.var.yoffset)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid display y offset"))?;
+        {
+            let mapping = self.mapping.as_mut().ok_or_else(|| {
+                io::Error::new(io::ErrorKind::NotConnected, "framebuffer is not mapped")
+            })?;
+            let mut canvas = DisplayCanvas {
+                buffer: mapping.as_mut_slice(),
+                width,
+                height,
+                stride,
+                xoffset,
+                yoffset,
+            };
+            paint(&mut canvas);
+        }
+
+        let marker = self.next_marker;
+        self.next_marker = self.next_marker.wrapping_add(1).max(10);
+        request_update(
+            self.file.as_raw_fd(),
+            MxcfbRect {
+                top: 0,
+                left: 0,
+                width: self.var.xres,
+                height: self.var.yres,
+            },
+            marker,
+        )
+    }
+
+    pub fn prepare_for_suspend(&mut self) {
+        self.mapping.take();
+    }
+
+    pub fn resume_after_suspend(&mut self) -> io::Result<()> {
+        self.mapping.take();
+        self.var = query_var(&self.file)?;
+        self.fix = query_fix(&self.file)?;
+        validate(&self.var, &self.fix)?;
+        validate_rgb565(&self.var)?;
+        self.mapping = Some(MappedFramebuffer::new_with_protection(
+            &self.file,
+            map_length(&self.fix)?,
+            PROT_READ | PROT_WRITE,
+        )?);
+        Ok(())
+    }
+}
+
+pub struct DisplayCanvas<'a> {
+    buffer: &'a mut [u8],
+    width: usize,
+    height: usize,
+    stride: usize,
+    xoffset: usize,
+    yoffset: usize,
+}
+
+impl DisplayCanvas<'_> {
+    pub fn width(&self) -> usize {
+        self.width
+    }
+
+    pub fn height(&self) -> usize {
+        self.height
+    }
+
+    pub fn fill(&mut self, pixel: u16) {
+        for y in 0..self.height {
+            for x in 0..self.width {
+                self.set_pixel(x, y, pixel);
+            }
+        }
+    }
+
+    pub fn set_pixel(&mut self, x: usize, y: usize, pixel: u16) {
+        if x >= self.width || y >= self.height {
+            return;
+        }
+        let Some(offset) = self
+            .yoffset
+            .checked_add(y)
+            .and_then(|row| row.checked_mul(self.stride))
+            .and_then(|offset| {
+                self.xoffset
+                    .checked_add(x)
+                    .and_then(|column| column.checked_mul(2))
+                    .and_then(|column| offset.checked_add(column))
+            })
+        else {
+            return;
+        };
+        let Some(target) = self.buffer.get_mut(offset..offset.saturating_add(2)) else {
+            return;
+        };
+        if target.len() == 2 {
+            target.copy_from_slice(&pixel.to_ne_bytes());
+        }
+    }
+
+    pub fn fill_rect(&mut self, x: usize, y: usize, width: usize, height: usize, pixel: u16) {
+        let x_end = x.saturating_add(width).min(self.width);
+        let y_end = y.saturating_add(height).min(self.height);
+        for row in y..y_end {
+            for column in x..x_end {
+                self.set_pixel(column, row, pixel);
+            }
+        }
+    }
+
+    pub fn stroke_rect(&mut self, x: usize, y: usize, width: usize, height: usize, pixel: u16) {
+        if width == 0 || height == 0 {
+            return;
+        }
+        for column in x..x.saturating_add(width) {
+            self.set_pixel(column, y, pixel);
+            self.set_pixel(column, y.saturating_add(height - 1), pixel);
+        }
+        for row in y..y.saturating_add(height) {
+            self.set_pixel(x, row, pixel);
+            self.set_pixel(x.saturating_add(width - 1), row, pixel);
+        }
+    }
+
+    pub fn hline(&mut self, x: usize, y: usize, width: usize, pixel: u16) {
+        for column in x..x.saturating_add(width) {
+            self.set_pixel(column, y, pixel);
+        }
+    }
+
+    pub fn vline(&mut self, x: usize, y: usize, height: usize, pixel: u16) {
+        for row in y..y.saturating_add(height) {
+            self.set_pixel(x, row, pixel);
+        }
+    }
+}
+
+fn map_length(fix: &FbFixScreeninfo) -> io::Result<usize> {
+    usize::try_from(fix.smem_len).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "framebuffer memory size does not fit in usize",
+        )
+    })
+}
+
+fn validate_rgb565(var: &FbVarScreeninfo) -> io::Result<()> {
+    if var.bits_per_pixel != 16
+        || var.red.offset != 11
+        || var.red.length != 5
+        || var.green.offset != 5
+        || var.green.length != 6
+        || var.blue.offset != 0
+        || var.blue.length != 5
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "native display requires the T1 RGB565 framebuffer format",
+        ));
+    }
+    Ok(())
+}
+
 impl Drop for MappedFramebuffer {
     fn drop(&mut self) {
         let _ = unsafe { munmap(self.address, self.length) };
@@ -835,5 +1049,21 @@ mod tests {
         assert_eq!(&buffer[10..12], &[0xa5, 0xa5]);
         layout.restore(&mut buffer, &backup).unwrap();
         assert_eq!(buffer, vec![0xa5; 36]);
+    }
+
+    #[test]
+    fn display_canvas_honors_virtual_offsets() {
+        let mut buffer = vec![0xa5; 64];
+        let mut canvas = DisplayCanvas {
+            buffer: &mut buffer,
+            width: 2,
+            height: 2,
+            stride: 16,
+            xoffset: 1,
+            yoffset: 1,
+        };
+        canvas.set_pixel(0, 0, 0x1234);
+        assert_eq!(&buffer[18..20], &0x1234u16.to_ne_bytes());
+        assert_eq!(&buffer[0..2], &[0xa5, 0xa5]);
     }
 }
