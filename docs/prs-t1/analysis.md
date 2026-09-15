@@ -554,12 +554,13 @@ native process. EINK early-suspend mode leaves the sub-CPU interrupt path
 enabled, but the `wm831x_on` input driver does not call `enable_irq_wake()`.
 The separate `wake_request_from_sub_cpu` PMIC handler only acquires an Android
 wake lock; it does not itself resume the system or report a key. The native
-process cannot repair either kernel-level condition from user space. Before
-changing the kernel or boot image, a controlled stock-Android test should
-verify whether a second physical press wakes the normal `mem` suspend path
-with USB disconnected. If it does, the native EINK path needs to reproduce
-the stock sub-CPU/PMIC wake setup; if it does not, the board's kernel wake
-configuration is defective or incomplete for this firmware.
+process cannot repair either kernel-level condition from user space. A
+controlled stock-Android test then confirmed that a second physical press
+does wake the normal `mem` suspend path with USB disconnected. The hardware,
+PMIC, and stock kernel wake configuration are therefore functional; the
+failure is specific to the native EINK suspend path. The native runtime now
+accepts an optional `mem` mode so it can reproduce the stock early-suspend
+path for the next test, without removing the EINK mode used for comparison.
 
 ## Exposed storage
 
