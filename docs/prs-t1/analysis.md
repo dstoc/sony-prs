@@ -463,6 +463,25 @@ the native runtime log. The next test step is to restore the ADB-enabled USB
 configuration and determine whether the native process resumed and failed to
 redraw, or whether it was stopped/replaced during suspend.
 
+The matching Sony EPDC source resolves the display ownership question. The
+kernel driver allocates a second, hidden framebuffer-sized buffer for the
+standby image. Android supplies the stock sleep image through the driver's
+`MXCFB_WRITE_SSCREEN` ioctl; during its early-suspend callback the driver
+submits that hidden buffer with `use_standbyscreen=true`, independently of
+zygote, SurfaceFlinger, or `dispd`. Its late-resume callback powers the EPDC
+back up, clears the panel, and clears the visible framebuffer. A native UI
+must therefore expect its image to be replaced on suspend and issue a fresh
+full-screen update after resume. The source is from Sony's [PRS-T1 Linux
+source archive](https://oss.sony.net/Products/Linux/Audio/PRS-T1JP_20140702.html).
+
+The hardware reset restored the normal framework and USB ADB interface. The
+saved native runtime log contains `error: Invalid argument (os error 22)` after
+the initial standalone-test banner, consistent with the process exiting on
+its first post-resume display operation; the exact failing ioctl was not
+logged by this build. The next implementation step is to add per-stage
+display error reporting and make the post-resume full-screen update tolerant
+of the EPDC's resume transition.
+
 ## Exposed storage
 
 The T1 file service exposes the internal eMMC as
