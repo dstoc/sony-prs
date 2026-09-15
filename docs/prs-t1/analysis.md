@@ -133,9 +133,12 @@ No framebuffer write or refresh ioctl has been attempted. Display-process
 ownership, redraw races, and the effect of stopping only the Sony UI layer
 remain to be tested.
 
-The next native-runtime step is a bounded raw evdev event capture while Android
-remains active. Display-process ownership, framebuffer refresh races, and the
-smallest Android UI component that can be stopped are still unknown.
+The bounded raw evdev capture now runs against `event1` for a finite duration,
+without `EVIOCGRAB` or event injection. Its first three-second idle sample
+returned zero events; a physical touch/key sample is still needed to validate
+the event values and coordinate orientation. Display-process ownership,
+framebuffer refresh races, and the smallest Android UI component that can be
+stopped are still unknown.
 
 ## Exposed storage
 

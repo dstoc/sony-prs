@@ -272,6 +272,8 @@ writes only the PGM stream to stdout.
 
 The ARMv5 musl build has been deployed and tested on this T1's ARMv7
 userspace. It successfully captured a 600x800 screen and identified the
-touchpanel's absolute axes. The next code change should add a bounded raw
-evdev event logger, then investigate display refresh ownership while Android
-remains running.
+touchpanel's absolute axes. The bounded raw evdev logger now runs against
+`event1` without grabbing the device or injecting events. Its first three-second
+idle sample contained no events; the next hardware step is to repeat it while
+physically touching the screen and pressing keys, then investigate display
+refresh ownership while Android remains running.
