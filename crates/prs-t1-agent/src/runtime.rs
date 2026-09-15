@@ -17,6 +17,7 @@ const ABS_MT_POSITION_Y: u16 = 54;
 const KEY_POWER: u16 = 116;
 const LONG_PRESS_MICROS: u64 = 2_000_000;
 const WAKE_LOCK_NAME: &str = "prs-t1-native-test";
+const SUSPEND_STATE: &[u8] = b"standby\n";
 
 pub fn run(path: &Path) -> io::Result<()> {
     let mut display = NativeDisplay::open(path)?;
@@ -132,7 +133,7 @@ fn sleep_cycle(
     state: &mut UiState,
 ) -> io::Result<()> {
     state.mode = "SLEEPING";
-    state.message = "KERNEL STANDBY IMAGE".into();
+    state.message = "EINK STANDBY MODE".into();
     eprintln!("standalone-test: drawing pre-suspend screen");
     redraw(display, state, wake_lock.is_held())
         .map_err(|error| display_error("pre-suspend redraw", error))?;
@@ -176,7 +177,7 @@ fn sleep_cycle(
 
 fn request_suspend() -> io::Result<()> {
     let mut state = OpenOptions::new().write(true).open("/sys/power/state")?;
-    state.write_all(b"mem\n")?;
+    state.write_all(SUSPEND_STATE)?;
     state.flush()
 }
 

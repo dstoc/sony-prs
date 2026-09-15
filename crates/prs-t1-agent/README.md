@@ -131,13 +131,14 @@ reset node has been identified, so the verified escape route remains root ADB
 plus normal reboot. A native UI should hold a kernel wake lock while testing
 zygote isolation.
 
-User-mode sleep/wake will need a native state machine: hold
-`/sys/power/wake_lock` while active, release it before requesting `mem` or
-`standby`, reacquire it immediately after a kernel wake, reinitialize the
-framebuffer, and redraw the complete screen. Power-key duration should be
-handled from `event2`/`event4`. The kernel exposes the wake-lock and suspend
-interfaces, but this image's input `power/wakeup` attributes read empty, so
-actual PMIC wake behavior still needs a reader-side test.
+User-mode sleep/wake needs a native state machine: hold
+`/sys/power/wake_lock` while active, release it before requesting `standby`,
+wait on the T1's `/sys/power/wait_for_fb_wake` barrier, reacquire the lock
+after a real wake, refresh the framebuffer metadata while retaining its
+mapping, and redraw the complete screen. The EINK `standby` request is
+preferred for native mode because the normal `mem` early-suspend path disables
+the sub-CPU power-button wake IRQ. Power-key duration is handled from
+`event2`/`event4`.
 
 ## Standalone native runtime test
 
@@ -167,8 +168,9 @@ While the test is running:
 1. Touch the screen and press hardware keys; the diagnostic display should
    show the raw source, event type, code, value, coordinates, and event counts.
 2. Press and release a power key briefly. The test displays a sleep status,
-   releases its wake lock, requests `mem`, then reacquires the lock and redraws
-   after the kernel returns from suspend.
+   supplies the native standby image, releases its wake lock, requests EINK
+   `standby`, waits for `/sys/power/wait_for_fb_wake`, then reacquires the lock
+   and redraws after a real wake.
 3. Hold a power key for at least two seconds. The test requests `/system/bin/reboot`.
 
 The smoke test has verified the full-screen pattern, wake-lock acquisition,
@@ -176,11 +178,12 @@ and on-screen key data while zygote is stopped. A synthetic `KEY_POWER` pair
 also reached the native state machine and entered the kernel suspend path. The
 first attempt was attached to the ADB shell, so the process disappeared when
 USB went away and Android restarted zygote/system_server on resume. A detached
-launch survived that shell lifecycle. A physical short press was then not
-observed on any evdev node during a monitored test window, so the reader-side
-PMIC/sub-CPU power-input path remains unresolved. If the reader does not wake,
-use the hardware reset or `adb reboot` recovery route. After any zygote stop, a
-normal reboot is the supported way to restore Android.
+launch survived that shell lifecycle. The normal `mem` path was then shown to
+return immediately because `/sys/power/state` is asynchronous, and it did not
+leave the sub-CPU power-button wake path usable. The current test uses EINK
+`standby` plus the display-wake barrier. If the reader does not wake, use the
+hardware reset or `adb reboot` recovery route. After any zygote stop, a normal
+reboot is the supported way to restore Android.
 
 ## What we know about this T1
 

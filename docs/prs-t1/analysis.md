@@ -319,11 +319,13 @@ an explicit state machine:
    sources (`event2` `wm831x_on` and `event4` `sub_cpu_pwrbutton`), and keep the
    framebuffer mapped only while rendering.
 2. **Sleep request:** finish any e-ink update, preserve the last displayed
-   image, release the wake lock, and request `mem` or `standby` through
-   `/sys/power/state` if policy permits suspend.
+   image, release the wake lock, request EINK `standby` through
+   `/sys/power/state`, and wait on `/sys/power/wait_for_fb_wake` rather than
+   assuming the state write is synchronous.
 3. **Wake:** let the PMIC/kernel wake source resume the process, reacquire the
-   lock immediately, re-query/re-map `/dev/graphics/fb0`, drain the wake key,
-   and redraw the complete native screen before accepting normal input.
+   lock immediately, re-query `/dev/graphics/fb0` while retaining its existing
+   mapping, drain the wake key, and redraw the complete native screen before
+   accepting normal input.
 4. **Long power press:** measure press duration from `KEY_POWER` events and
    choose a native action such as sleep, reboot, or shutdown. A hardware reset
    remains the last-resort escape.
@@ -342,8 +344,8 @@ The native crate now has an opt-in `standalone-test` mode. It requires zygote
 to be stopped first, holds `prs-t1-native-test` through the kernel wake-lock
 interface, renders a full-screen diagnostic pattern, reads event0/event1/event2
 and event4, displays raw touch/key data, and handles power-key duration. A
-short power press requests `mem`; a power press of at least two seconds invokes
-`/system/bin/reboot`.
+short power press requests EINK `standby`; a power press of at least two
+seconds invokes `/system/bin/reboot`.
 
 The first smoke run exposed that the framebuffer changed to `yoffset=896` after
 zygote stopped. The runtime was corrected to honor both visible framebuffer
@@ -530,6 +532,16 @@ instant wake. The live T1 exposes `/sys/power/wait_for_fb_wake` as a blocking
 wake barrier. The runtime now waits on that barrier after queuing suspend,
 then reacquires its lock and redraws only after a real display wake. This fix
 is committed as `e6fd8c8` and is ready for the next physical-button test.
+
+The next test confirmed that the barrier prevented the self-induced wake, but
+the physical power button did not wake the reader from the `mem` path. The
+Sony sub-main driver sets its standby flag only for
+`EARLY_SUSPEND_MODE_NORMAL`; that path disables `SPI_SUB_INT` wake during
+suspend. The runtime now requests `standby` instead, which selects
+`EARLY_SUSPEND_MODE_EINK` and leaves the sub-CPU wake path enabled. The active
+native image is retained in EINK standby; the hidden standby buffer remains
+supplied for the normal-mode path. This change is ready for a physical wake
+test.
 
 ## Exposed storage
 
