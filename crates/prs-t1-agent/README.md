@@ -5,10 +5,10 @@ display loop and receive touch/button input. It is intentionally separate from
 the PRS-350 agent: the T1 is an Android 2.2.1 reader with a different boot,
 display, input, and service model.
 
-The binary currently implements the first read-only hardware-discovery
-milestone: framebuffer inspection and capture, Android process/service
-inspection, and evdev capability inspection. Replacing Android at boot is not
-part of this milestone.
+The binary currently implements the first hardware-discovery milestone:
+framebuffer inspection and capture, Android process/service inspection, evdev
+capability inspection, and a bounded reversible framebuffer render test.
+Replacing Android at boot is not part of this milestone.
 
 ## Design goal
 
@@ -61,6 +61,43 @@ to redirect on the reader and pull the file:
 adb shell '/data/local/tmp/prs-t1-agent capture > /data/local/tmp/t1-screen.pgm'
 adb pull /data/local/tmp/t1-screen.pgm ./t1-screen.pgm
 ```
+
+## T1 refresh ABI and bounded render test
+
+The installed `/system/lib/hw/gralloc.imx5x.so` contains the T1's vendor
+framebuffer update path. Its ioctl constants and payload size are:
+
+```text
+MXCFB_SET_AUTO_UPDATE_MODE       0x4004462d
+MXCFB_SEND_UPDATE                0x4044462e  (0x44-byte payload)
+MXCFB_WAIT_FOR_UPDATE_COMPLETE   0x4004462f
+```
+
+The `render-test` command is the first write-capable device operation. It
+requires the known T1 RGB565 format, opens `/dev/graphics/fb0` read/write,
+backs up a centered 200x120 rectangle, draws a black-and-white marker, asks
+the EPDC driver to update that region with the GC16 waveform, captures the
+current framebuffer mapping, waits for a bounded interval, and restores and
+refreshes the original rectangle. It does not stop or signal Android
+processes. The PGM proves the native marker was written to the framebuffer;
+only observation of the reader can confirm the physical e-ink panel result.
+
+The old T1 framebuffer mapping rejects `msync()` with `EINVAL`; the agent now
+follows the vendor gralloc behavior and relies on the shared mapping followed
+by the update ioctl. The tested deployment route is:
+
+```sh
+adb push ./prs-t1-agent /data/local/tmp/prs-t1-agent
+adb shell chmod 755 /data/local/tmp/prs-t1-agent
+adb shell '/data/local/tmp/prs-t1-agent render-test /dev/graphics/fb0 5 > /data/local/tmp/t1-render-test.pgm'
+adb pull /data/local/tmp/t1-render-test.pgm ./native-custom-render-test.pgm
+```
+
+The first successful run kept the marker in framebuffer memory for the full
+five-second wait, returned successfully from both update requests, and
+restored the original rectangle. `adbd`, `zygote`, and `dispd` remained
+running. This does not yet prove that Android will not redraw the region in a
+long-running native UI.
 
 ## What we know about this T1
 
@@ -126,10 +163,11 @@ The probe must record:
 - whether `mmap` succeeds and whether the visible buffer is 8-bit grayscale;
 - any Sony/e-ink-specific update ioctl or helper library used by the stock UI.
 
-The first native test should be the `capture` method above: mmap and
-checksum/capture the buffer without changing it. A later test can draw a small,
-reversible marker in a controlled area, capture the result, wait several
-seconds, and determine whether another process redraws over it.
+The first native test is the `capture` method above: mmap and capture the
+buffer without changing it. The bounded `render-test` now provides the next
+controlled step: draw a reversible marker, request the vendor EPDC update,
+capture the mapped result, wait several seconds, and check whether another
+process redraws it before restoring the original bytes.
 
 ### 2. Find who owns or writes the framebuffer
 
@@ -231,9 +269,10 @@ restart command before making the native loop persistent.
 ### Phase D — replace the visible UI temporarily
 
 Run a native test screen for a bounded period, exercise touch and buttons, then
-restore the stock UI and reboot. Do not modify boot images or init scripts for
-this phase. A `/data/local/tmp` binary and an ADB-started process are the
-preferred deployment route.
+restore the stock UI and reboot. The reversible render test is the initial
+display step; it has not yet demonstrated long-running ownership. Do not
+modify boot images or init scripts for this phase. A `/data/local/tmp` binary
+and an ADB-started process are the preferred deployment route.
 
 ### Phase E — investigate deeper Android shutdown only if necessary
 
@@ -268,7 +307,8 @@ inventory. The `input` command performs evdev ioctl capability queries without
 opening an event stream, grabbing a device, or injecting events. The `capture`
 command opens `/dev/graphics/fb0` read-only, maps the framebuffer with
 `PROT_READ`, converts the visible RGB565 pixels to an 8-bit grayscale PGM, and
-writes only the PGM stream to stdout.
+writes only the PGM stream to stdout. The `render-test` command is explicitly
+write-capable and is limited to the centered, reversible test described above.
 
 The `events` command opens one evdev node read-only and logs a finite raw event
 stream. For example, `prs-t1-agent events /dev/input/event1 10` captures ten
@@ -280,6 +320,7 @@ The ARMv5 musl build has been deployed and tested on this T1's ARMv7
 userspace. It successfully captured a 600x800 screen and identified the
 touchpanel's absolute axes. The bounded raw evdev logger now runs against
 `event1` without grabbing the device or injecting events. Its first three-second
-idle sample contained no events; the next hardware step is to repeat it while
-physically touching the screen and pressing keys, then investigate display
-refresh ownership while Android remains running.
+idle sample contained no events. The native render test also completed with
+the stock Android services still active; the next display step is to obtain
+the user's optical confirmation and then investigate long-running refresh
+ownership before mapping touch and buttons.

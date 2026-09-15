@@ -19,6 +19,13 @@ staged and applied. No partition write was issued by the host SCSI client.
 ADB now provides a root shell. A documented stock recovery-selector request
 was tested earlier and the normal boot selector was restored afterward.
 
+The native display work has now completed a bounded, reversible render test.
+The T1-specific e-ink update ABI was recovered from its installed vendor
+gralloc library, and a native ARM test wrote and refreshed a centered marker
+while Android remained running. The marker was restored afterward. No Android
+process has been stopped and no boot or partition image has been modified by
+the native display test.
+
 ## Host access
 
 The reader identifies as USB vendor/product `054c:05c2` and exposes three SCSI
@@ -67,6 +74,27 @@ the larger virtual geometry mean the native capture code must use the queried
 line length and visible dimensions; it must not assume a tightly packed
 600x800 8-bit buffer. The `mxc_epdc_fb` driver is an important lead for the
 T1-specific refresh ioctl and update semantics.
+
+### Vendor refresh ABI
+
+The installed `/system/lib/hw/gralloc.imx5x.so` was pulled and inspected on
+2026-09-15. Its update routine contains these constants:
+
+| Operation | ioctl | Evidence |
+|---|---:|---|
+| `MXCFB_SET_AUTO_UPDATE_MODE` | `0x4004462d` | vendor gralloc call with mode `0` |
+| `MXCFB_SEND_UPDATE` | `0x4044462e` | vendor gralloc call with a `0x44`-byte payload |
+| `MXCFB_WAIT_FOR_UPDATE_COMPLETE` | `0x4004462f` | vendor gralloc call with an update marker |
+
+The native agent models the payload as a 0x44-byte `mxcfb_update_data`: the
+standard update rectangle, waveform mode, update mode, marker, ambient
+temperature sentinel, flags, alternate-buffer fields, and trailing reserved
+words. The test uses the GC16 waveform, partial update mode, ambient
+temperature (`0x1000`), and marker IDs 1 and 2 for the test and restore.
+
+The framebuffer mapping rejects `msync()` with `EINVAL` on this image. The
+vendor gralloc does not call `msync()` either, so the native test relies on the
+shared read/write mapping followed by the EPDC update ioctl.
 
 The input devices are:
 
@@ -154,9 +182,56 @@ remain to be tested.
 The bounded raw evdev capture now runs against `event1` for a finite duration,
 without `EVIOCGRAB` or event injection. Its first three-second idle sample
 returned zero events; a physical touch/key sample is still needed to validate
-the event values and coordinate orientation. Display-process ownership,
-framebuffer refresh races, and the smallest Android UI component that can be
-stopped are still unknown.
+the event values and coordinate orientation.
+
+### Reversible native render test
+
+Before the write-capable test, a fresh stock framebuffer capture after reboot
+was preserved as `device-dumps/prs-t1/captures/stock-after-render-recovery.pgm`:
+
+```text
+size: 480015 bytes
+sha256: d0ce520160b0863257ba57724dd1be5585a11755f61861e9962b9d47afb93d01
+```
+
+The first harness attempt wrote its marker but stopped at `msync()` with
+`EINVAL`, before issuing an update. The reader was rebooted through the normal
+ADB route to restore a clean Android display state. The corrected test then:
+
+1. opened `/dev/graphics/fb0` read/write and mapped it once with
+   `PROT_READ|PROT_WRITE`;
+2. backed up and replaced the centered rectangle `(left=200, top=340,
+   width=200, height=120)` with a black-and-white RGB565 marker;
+3. sent the vendor partial GC16 update and waited for marker `1`;
+4. captured the marker from the existing mapping into
+   `native-custom-render-test.pgm`;
+5. observed that the mapped rectangle still differed from the backup before
+   and after the five-second wait; and
+6. restored the original bytes and sent a second update with marker `2`.
+
+The captured custom-render artifact is:
+
+```text
+size: 480015 bytes
+sha256: d75b76a5f4ce592ffdaf0a94f0c6f79eaa6daf471b7c9d3fe437354d0543e536
+```
+
+A read-only capture taken after the restore has sha256
+`8dad2ad301c64952381982e1b419338989624353ed0b791c89f531db1a5bf9f1`.
+Its whole-frame hash differs from the pre-test capture because Android changed
+pixels outside the test rectangle, but the 200x120 test rectangle itself is
+byte-for-byte identical in the two stock captures. This supports restoration
+of the bytes touched by the test, not a claim that the entire Android screen
+was frozen.
+
+The update calls returned successfully, the framebuffer marker stayed present
+for the full wait, and `adbd`, `zygote`, and `dispd` remained running. This is
+the first evidence that native writes plus the T1 refresh ABI can operate
+beside the stock Android stack. It is not an optical screenshot of the panel,
+and it does not yet prove that another Android component will not redraw the
+same region during a longer native UI run. Display ownership and the smallest
+component that can be suspended remain unverified; zygote and
+`system_server` were not stopped.
 
 ## Exposed storage
 
