@@ -405,7 +405,7 @@ fn request_update(fd: c_int, rect: MxcfbRect, marker: u32) -> io::Result<()> {
         )
     };
     if result < 0 {
-        return Err(io::Error::last_os_error());
+        return Err(ioctl_error("set auto-update mode"));
     }
 
     let mut update = MxcfbUpdateData {
@@ -419,7 +419,7 @@ fn request_update(fd: c_int, rect: MxcfbRect, marker: u32) -> io::Result<()> {
     debug_assert_eq!(std::mem::size_of::<MxcfbUpdateData>(), 0x44);
     let result = unsafe { ioctl(fd, MXCFB_SEND_UPDATE, &mut update as *mut MxcfbUpdateData) };
     if result < 0 {
-        return Err(io::Error::last_os_error());
+        return Err(ioctl_error("send display update"));
     }
 
     let mut completed_marker = marker;
@@ -431,9 +431,14 @@ fn request_update(fd: c_int, rect: MxcfbRect, marker: u32) -> io::Result<()> {
         )
     };
     if result < 0 {
-        return Err(io::Error::last_os_error());
+        return Err(ioctl_error("wait for display update"));
     }
     Ok(())
+}
+
+fn ioctl_error(stage: &str) -> io::Error {
+    let error = io::Error::last_os_error();
+    io::Error::new(error.kind(), format!("{stage}: {error}"))
 }
 
 fn query_var(file: &File) -> io::Result<FbVarScreeninfo> {

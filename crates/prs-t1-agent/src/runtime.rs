@@ -30,7 +30,8 @@ pub fn run(path: &Path) -> io::Result<()> {
         display.width(),
         display.height()
     );
-    redraw(&mut display, &state, wake_lock.is_held())?;
+    redraw(&mut display, &state, wake_lock.is_held())
+        .map_err(|error| display_error("initial redraw", error))?;
 
     loop {
         let mut redraw_needed = false;
@@ -53,12 +54,14 @@ pub fn run(path: &Path) -> io::Result<()> {
             PowerAction::Reboot => {
                 state.mode = "REBOOTING";
                 state.message = "REBOOT REQUESTED".into();
-                redraw(&mut display, &state, wake_lock.is_held())?;
+                redraw(&mut display, &state, wake_lock.is_held())
+                    .map_err(|error| display_error("reboot redraw", error))?;
                 request_reboot()?;
                 return Ok(());
             }
             PowerAction::None if redraw_needed => {
-                redraw(&mut display, &state, wake_lock.is_held())?;
+                redraw(&mut display, &state, wake_lock.is_held())
+                    .map_err(|error| display_error("input redraw", error))?;
             }
             PowerAction::None => {}
         }
@@ -115,6 +118,10 @@ fn redraw(display: &mut NativeDisplay, state: &UiState, wake_lock_held: bool) ->
     display::draw_screen(display, &lines)
 }
 
+fn display_error(stage: &str, error: io::Error) -> io::Error {
+    io::Error::new(error.kind(), format!("{stage}: {error}"))
+}
+
 fn sleep_cycle(
     display: &mut NativeDisplay,
     wake_lock: &mut WakeLock,
@@ -122,22 +129,29 @@ fn sleep_cycle(
 ) -> io::Result<()> {
     state.mode = "SLEEPING";
     state.message = "RELEASE WAKE LOCK".into();
-    redraw(display, state, wake_lock.is_held())?;
+    eprintln!("standalone-test: drawing pre-suspend screen");
+    redraw(display, state, wake_lock.is_held())
+        .map_err(|error| display_error("pre-suspend redraw", error))?;
     display.prepare_for_suspend();
 
+    eprintln!("standalone-test: requesting suspend");
     let sleep_result = wake_lock.release().and_then(|_| request_suspend());
+    eprintln!("standalone-test: suspend request returned: {sleep_result:?}");
     let acquire_result = wake_lock.acquire();
+    eprintln!("standalone-test: wake lock reacquire returned: {acquire_result:?}");
     let resume_result = display.resume_after_suspend();
+    eprintln!("standalone-test: framebuffer remap returned: {resume_result:?}");
 
     sleep_result?;
     acquire_result?;
-    resume_result?;
+    resume_result.map_err(|error| display_error("post-resume framebuffer remap", error))?;
 
     state.mode = "ACTIVE";
     state.message = "WOKE - INPUT READY".into();
     state.last_power_duration_ms = None;
     state.ignore_power_until = Some(Instant::now() + Duration::from_secs(2));
     redraw(display, state, wake_lock.is_held())
+        .map_err(|error| display_error("post-resume redraw", error))
 }
 
 fn request_suspend() -> io::Result<()> {
