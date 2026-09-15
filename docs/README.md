@@ -15,3 +15,4 @@
 ## PRS-T1
 
 - [T1 analysis](prs-t1/analysis.md)
+- [Native runtime plan](../crates/prs-t1-agent/README.md)

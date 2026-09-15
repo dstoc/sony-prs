@@ -13,6 +13,7 @@ are tracked separately.
 - `prs350-wire`: PRS-350 development serial wire format.
 - `prs350-devctl`: stateful PRS-350 development serial controls.
 - `prs350-agent`: cross-compiled ARM-side PRS-350 development agent.
+- `prs-t1-agent`: experimental native PRS-T1 framebuffer/input runtime plan.
 
 The SCSI layers contain no write, delete, update-mode, flash, or arbitrary
 command API. The development tools are intentionally separate because they
@@ -65,6 +66,7 @@ not be treated as a production interface.
 
 - [PRS-350 documentation](docs/prs350/)
 - [PRS-T1 analysis](docs/prs-t1/analysis.md)
+- [PRS-T1 native runtime plan](crates/prs-t1-agent/README.md)
 - [ignored device-dump archive](docs/prs350/device-dumps.md)
 - [workspace crates](crates/)
 - [PRS-350 helper scripts](tools/prs350/)

@@ -1,0 +1,7 @@
+[package]
+name = "prs-t1-agent"
+version = "0.1.0"
+edition = "2021"
+description = "Experimental native framebuffer and input runtime for Sony PRS-T1"
+license = "MIT OR Apache-2.0"
+publish = false

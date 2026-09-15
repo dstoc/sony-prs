@@ -6,5 +6,6 @@ members = [
     "crates/prsctl",
     "crates/prs350-devctl",
     "crates/prs350-agent",
+    "crates/prs-t1-agent",
 ]
 resolver = "2"

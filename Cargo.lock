@@ -3,6 +3,10 @@
 version = 4
 
 [[package]]
+name = "prs-t1-agent"
+version = "0.1.0"
+
+[[package]]
 name = "prs350-agent"
 version = "0.1.0"
 dependencies = [
