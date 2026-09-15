@@ -117,6 +117,24 @@ This makes `dispd` and the SurfaceFlinger-compatible service path the first
 display-ownership candidates; it is not evidence that zygote should be
 stopped.
 
+The first open-file ownership snapshot refined this: `system_server` held four
+descriptors for `/dev/graphics/fb0` and descriptors for all five event devices,
+while `dispd` and `zygote` held no framebuffer descriptor. The PIDs are
+ephemeral, but the descriptor targets were:
+
+```text
+system_server -> /dev/graphics/fb0 (four descriptors)
+system_server -> /dev/input/event0..event4
+```
+
+This does not prove which Java service issued the framebuffer ioctls, but it
+does show that stopping zygote would be a broad way of killing the current
+direct owner: zygote is the parent of `system_server`. The working hypothesis
+is now to identify the Sony display code inside or below `system_server`, or
+use a controlled display-service transition, before considering any zygote
+stop. `dispd` remains relevant because it is an init-managed display service,
+but it did not hold the node during this idle snapshot.
+
 The native `capture` command opened `/dev/graphics/fb0` read-only and emitted a
 valid 600x800, 16-bpp-to-gray PGM. The preserved ignored artifact is
 `device-dumps/prs-t1/captures/native-agent-framebuffer.pgm`:
