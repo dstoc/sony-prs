@@ -99,6 +99,23 @@ restored the original rectangle. `adbd`, `zygote`, and `dispd` remained
 running. This does not yet prove that Android will not redraw the region in a
 long-running native UI.
 
+A follow-up 60-second run recorded a physical touch and `KEY_LEFT` button
+press while the marker was active. The exact marker was not preserved after
+input: Android navigated from page 2 back to page 1 and redrew the framebuffer
+over the marker. No Android process was stopped. Persistent native rendering
+therefore needs a display-ownership boundary before touch/button mapping is
+useful.
+
+Root ADB can reproduce the hardware button path with `sendevent`; Linux key
+codes 106 (`KEY_RIGHT`) and 105 (`KEY_LEFT`) navigated the reader between its
+two home pages. The Android `input keyevent` utility is present but did not
+navigate this vendor UI with the corresponding Android DPAD keycodes.
+
+Stopping `zygote` also stopped `system_server` and removed the framework
+display/input services; the marker then survived a raw button injection. A
+manual `start zygote` entered a `PackageManager` crash loop, so normal reboot
+is currently the safe recovery path after this ownership experiment.
+
 ## What we know about this T1
 
 - Sony firmware reports `1.0.00.09270`.
@@ -321,6 +338,6 @@ userspace. It successfully captured a 600x800 screen and identified the
 touchpanel's absolute axes. The bounded raw evdev logger now runs against
 `event1` without grabbing the device or injecting events. Its first three-second
 idle sample contained no events. The native render test also completed with
-the stock Android services still active; the next display step is to obtain
-the user's optical confirmation and then investigate long-running refresh
-ownership before mapping touch and buttons.
+the stock Android services still active; input now confirms that Android
+redraws over the native framebuffer. The next display step is to resolve that
+ownership boundary before mapping touch and buttons.

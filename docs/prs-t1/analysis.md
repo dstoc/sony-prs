@@ -233,6 +233,57 @@ same region during a longer native UI run. Display ownership and the smallest
 component that can be suspended remain unverified; zygote and
 `system_server` were not stopped.
 
+### Input-triggered redraw
+
+A stricter 60-second render test ran with the marker visible while the native
+agent also recorded `/dev/input/event1` (the touchpanel) and
+`/dev/input/event0` (gpio-keys). The pre-input capture was visually converted
+to PNG and showed the marker over page 2 of the stock Android UI. During the
+wait, a physical tap and button press were performed. The logs recorded:
+
+```text
+touch event1: ABS code 54 value 771, ABS code 53 value 73, then SYN_REPORT
+button event0: key code 105 value 1, then value 0
+```
+
+The touch coordinates correspond to the lower-left page-2 navigation control;
+key code 105 is `KEY_LEFT` on this input device. The post-input framebuffer
+capture showed Android page 1, with the native marker gone. The agent reported
+`framebuffer_marker_changed_after_wait=true` but
+`exact_marker_preserved_after_wait=false`; the latter is the important result.
+The marker region changed because the existing Android UI redrew the screen in
+response to input. No Android process was stopped, grabbed, or signaled.
+
+This confirms that direct framebuffer access is not sufficient for a
+persistent native UI while Android remains the active display owner. The next
+display investigation must determine the smallest safe ownership/refresh
+boundary; touch and button mapping should follow that decision.
+
+### Raw input injection
+
+Root ADB can invoke the T1's `/system/bin/input`, but this old build only
+supports `text` and `keyevent`, and Android-level DPAD keyevents did not
+navigate the reader UI. The gpio-key path can be reproduced with root
+`sendevent`: injecting Linux key code 106 (`KEY_RIGHT`) navigated from page 1
+to page 2, and key code 105 (`KEY_LEFT`) returned to page 1. This gives us a
+repeatable way to exercise Android input without physical access to the
+reader. The native agent itself remains read-only with respect to input.
+
+### Zygote ownership boundary test
+
+With `dispd` and `adbd` left running, `stop zygote` stopped the Android
+`system_server` process and removed the framework services, including
+SurfaceFlinger. A 15-second native render test plus an injected raw button
+event reported `exact_marker_preserved_after_wait=true`, unlike the same test
+with Android running. This is strong evidence that zygote/system_server is the
+effective redraw and input-response boundary for this firmware.
+
+Starting zygote again in place was not a valid recovery route: the newly
+started `system_server` repeatedly crashed in `PackageManager` with a
+`NullPointerException`. A normal reboot restored root ADB, `zygote`,
+`system_server`, and `dispd`. We therefore must use a reboot-based recovery
+after any zygote stop until a cleaner framework restart sequence is found.
+
 ## Exposed storage
 
 The T1 file service exposes the internal eMMC as
