@@ -130,6 +130,14 @@ reset node has been identified, so the verified escape route remains root ADB
 plus normal reboot. A native UI should hold a kernel wake lock while testing
 zygote isolation.
 
+User-mode sleep/wake will need a native state machine: hold
+`/sys/power/wake_lock` while active, release it before requesting `mem` or
+`standby`, reacquire it immediately after a kernel wake, reinitialize the
+framebuffer, and redraw the complete screen. Power-key duration should be
+handled from `event2`/`event4`. The kernel exposes the wake-lock and suspend
+interfaces, but this image's input `power/wakeup` attributes read empty, so
+actual PMIC wake behavior still needs a reader-side test.
+
 ## What we know about this T1
 
 - Sony firmware reports `1.0.00.09270`.

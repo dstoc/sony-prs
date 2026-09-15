@@ -299,6 +299,32 @@ The verified recovery route is root ADB followed by a normal `adb reboot`.
 the framework. A native UI should also hold a kernel wake lock while zygote is
 stopped so that recovery does not depend on a suspended USB link.
 
+### User-mode sleep/wake design
+
+In a user-mode native UI, the replacement for Android's power policy should be
+an explicit state machine:
+
+1. **Active:** hold a named lock through `/sys/power/wake_lock`, poll the power
+   sources (`event2` `wm831x_on` and `event4` `sub_cpu_pwrbutton`), and keep the
+   framebuffer mapped only while rendering.
+2. **Sleep request:** finish any e-ink update, preserve the last displayed
+   image, release the wake lock, and request `mem` or `standby` through
+   `/sys/power/state` if policy permits suspend.
+3. **Wake:** let the PMIC/kernel wake source resume the process, reacquire the
+   lock immediately, re-query/re-map `/dev/graphics/fb0`, drain the wake key,
+   and redraw the complete native screen before accepting normal input.
+4. **Long power press:** measure press duration from `KEY_POWER` events and
+   choose a native action such as sleep, reboot, or shutdown. A hardware reset
+   remains the last-resort escape.
+
+The `power/wakeup` attributes exist under all five input devices but read back
+empty on this legacy kernel, so wake capability is not yet proven from sysfs.
+The `wm831x_on` PMIC path is the best candidate for a zygote-independent wake;
+touch wake and the exact long-press/reset behavior require a reader-side
+test. The development configuration should hold the wake lock continuously,
+which also keeps the USB/ADB recovery path available. Production user mode
+can later add suspend once the PMIC wake path is verified.
+
 ### Raw input injection
 
 Root ADB can invoke the T1's `/system/bin/input`, but this old build only
