@@ -522,6 +522,15 @@ and record the displayed duration and persisted event log. A sub-second
 duration with a power event would justify a release/debounce guard; a longer
 duration with no power event would point to another wake source such as USB.
 
+The 9 ms result then identified a more fundamental issue: on this early-suspend
+kernel, writing `mem` to `/sys/power/state` only queues the suspend work and
+returns; it does not wait for suspend or wake. The native runtime was therefore
+reacquiring its wake lock and redrawing immediately, producing a self-induced
+instant wake. The live T1 exposes `/sys/power/wait_for_fb_wake` as a blocking
+wake barrier. The runtime now waits on that barrier after queuing suspend,
+then reacquires its lock and redraws only after a real display wake. This fix
+is committed as `e6fd8c8` and is ready for the next physical-button test.
+
 ## Exposed storage
 
 The T1 file service exposes the internal eMMC as
