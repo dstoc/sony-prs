@@ -391,6 +391,23 @@ the switch and its board-level connection to the WM831x or sub-CPU, using the
 service documentation or electrical/IRQ observation; user-space input handling
 cannot recover a signal absent at that layer.
 
+### USB/ADB power-key gate
+
+The matching `sub_cpu-pwrbutton.c` source adds an important condition before
+emitting `event4`: unless `CONFIG_USB_G_SERIAL_MODULE` is set, it allows the
+power key only when AC is online and charger detection is complete, or when
+neither USB nor AC is online. The running kernel reports
+`CONFIG_USB_G_SERIAL` unset, and the live power-supply nodes report
+`sub_cpu_usb/online=1` and `sub_cpu_ac/online=0` while the ADB cable is
+connected. That combination suppresses the sub-CPU power-key event by design.
+
+This explains why a physical press can appear dead in the current ADB-connected
+test even under an otherwise normal Android boot. The WM831x `event2` path is
+separate and should still be observed if the switch is wired to the PMIC ON
+pin, but the device's symptoms point toward the gated sub-CPU path. The next
+non-invasive verification is to run detached event readers, unplug USB, press
+the button, reconnect USB, and inspect their persisted logs and the IRQ delta.
+
 ### Raw input injection
 
 Root ADB can invoke the T1's `/system/bin/input`, but this old build only
