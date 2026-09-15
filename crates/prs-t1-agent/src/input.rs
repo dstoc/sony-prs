@@ -1,15 +1,20 @@
 use std::fs;
 use std::fs::File;
-use std::io;
+use std::io::{self, Read};
 use std::os::fd::AsRawFd;
 use std::os::raw::{c_int, c_ulong};
+use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::{Duration, Instant};
 
 const EV_SYN: usize = 0;
 const EV_ABS: usize = 3;
 const ABS_MAX: usize = 64;
 const EVENT_BITS_BYTES: usize = 8;
+const EVENT_SIZE: usize = 16;
+const O_NONBLOCK: i32 = 0x800;
 
 #[repr(C)]
 #[derive(Default, Debug, Clone, Copy)]
@@ -73,6 +78,47 @@ pub fn print_inventory() {
     }
 }
 
+pub fn capture_events(path: &Path, duration: Duration) -> io::Result<()> {
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(O_NONBLOCK)
+        .open(path)?;
+    println!("event_capture={}", path.display());
+    println!("duration_seconds={}", duration.as_secs());
+    println!("event_size={EVENT_SIZE}");
+    println!("evdev_grab=false");
+    println!("event_injection=false");
+
+    let deadline = Instant::now() + duration;
+    let mut buffer = [0u8; EVENT_SIZE];
+    let mut count = 0usize;
+    while Instant::now() < deadline {
+        match (&file).read(&mut buffer) {
+            Ok(EVENT_SIZE) => {
+                let event = decode_event(&buffer);
+                println!(
+                    "event index={} sec={} usec={} type={} code={} value={}",
+                    count, event.sec, event.usec, event.event_type, event.code, event.value
+                );
+                count += 1;
+            }
+            Ok(0) => break,
+            Ok(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "evdev returned a partial event",
+                ));
+            }
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                thread::sleep(Duration::from_millis(20));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    println!("event_count={count}");
+    Ok(())
+}
+
 fn print_node(path: &Path) {
     match fs::metadata(path) {
         Ok(metadata) => println!(
@@ -82,6 +128,48 @@ fn print_node(path: &Path) {
         ),
         Err(error) => println!("  path={} unavailable={error}", path.display()),
     }
+}
+
+struct RawEvent {
+    sec: u32,
+    usec: u32,
+    event_type: u16,
+    code: u16,
+    value: i32,
+}
+
+fn decode_event(bytes: &[u8; EVENT_SIZE]) -> RawEvent {
+    RawEvent {
+        sec: u32::from_ne_bytes(bytes[0..4].try_into().unwrap()),
+        usec: u32::from_ne_bytes(bytes[4..8].try_into().unwrap()),
+        event_type: u16::from_ne_bytes(bytes[8..10].try_into().unwrap()),
+        code: u16::from_ne_bytes(bytes[10..12].try_into().unwrap()),
+        value: i32::from_ne_bytes(bytes[12..16].try_into().unwrap()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{decode_event, EVENT_SIZE};
+
+    #[test]
+    fn decodes_32_bit_linux_input_event_layout() {
+        let mut bytes = [0u8; EVENT_SIZE];
+        bytes[0..4].copy_from_slice(&123u32.to_ne_bytes());
+        bytes[4..8].copy_from_slice(&456u32.to_ne_bytes());
+        bytes[8..10].copy_from_slice(&1u16.to_ne_bytes());
+        bytes[10..12].copy_from_slice(&ABS_X_CODE.to_ne_bytes());
+        bytes[12..16].copy_from_slice(&789i32.to_ne_bytes());
+
+        let event = decode_event(&bytes);
+        assert_eq!(event.sec, 123);
+        assert_eq!(event.usec, 456);
+        assert_eq!(event.event_type, 1);
+        assert_eq!(event.code, ABS_X_CODE);
+        assert_eq!(event.value, 789);
+    }
+
+    const ABS_X_CODE: u16 = 0;
 }
 
 struct EventInfo {

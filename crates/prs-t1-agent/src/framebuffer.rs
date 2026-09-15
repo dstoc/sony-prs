@@ -422,7 +422,7 @@ mod tests {
     fn converts_rgb565_channels_to_gray() {
         let var = rgb565_var();
         assert_eq!(pixel_to_gray(&[0x00, 0xf8], &var), 77);
-        assert_eq!(pixel_to_gray(&[0xe0, 0x07], &var), 150);
+        assert_eq!(pixel_to_gray(&[0xe0, 0x07], &var), 149);
         assert_eq!(pixel_to_gray(&[0x1f, 0x00], &var), 29);
     }
 

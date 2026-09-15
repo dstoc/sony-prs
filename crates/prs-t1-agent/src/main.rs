@@ -6,6 +6,7 @@ use std::env;
 use std::io;
 use std::path::Path;
 use std::sync::atomic::{compiler_fence, Ordering};
+use std::time::Duration;
 
 const DEFAULT_FRAMEBUFFER: &str = "/dev/graphics/fb0";
 
@@ -43,6 +44,28 @@ fn run() -> io::Result<()> {
             }
             input::print_inventory();
             Ok(())
+        }
+        Some("events") => {
+            let device = args.next().unwrap_or_else(|| "/dev/input/event1".into());
+            let seconds = args
+                .next()
+                .map(|value| {
+                    value.parse::<u64>().map_err(|_| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "event duration is not an integer",
+                        )
+                    })
+                })
+                .transpose()?
+                .unwrap_or(10);
+            if args.next().is_some() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "events accepts DEVICE and optional SECONDS",
+                ));
+            }
+            input::capture_events(Path::new(&device), Duration::from_secs(seconds))
         }
         Some("capture") => {
             let device = args.next().unwrap_or_else(|| DEFAULT_FRAMEBUFFER.into());
@@ -82,7 +105,7 @@ fn probe(device: &Path) {
 
 fn print_usage() {
     println!(
-        "prs-t1-agent {}\n\nUsage:\n  prs-t1-agent probe [FRAMEBUFFER]\n  prs-t1-agent input\n  prs-t1-agent capture [FRAMEBUFFER] > screen.pgm\n\nThe current commands are read-only. `probe` inventories framebuffer, Android\nprocess, and input state. `capture` emits an 8-bit grayscale PGM without\nwriting the framebuffer or issuing a display-refresh ioctl.",
+        "prs-t1-agent {}\n\nUsage:\n  prs-t1-agent probe [FRAMEBUFFER]\n  prs-t1-agent input\n  prs-t1-agent events [EVENT_DEVICE] [SECONDS]\n  prs-t1-agent capture [FRAMEBUFFER] > screen.pgm\n\nThe current commands are read-only. `probe` inventories framebuffer, Android\nprocess, and input state. `events` logs a bounded raw evdev stream without\ngrabbing or injecting events. `capture` emits an 8-bit grayscale PGM without\nwriting the framebuffer or issuing a display-refresh ioctl.",
         env!("CARGO_PKG_VERSION")
     );
 }
