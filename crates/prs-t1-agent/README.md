@@ -176,9 +176,11 @@ While the test is running:
 1. Touch the screen and press hardware keys; the diagnostic display should
    show the raw source, event type, code, value, coordinates, and event counts.
 2. Press and release a power key briefly. The test displays a sleep status,
-   supplies the native standby image, releases its wake lock, requests EINK
-   `standby`, waits for `/sys/power/wait_for_fb_wake`, then reacquires the lock
-   and redraws after a real wake.
+   supplies the native standby image, releases its wake lock, requests the
+   selected suspend mode, and waits for `/sys/power/wait_for_fb_wake`. During
+   that wait it continues monitoring the power evdev nodes; a wake-side power
+   event causes it to request `on`, matching the framework's early-resume
+   handoff, before it reacquires the lock and redraws.
 3. Hold a power key for at least two seconds. The test requests `/system/bin/reboot`.
 
 The smoke test has verified the full-screen pattern, wake-lock acquisition,

@@ -562,6 +562,16 @@ failure is specific to the native EINK suspend path. The native runtime now
 accepts an optional `mem` mode so it can reproduce the stock early-suspend
 path for the next test, without removing the EINK mode used for comparison.
 
+The stock-style native `mem` test then also failed to produce a visible wake,
+while normal Android continued to sleep and wake correctly. The important
+difference is that the Android framework handles the power key after the
+hardware wake interrupt and requests `on`, which clears the kernel's pending
+early-suspend request and runs the late-resume handlers. The native runtime
+had been blocked in `wait_for_fb_wake` and could not perform that handoff. It
+now polls the power evdev nodes during the wake wait and writes `on` when the
+first wake-side power event arrives; the display barrier is still used before
+the framebuffer is redrawn.
+
 ## Exposed storage
 
 The T1 file service exposes the internal eMMC as

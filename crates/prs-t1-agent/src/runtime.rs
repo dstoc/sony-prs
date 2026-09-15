@@ -3,6 +3,7 @@ use crate::framebuffer::NativeDisplay;
 use crate::input::{EventReader, RawEvent};
 use std::fs::OpenOptions;
 use std::io::{self, Read, Write};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::process::Command;
 use std::thread;
@@ -17,6 +18,7 @@ const ABS_MT_POSITION_Y: u16 = 54;
 const KEY_POWER: u16 = 116;
 const LONG_PRESS_MICROS: u64 = 2_000_000;
 const WAKE_LOCK_NAME: &str = "prs-t1-native-test";
+const O_NONBLOCK: i32 = 0x800;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SuspendMode {
@@ -83,9 +85,13 @@ pub fn run(path: &Path, suspend_mode: SuspendMode) -> io::Result<()> {
         }
 
         match action {
-            PowerAction::Sleep => {
-                sleep_cycle(&mut display, &mut wake_lock, &mut state, suspend_mode)?
-            }
+            PowerAction::Sleep => sleep_cycle(
+                &mut display,
+                &mut wake_lock,
+                &mut inputs,
+                &mut state,
+                suspend_mode,
+            )?,
             PowerAction::Reboot => {
                 state.mode = "REBOOTING";
                 state.message = "REBOOT REQUESTED".into();
@@ -164,6 +170,7 @@ fn display_error(stage: &str, error: io::Error) -> io::Error {
 fn sleep_cycle(
     display: &mut NativeDisplay,
     wake_lock: &mut WakeLock,
+    inputs: &mut InputSet,
     state: &mut UiState,
     suspend_mode: SuspendMode,
 ) -> io::Result<()> {
@@ -197,7 +204,7 @@ fn sleep_cycle(
         .release()
         .and_then(|_| request_suspend(suspend_mode));
     eprintln!("standalone-test: suspend request queued: {suspend_result:?}");
-    let sleep_result = suspend_result.and_then(|_| wait_for_display_wake());
+    let sleep_result = suspend_result.and_then(|_| wait_for_display_wake(inputs, state));
     let suspend_elapsed_ms = suspend_started.elapsed().as_millis() as u64;
     eprintln!(
         "standalone-test: suspend/wake wait returned: {sleep_result:?} elapsed_ms={suspend_elapsed_ms}"
@@ -225,14 +232,59 @@ fn request_suspend(mode: SuspendMode) -> io::Result<()> {
     state.flush()
 }
 
-fn wait_for_display_wake() -> io::Result<()> {
+fn wait_for_display_wake(inputs: &mut InputSet, state: &mut UiState) -> io::Result<()> {
     let mut wake = OpenOptions::new()
         .read(true)
+        .custom_flags(O_NONBLOCK)
         .open("/sys/power/wait_for_fb_wake")?;
     let mut buffer = [0u8; 16];
-    let bytes = wake.read(&mut buffer)?;
-    eprintln!("standalone-test: display wake barrier released bytes={bytes}");
-    Ok(())
+    let mut resume_requested = false;
+
+    loop {
+        match wake.read(&mut buffer) {
+            Ok(bytes) if bytes > 0 => {
+                eprintln!("standalone-test: display wake barrier released bytes={bytes}");
+                return Ok(());
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+            Err(error) => return Err(error),
+        }
+
+        for source in &mut inputs.sources {
+            loop {
+                let Some(event) = source.reader.read_one()? else {
+                    break;
+                };
+                if source.kind.is_power()
+                    && event.event_type == EVENT_KEY
+                    && event.code == KEY_POWER
+                {
+                    state.last_key = Some((source.kind, event));
+                    state.key_events += 1;
+                    eprintln!(
+                        "standalone-test: wake-side power event source={} value={} timestamp_us={}",
+                        source.kind.label(),
+                        event.value,
+                        event.timestamp_micros(),
+                    );
+                    if !resume_requested && matches!(event.value, 0..=2) {
+                        eprintln!("standalone-test: requesting early resume");
+                        request_resume()?;
+                        resume_requested = true;
+                    }
+                }
+            }
+        }
+
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn request_resume() -> io::Result<()> {
+    let mut state = OpenOptions::new().write(true).open("/sys/power/state")?;
+    state.write_all(b"on\n")?;
+    state.flush()
 }
 
 fn request_reboot() -> io::Result<()> {
