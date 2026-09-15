@@ -205,6 +205,25 @@ no ADB interface were present. The minimal package contains the Windows
 `usbser.sys` host driver but no `adbd` binary or ADB configuration payload, so
 ADB is not currently enabled.
 
+## Enable-ADB package
+
+The historical `enable-adb.zip` package was downloaded from:
+
+```text
+https://projects.mobileread.com/reader/users/porkupan/PRST1/flash_packages/enable-adb.zip
+```
+
+The official server reports 367,448 bytes (the requested size was 367,488
+bytes). The ZIP test passed and its SHA-256 is
+`2b616e95c880fa29131ec3e26ac2951445e982cb66b2ea2dff3d6f1d8a3851b1`. It is
+preserved as `device-dumps/prs-t1/packages/enable-adb.zip`.
+
+This is not just a settings toggle: it contains `tmp/ramdisk-adb.uimg` and
+`tmp/nboote.bin`. Its `do_update.sh` writes those payloads directly to the
+internal eMMC at fixed offsets and then switches the boot selector. The
+package has only been downloaded and inspected; it has not been copied to the
+T1 or executed.
+
 ## USB failure evidence
 
 During the larger reads, the host reported:
