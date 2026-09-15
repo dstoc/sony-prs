@@ -5,10 +5,11 @@ display loop and receive touch/button input. It is intentionally separate from
 the PRS-350 agent: the T1 is an Android 2.2.1 reader with a different boot,
 display, input, and service model.
 
-The binary currently implements the first hardware-discovery milestone:
-framebuffer inspection and capture, Android process/service inspection, evdev
-capability inspection, and a bounded reversible framebuffer render test.
-Replacing Android at boot is not part of this milestone.
+The binary currently implements the hardware-discovery milestone plus an
+explicit opt-in standalone runtime test: framebuffer inspection and capture,
+Android process/service inspection, evdev capability inspection, a bounded
+reversible render test, and a full-screen native power/input test. Replacing
+Android at boot is not part of this milestone.
 
 ## Design goal
 
@@ -137,6 +138,37 @@ framebuffer, and redraw the complete screen. Power-key duration should be
 handled from `event2`/`event4`. The kernel exposes the wake-lock and suspend
 interfaces, but this image's input `power/wakeup` attributes read empty, so
 actual PMIC wake behavior still needs a reader-side test.
+
+## Standalone native runtime test
+
+`standalone-test` is intended for manual development tests after zygote has
+been stopped. It opens all relevant input nodes, holds the legacy kernel wake
+lock, renders a full-screen diagnostic pattern, and redraws the pattern with
+the most recent touch/key values. It does not depend on Android Java services.
+
+The development procedure is:
+
+```sh
+adb push ./prs-t1-agent /data/local/tmp/prs-t1-agent
+adb shell chmod 755 /data/local/tmp/prs-t1-agent
+adb shell stop zygote
+adb shell '/data/local/tmp/prs-t1-agent standalone-test /dev/graphics/fb0'
+```
+
+While the test is running:
+
+1. Touch the screen and press hardware keys; the diagnostic display should
+   show the raw source, event type, code, value, coordinates, and event counts.
+2. Press and release a power key briefly. The test displays a sleep status,
+   releases its wake lock, requests `mem`, then reacquires the lock and redraws
+   after the kernel returns from suspend.
+3. Hold a power key for at least two seconds. The test requests `/system/bin/reboot`.
+
+The smoke test has verified the full-screen pattern, wake-lock acquisition,
+and on-screen key data while zygote is stopped. The actual suspend/resume and
+long-power reboot paths still require manual reader-side testing. If the
+reader does not wake, use the hardware reset or `adb reboot` recovery route.
+After any zygote stop, a normal reboot is the supported way to restore Android.
 
 ## What we know about this T1
 
@@ -348,6 +380,8 @@ command opens `/dev/graphics/fb0` read-only, maps the framebuffer with
 `PROT_READ`, converts the visible RGB565 pixels to an 8-bit grayscale PGM, and
 writes only the PGM stream to stdout. The `render-test` command is explicitly
 write-capable and is limited to the centered, reversible test described above.
+The `standalone-test` command is a separate long-running write-capable runtime
+for manual zygote-isolated power, display, and input testing.
 
 The `events` command opens one evdev node read-only and logs a finite raw event
 stream. For example, `prs-t1-agent events /dev/input/event1 10` captures ten
@@ -361,5 +395,6 @@ touchpanel's absolute axes. The bounded raw evdev logger now runs against
 `event1` without grabbing the device or injecting events. Its first three-second
 idle sample contained no events. The native render test also completed with
 the stock Android services still active; input now confirms that Android
-redraws over the native framebuffer. The next display step is to resolve that
-ownership boundary before mapping touch and buttons.
+redraws over the native framebuffer. The standalone runtime smoke test now
+draws the full-screen pattern, holds the wake lock, and displays synthetic key
+data with zygote stopped. Manual suspend/resume and long-power reboot remain.

@@ -325,6 +325,26 @@ test. The development configuration should hold the wake lock continuously,
 which also keeps the USB/ADB recovery path available. Production user mode
 can later add suspend once the PMIC wake path is verified.
 
+### Standalone runtime implementation
+
+The native crate now has an opt-in `standalone-test` mode. It requires zygote
+to be stopped first, holds `prs-t1-native-test` through the kernel wake-lock
+interface, renders a full-screen diagnostic pattern, reads event0/event1/event2
+and event4, displays raw touch/key data, and handles power-key duration. A
+short power press requests `mem`; a power press of at least two seconds invokes
+`/system/bin/reboot`.
+
+The first smoke run exposed that the framebuffer changed to `yoffset=896` after
+zygote stopped. The runtime was corrected to honor both visible framebuffer
+offsets. The corrected smoke capture was visually inspected after PGM-to-PNG
+conversion and showed the complete native pattern; a synthetic key updated the
+on-screen diagnostics. The captures are preserved as
+`standalone-test-smoke-offset.pgm` and `standalone-test-after-key.pgm`.
+
+The smoke run was ended by host-issued reboot and restored Android. Actual
+kernel suspend/resume, wake-source behavior, and long-power reboot still need
+manual reader-side testing.
+
 ### Raw input injection
 
 Root ADB can invoke the T1's `/system/bin/input`, but this old build only
