@@ -29,6 +29,36 @@ pub fn draw_screen(display: &mut NativeDisplay, lines: &[String]) -> std::io::Re
     })
 }
 
+/// Render a logical screen into the format expected by the EPDC standby
+/// framebuffer ioctl. This buffer has no virtual-screen padding or offsets.
+pub fn standby_screen(lines: &[String], width: usize, height: usize) -> Vec<u8> {
+    let mut image = vec![0u8; width.saturating_mul(height).saturating_mul(2)];
+    {
+        let mut canvas =
+            DisplayCanvas::new(&mut image, width, height, width.saturating_mul(2), 0, 0);
+        draw_pattern(&mut canvas);
+        let positions = [
+            (24, 20),
+            (24, 50),
+            (28, 93),
+            (28, 121),
+            (28, 244),
+            (28, 272),
+            (28, 300),
+            (28, 406),
+            (28, 434),
+            (28, 462),
+            (28, 604),
+            (28, 632),
+            (28, 690),
+        ];
+        for (line, &(x, y)) in lines.iter().zip(positions.iter()) {
+            draw_text(&mut canvas, x, y, line);
+        }
+    }
+    image
+}
+
 fn draw_pattern(canvas: &mut DisplayCanvas<'_>) {
     canvas.fill(WHITE);
     let width = canvas.width();
@@ -201,5 +231,27 @@ fn glyph(character: char) -> [u8; 7] {
         '.' => [0, 0, 0, 0, 0, 0b00110, 0b00110],
         '_' => [0, 0, 0, 0, 0, 0, 0b11111],
         _ => [0; 7],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::standby_screen;
+
+    #[test]
+    fn standby_screen_is_unpadded_rgb565() {
+        let image = standby_screen(&[], 40, 40);
+
+        assert_eq!(image.len(), 40 * 40 * 2);
+        let interior_offset = (1 * 40 + 1) * 2;
+        assert_eq!(
+            &image[interior_offset..interior_offset + 2],
+            &0xffffu16.to_ne_bytes()
+        );
+        let border_offset = (4 * 40 + 4) * 2;
+        assert_eq!(
+            &image[border_offset..border_offset + 2],
+            &0u16.to_ne_bytes()
+        );
     }
 }

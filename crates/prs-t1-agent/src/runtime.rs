@@ -70,6 +70,11 @@ pub fn run(path: &Path) -> io::Result<()> {
 }
 
 fn redraw(display: &mut NativeDisplay, state: &UiState, wake_lock_held: bool) -> io::Result<()> {
+    let lines = screen_lines(state, wake_lock_held);
+    display::draw_screen(display, &lines)
+}
+
+fn screen_lines(state: &UiState, wake_lock_held: bool) -> Vec<String> {
     let touch = state
         .last_touch
         .map(|event| {
@@ -100,7 +105,7 @@ fn redraw(display: &mut NativeDisplay, state: &UiState, wake_lock_held: bool) ->
         .last_power_duration_ms
         .map(|duration| format!("POWER LAST {}MS", duration))
         .unwrap_or_else(|| "POWER SHORT SLEEP LONG REBOOT".into());
-    let lines = vec![
+    vec![
         "PRS T1 NATIVE TEST".into(),
         "ZYGOTE STOPPED".into(),
         format!("STATE {}", state.mode),
@@ -114,8 +119,7 @@ fn redraw(display: &mut NativeDisplay, state: &UiState, wake_lock_held: bool) ->
         "SHORT SLEEP LONG REBOOT".into(),
         "ADB REBOOT RECOVERY".into(),
         state.message.clone(),
-    ];
-    display::draw_screen(display, &lines)
+    ]
 }
 
 fn display_error(stage: &str, error: io::Error) -> io::Error {
@@ -128,10 +132,20 @@ fn sleep_cycle(
     state: &mut UiState,
 ) -> io::Result<()> {
     state.mode = "SLEEPING";
-    state.message = "RELEASE WAKE LOCK".into();
+    state.message = "KERNEL STANDBY IMAGE".into();
     eprintln!("standalone-test: drawing pre-suspend screen");
     redraw(display, state, wake_lock.is_held())
         .map_err(|error| display_error("pre-suspend redraw", error))?;
+    let standby_lines = screen_lines(state, wake_lock.is_held());
+    let standby = display::standby_screen(
+        &standby_lines,
+        display.width() as usize,
+        display.height() as usize,
+    );
+    display
+        .write_standby(&standby)
+        .map_err(|error| display_error("standby screen write", error))?;
+    eprintln!("standalone-test: standby screen supplied");
     display.prepare_for_suspend();
 
     eprintln!("standalone-test: requesting suspend");

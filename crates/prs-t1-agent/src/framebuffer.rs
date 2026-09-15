@@ -23,6 +23,7 @@ const MAX_MAPPED_BYTES: usize = 128 * 1024 * 1024;
 const MXCFB_SET_AUTO_UPDATE_MODE: c_ulong = 0x4004_462d;
 const MXCFB_SEND_UPDATE: c_ulong = 0x4044_462e;
 const MXCFB_WAIT_FOR_UPDATE_COMPLETE: c_ulong = 0x4004_462f;
+const MXCFB_WRITE_SSCREEN: c_ulong = 0x4004_463b;
 const AUTO_UPDATE_MODE_REGION: u32 = 0;
 const WAVEFORM_MODE_GC16: u32 = 2;
 const UPDATE_MODE_PARTIAL: u32 = 0;
@@ -665,6 +666,36 @@ impl NativeDisplay {
         )
     }
 
+    /// Copy a logical RGB565 screen into the EPDC driver's hidden standby
+    /// buffer. The kernel supplies this image during early suspend.
+    pub fn write_standby(&self, image: &[u8]) -> io::Result<()> {
+        let width = usize::try_from(self.var.xres)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid display width"))?;
+        let height = usize::try_from(self.var.yres)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid display height"))?;
+        let expected = width
+            .checked_mul(height)
+            .and_then(|pixels| pixels.checked_mul(2))
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "standby image is too large")
+            })?;
+        if image.len() != expected {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "standby image is {} bytes, expected {expected}",
+                    image.len()
+                ),
+            ));
+        }
+
+        let result = unsafe { ioctl(self.file.as_raw_fd(), MXCFB_WRITE_SSCREEN, image.as_ptr()) };
+        if result < 0 {
+            return Err(ioctl_error("write standby screen"));
+        }
+        Ok(())
+    }
+
     pub fn prepare_for_suspend(&mut self) {
         self.mapping.take();
     }
@@ -694,6 +725,24 @@ pub struct DisplayCanvas<'a> {
 }
 
 impl DisplayCanvas<'_> {
+    pub(crate) fn new(
+        buffer: &mut [u8],
+        width: usize,
+        height: usize,
+        stride: usize,
+        xoffset: usize,
+        yoffset: usize,
+    ) -> DisplayCanvas<'_> {
+        DisplayCanvas {
+            buffer,
+            width,
+            height,
+            stride,
+            xoffset,
+            yoffset,
+        }
+    }
+
     pub fn width(&self) -> usize {
         self.width
     }
