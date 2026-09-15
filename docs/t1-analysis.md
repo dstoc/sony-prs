@@ -8,10 +8,9 @@ x50 MTD layout.
 ## Current status
 
 The reader is detected and the Sony x50 command framing is accepted. Standard
-SCSI INQUIRY, initialization, partition-size queries, and a small partition
-read work. Larger filesystem reads currently cause a USB transport reset; the
-reader is now left in a wedged post-reset state and needs a physical USB
-disconnect/reconnect before another clean acquisition pass.
+SCSI INQUIRY, initialization, partition-size queries, and filesystem reads all
+work while the reader is in its on-device `data transfer mode`. A complete
+read-only image set was acquired after a physical reconnect.
 
 No write, update-mode, reboot, or partition-mutating command has been sent to
 the T1.
@@ -23,13 +22,15 @@ logical units:
 
 | Node | Inquiry product |
 |---|---|
-| `/dev/sg0` / `/dev/bsg/0:0:0:0` | `PRS-T1` |
-| `/dev/sg1` / `/dev/bsg/0:0:0:1` | `PRS-T1 SD` |
-| `/dev/sg2` / `/dev/bsg/0:0:0:2` | `PRS-T1 Setting` |
+| `/dev/sg1` / `/dev/bsg/1:0:0:0` | `PRS-T1` |
+| `/dev/sg2` / `/dev/bsg/1:0:0:1` | `PRS-T1 SD` |
+| `/dev/sg3` / `/dev/bsg/1:0:0:2` | `PRS-T1 Setting` |
 
 The host initially had the loadable `sg` module installed but not loaded;
-`modprobe sg` restored `/dev/sg0`–`/dev/sg2`. The `agent` user is a member of
-the `prs350` group. The active udev rules grant that group mode `0660` access
+`modprobe sg` restored the SCSI-generic nodes. After the physical reconnect,
+Linux enumerated the same LUNs as host ID 1 rather than host ID 0. The `agent`
+user is a member of the `prs350` group. The active udev rules grant that group
+mode `0660` access
 to both the T1 BSG and SCSI-generic nodes.
 
 The host-side client also supports Linux `/dev/bsg/*` through the SG v4 BSG
@@ -108,8 +109,34 @@ to avoid producing a mostly zero-filled image while the reader was wedged:
 | `mmcblk2p1.dump5.img` | 147,456 | interrupted after the reader wedged at offset 0 |
 
 The `dump3` and `dump5` images are incomplete diagnostics, not complete
-filesystems. A fresh physical reconnect is required before starting the next
-pass.
+filesystems. The next pass used a fresh physical reconnect and the reader's
+data-transfer mode.
+
+## Complete data-transfer-mode pass
+
+After rebooting the reader and selecting its on-device `data transfer mode`, a
+fresh sequential pass through `/dev/sg1` completed every partition at the
+reported size. The images and sidecar maps are preserved under
+`device-dumps/prs-t1/raw/` with the `data-transfer` suffix. Each bad-map file
+contains only its remote path and size header; no failed ranges were recorded.
+
+| Artifact | Size | SHA-256 |
+|---|---:|---|
+| `mmcblk2p1.data-transfer.img` | 10,485,760 | `9217112e1b0065ad6b3612ad8c68851b606299048f32715cba863baa2ba940e6` |
+| `mmcblk2p2.data-transfer.img` | 10,485,760 | `2ebc40bb98d2dc4d2c155739224efeca2c776c1099a5604525c8b3343e1ae597` |
+| `mmcblk2p3.data-transfer.img` | 1,024 | `db5f06eab591be67d4257ca518a91ec8128bbe48ba945c3395ad575b36b05a04` |
+| `mmcblk2p4.data-transfer.img` | 1,514,995,712 | `82136fcca8750b726d80ceb4e10d6770bff2fd6d09517332ce99b4ae152f907c` |
+| `mmcblk2p5.data-transfer.img` | 16,801,792 | `6dd00525fd42af2a14e4df20bd0802a85dfe235425f3056a4ae7a8ac1214d12c` |
+| `mmcblk2p6.data-transfer.img` | 142,630,912 | `8a6c0ef528bb2ba270d07ef6dd2f28995377d709254e1eca47f881c80f57dcc6` |
+| `mmcblk2p7.data-transfer.img` | 10,510,336 | `248a54138399cb047fba5e86ee9ee2aebd681bbc1b6cf74b8ca095b2e00b4a5f` |
+| `mmcblk2p8.data-transfer.img` | 41,967,616 | `f59f78495cd806812b439d96764b943789d47f9cf741120a1e7a9c9ba83263b8` |
+| `mmcblk2p9.data-transfer.img` | 50,356,224 | `e72a09e25ed59ffbbc0d58e4207c4fe069c210bddfda0eea3bc5bbce813f14ea` |
+| `mmcblk2p10.data-transfer.img` | 134,242,304 | `4d0959f86e59d486912ee210de23b1b205f6317a1eea9090359f29dbbfe7d34f` |
+
+`file` identifies p1 and p9 as ext4, p6 and p8 as ext2, p2 and p5 as
+compressed ROMFS images, p4 and p7 as FAT filesystems, p10 as ext2, and p3 as
+an MBR/extended partition-table container. The total image set is
+1,932,477,440 bytes.
 
 ## USB failure evidence
 
@@ -124,7 +151,6 @@ sd 0:0:0:0: Power-on or device reset occurred
 
 The userspace error is SCSI host status `0x0003` (`DID_TIME_OUT`) with no
 device status or driver status. After the reset, the USB interface is bound to
-the `usb-storage` driver. The reset-aware, chunk-addressable reader is now
-implemented in the host client; it can retry or mark individual failed ranges
-and resume without overwriting preserved partial data. The next acquisition
-step is a fresh physical reconnect followed by a clean pass.
+the `usb-storage` driver. The reset-aware, chunk-addressable reader remains
+implemented in the host client for future recovery work, but it was not needed
+during the complete data-transfer-mode pass.
