@@ -355,6 +355,7 @@ pub fn render_test_to(
     let layout = FramebufferLayout::new(&var, &fix, rect)?;
     let backup = layout.copy_visible(mapping.as_slice())?;
     layout.draw_marker(mapping.as_mut_slice())?;
+    let marker = layout.copy_visible(mapping.as_slice())?;
 
     eprintln!(
         "render-test: marker rect left={} top={} width={} height={}",
@@ -366,19 +367,30 @@ pub fn render_test_to(
     }
 
     let capture_result = write_pgm(&var, &fix, mapping.as_slice(), output);
-    let changed_before_wait = layout.differs_from(mapping.as_slice(), &backup)?;
+    let changed_before_wait = layout.differs_from(mapping.as_slice(), &backup);
     thread::sleep(wait_after_capture);
-    let changed_after_wait = layout.differs_from(mapping.as_slice(), &backup)?;
+    let changed_after_wait = layout.differs_from(mapping.as_slice(), &backup);
+    let marker_preserved_after_wait = layout.matches(mapping.as_slice(), &marker);
 
     let restore_result = layout.restore(mapping.as_mut_slice(), &backup);
     let restore_update_result = request_update(file.as_raw_fd(), rect, TEST_UPDATE_MARKER + 1);
 
-    eprintln!("render-test: framebuffer_marker_changed_before_wait={changed_before_wait}");
-    eprintln!("render-test: framebuffer_marker_changed_after_wait={changed_after_wait}");
     if let Err(error) = restore_result {
         return Err(error);
     }
     restore_update_result?;
+    eprintln!(
+        "render-test: framebuffer_marker_changed_before_wait={}",
+        changed_before_wait?
+    );
+    eprintln!(
+        "render-test: framebuffer_marker_changed_after_wait={}",
+        changed_after_wait?
+    );
+    eprintln!(
+        "render-test: exact_marker_preserved_after_wait={}",
+        marker_preserved_after_wait?
+    );
     eprintln!("render-test: original rectangle restored and refreshed");
     capture_result
 }
@@ -691,6 +703,11 @@ impl FramebufferLayout {
     fn differs_from(&self, buffer: &[u8], backup: &[u8]) -> io::Result<bool> {
         let current = self.copy_visible(buffer)?;
         Ok(current != backup)
+    }
+
+    fn matches(&self, buffer: &[u8], expected: &[u8]) -> io::Result<bool> {
+        let current = self.copy_visible(buffer)?;
+        Ok(current == expected)
     }
 
     fn draw_marker(&self, buffer: &mut [u8]) -> io::Result<()> {
