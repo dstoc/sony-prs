@@ -1,0 +1,10 @@
+[package]
+name = "sony-x50"
+version = "0.1.0"
+edition = "2021"
+description = "Read-only Sony x50 reader protocol implementations"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[dependencies]
+scsi-transport = { path = "../scsi-transport" }

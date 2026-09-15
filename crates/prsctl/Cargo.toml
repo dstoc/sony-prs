@@ -1,0 +1,15 @@
+[package]
+name = "prsctl"
+version = "0.1.0"
+edition = "2021"
+description = "Read-only Linux extraction tooling for Sony readers"
+license = "MIT OR Apache-2.0"
+keywords = ["sony", "prs-350", "firmware", "scsi"]
+
+[[bin]]
+name = "prsctl"
+path = "src/main.rs"
+
+[dependencies]
+scsi-transport = { path = "../scsi-transport" }
+sony-x50 = { path = "../sony-x50" }

@@ -1,5 +1,4 @@
 /target/
-/device-agent/target/
 *.img
 *.dump
 *.pcap

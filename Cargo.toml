@@ -1,15 +1,10 @@
-[package]
-name = "prsctl"
-version = "0.1.0"
-edition = "2021"
-description = "Read-only Linux extraction tooling for Sony PRS-x50 readers"
-license = "MIT OR Apache-2.0"
-keywords = ["sony", "prs-350", "firmware", "scsi"]
-
-[lib]
-name = "prsctl"
-path = "src/lib.rs"
-
-[[bin]]
-name = "prsctl"
-path = "src/main.rs"
+[workspace]
+members = [
+    "crates/scsi-transport",
+    "crates/sony-x50",
+    "crates/prs350-wire",
+    "crates/prsctl",
+    "crates/prs350-devctl",
+    "crates/prs350-agent",
+]
+resolver = "2"

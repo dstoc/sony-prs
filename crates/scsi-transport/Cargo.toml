@@ -1,0 +1,7 @@
+[package]
+name = "scsi-transport"
+version = "0.1.0"
+edition = "2021"
+description = "Linux SG_IO and BSG transport primitives"
+license = "MIT OR Apache-2.0"
+publish = false

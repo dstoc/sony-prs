@@ -3,5 +3,38 @@
 version = 4
 
 [[package]]
+name = "prs350-agent"
+version = "0.1.0"
+dependencies = [
+ "prs350-wire",
+]
+
+[[package]]
+name = "prs350-devctl"
+version = "0.1.0"
+dependencies = [
+ "prs350-wire",
+]
+
+[[package]]
+name = "prs350-wire"
+version = "0.1.0"
+
+[[package]]
 name = "prsctl"
 version = "0.1.0"
+dependencies = [
+ "scsi-transport",
+ "sony-x50",
+]
+
+[[package]]
+name = "scsi-transport"
+version = "0.1.0"
+
+[[package]]
+name = "sony-x50"
+version = "0.1.0"
+dependencies = [
+ "scsi-transport",
+]

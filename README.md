@@ -1,89 +1,73 @@
-# prsctl
+# Sony PRS reader tools
 
-`prsctl` is a Linux-native, strictly read-only extraction tool for the Sony
-PRS-350 and related PRS-x50 readers. The first milestone is to retrieve a
-device file or MTD block image over the reader's vendor SCSI extension, without
-using the Windows-only `ebook_msc.exe` stack.
+This repository contains read-only host tooling for Sony x50 readers, plus
+explicitly separate PRS-350 development controls and an ARM-side agent. The
+PRS-350 work is the first validated target; PRS-T1 acquisition and analysis
+are tracked separately.
 
-## Current status
+## Workspace
 
-The project currently contains:
+- `scsi-transport`: Linux SG_IO and BSG transport primitives.
+- `sony-x50`: Sony x50 read-only transport and legacy file protocol.
+- `prsctl`: read-only host CLI for probing and extracting reader files.
+- `prs350-wire`: PRS-350 development serial wire format.
+- `prs350-devctl`: stateful PRS-350 development serial controls.
+- `prs350-agent`: cross-compiled ARM-side PRS-350 development agent.
 
-- direct Linux `SG_IO` bindings for standard SCSI commands;
-- standard SCSI INQUIRY probing through `/dev/sgN`;
-- `/dev/sg*` scanning and offline request/answer packet inspection;
-- explicit little-endian encoding and decoding for the documented Sony file
-  protocol;
-- legacy read-only packet-protocol building blocks for FileOpen, GetSize,
-  SetPosition, FileRead, and FileClose;
-- a verified read-only implementation of the PRS-x50 `0x20`
-  `SC_SONY_EXTENDED` transport, including its initialization and
-  path-based file reads;
-- offline unit tests using a scripted transport;
-- no write, delete, update-mode, flash, or arbitrary-command API.
+The SCSI layers contain no write, delete, update-mode, flash, or arbitrary
+command API. The development tools are intentionally separate because they
+can reboot a reader, update its framebuffer, execute an ARM binary, or run a
+root shell through the temporary PRS-350 service package.
 
-The x50 CDB, initialization exchange, GetSize, and FileRead phases have been
-validated against a connected PRS-350. `get` is intended for reader-side
-paths such as `/dev/mtdblock1`; the older `/Data/tmp/info/model` example is
-not present in this PRS-350 x50 filesystem.
-
-## Build
-
-Rust is required. With a current stable toolchain:
+## Build and test
 
 ```sh
-cargo test
-cargo build --release
+cargo test --workspace
+cargo build --workspace --release
 ```
 
 On Linux, access to `/dev/sgN` normally requires root or membership in the
-group owning SCSI generic devices.
+group owning the SCSI-generic devices.
 
-## Usage
+## Read-only CLI
 
-```sh
-  prsctl probe /dev/sgN
-  prsctl scan
-  prsctl get /dev/sgN /dev/mtdblock1 mtdblock1.img
-  prsctl serial-ping /dev/ttyACM0
-  prsctl serial-info /dev/ttyACM0
-  prsctl serial-status /dev/ttyACM0
-  prsctl serial-reboot /dev/ttyACM0
-  prsctl serial-probe /dev/ttyACM0
-  prsctl serial-render /dev/ttyACM0
-  prsctl serial-screenshot /dev/ttyACM0 screen.pgm
-  prsctl serial-exec /dev/ttyACM0 ./my-arm-test
-  prsctl serial-shell /dev/ttyACM0 'cat /proc/cmdline'
-  prsctl decode-request captured-request.bin
-  prsctl decode-answer captured-answer.bin
+```text
+prsctl scan
+prsctl probe /dev/sgN
+prsctl get /dev/sgN DEVICE_PATH OUTPUT
+prsctl size /dev/sgN DEVICE_PATH
+prsctl read /dev/sgN DEVICE_PATH OFFSET COUNT
+prsctl dump /dev/sgN DEVICE_PATH OUTPUT BADMAP
+prsctl decode-request PACKET
+prsctl decode-answer PACKET
 ```
 
 Output files are created exclusively and are never overwritten.
 
-## Safety boundary
+## PRS-350 development controls
 
-The SCSI remote command enum intentionally contains no write-capable operation.
-There is no CLI path for `FileWrite`, delete, update-mode changes, partition
-writes, or arbitrary SCSI commands. The serial protocol has separate explicit
-experimental controls for reboot, framebuffer rendering, and uploading/executing
-a bounded ARM test binary. Those commands are intended only for the temporary
-root service package used during development; they are not part of the
-read-only SCSI interface. Local output files are created exclusively.
+```text
+prs350-devctl ping /dev/ttyACM0
+prs350-devctl info /dev/ttyACM0
+prs350-devctl status /dev/ttyACM0
+prs350-devctl probe /dev/ttyACM0
+prs350-devctl screenshot /dev/ttyACM0 OUTPUT.pgm
+prs350-devctl render /dev/ttyACM0
+prs350-devctl reboot /dev/ttyACM0
+prs350-devctl exec /dev/ttyACM0 ARM_BINARY
+prs350-devctl shell /dev/ttyACM0 COMMAND
+```
 
-See [the protocol ledger](docs/protocol.md) for the known wire format and the
-questions that remain device-dependent. See [the artifact list](docs/artifacts.md)
-for the historical source and binary references.
+These commands require the temporary PRS-350 development package and should
+not be treated as a production interface.
 
-The reproducible download helper is [tools/fetch-historical.sh](tools/fetch-historical.sh).
-The development sidecar and package builder are in
-[tools/](tools/); they require the historical Sony updater tools and a local
-shadow file, neither of which is committed.
-The first-device checklist is [docs/device-session.md](docs/device-session.md).
-The first complete PRS-350 image and filesystem findings are recorded in
-[docs/mtdblock15-analysis.md](docs/mtdblock15-analysis.md).
-The local, ignored archive of raw captures and extracted device files is
-described in [docs/device-dumps.md](docs/device-dumps.md).
-The firmware partition map, boot flow, and behavior-modification roadmap are
-in [docs/firmware-analysis.md](docs/firmware-analysis.md).
-The static analysis of the `httpPatchUSB` HTTP-over-USB bridge and matching
-host DLL is in [docs/http-patch-usb-analysis.md](docs/http-patch-usb-analysis.md).
+## Documentation and artifacts
+
+- [PRS-350 documentation](docs/prs350/)
+- [PRS-T1 analysis](docs/prs-t1/analysis.md)
+- [ignored device-dump archive](docs/prs350/device-dumps.md)
+- [workspace crates](crates/)
+- [PRS-350 helper scripts](tools/prs350/)
+
+Historical downloads, firmware images, extracted filesystems, screenshots, and
+device identity material remain outside Git under `device-dumps/`.
