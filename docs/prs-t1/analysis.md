@@ -41,6 +41,55 @@ The host-side client also supports Linux `/dev/bsg/*` through the SG v4 BSG
 ioctl and includes BSG nodes in `prsctl scan`. This is useful on hosts where
 the legacy `sg` module is unavailable.
 
+## Native display and input inventory
+
+With root ADB connected on 2026-09-15, the T1 exposes a Linux framebuffer and
+standard evdev input devices while Android is running. No process was stopped
+and no device node was written during this inventory.
+
+The framebuffer is:
+
+| Property | Observation |
+|---|---|
+| Device | `/dev/fb0`, major/minor `29,0` |
+| Permissions | `0666`, owner `root`, group `graphics` |
+| Kernel driver | `mxc_epdc_fb` (`/proc/fb`) |
+| Bits per pixel | `16` |
+| Stride | `1216` bytes |
+| Virtual size | `608x1792` |
+| Modes | `600x800` and `800x600` |
+| Rotation | `3` |
+| State | `0` |
+
+The sysfs device resolves to
+`/sys/devices/platform/mxc_epdc_fb/graphics/fb0`. The 16-bpp framebuffer and
+the larger virtual geometry mean the native capture code must use the queried
+line length and visible dimensions; it must not assume a tightly packed
+600x800 8-bit buffer. The `mxc_epdc_fb` driver is an important lead for the
+T1-specific refresh ioctl and update semantics.
+
+The input devices are:
+
+| Node | Name | Handlers / role |
+|---|---|---|
+| `/dev/input/event0` | `gpio-keys` | hardware keys |
+| `/dev/input/event1` | `SONY IR Touchpanel` | touch coordinates |
+| `/dev/input/event2` | `wm831x_on` | power/on input |
+| `/dev/input/event3` | `phxlit_vbus` | VBUS switch events |
+| `/dev/input/event4` | `sub_cpu_pwrbutton` | power button |
+
+The event nodes are `0660 root:input`; a non-root native process will need the
+`input` group or an appropriate udev/device-permission arrangement. There is
+no `/dev/subcpu` node on this T1, so the PRS-350 sub-CPU input path must not be
+copied into the T1 agent. The touch device reports `EV_KEY`, `EV_ABS`, and
+`EV_SYN`; its exact absolute ranges, coordinate orientation, and event
+consumption behavior remain to be captured with a read-only evdev probe.
+
+The next native-runtime step is a read-only framebuffer screenshot and event
+inventory while Android remains active. Display-process ownership, framebuffer
+refresh races, and the smallest Android UI component that can be stopped are
+still unknown.
+
 ## Exposed storage
 
 The T1 file service exposes the internal eMMC as
