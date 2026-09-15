@@ -341,9 +341,22 @@ conversion and showed the complete native pattern; a synthetic key updated the
 on-screen diagnostics. The captures are preserved as
 `standalone-test-smoke-offset.pgm` and `standalone-test-after-key.pgm`.
 
-The smoke run was ended by host-issued reboot and restored Android. Actual
-kernel suspend/resume, wake-source behavior, and long-power reboot still need
-manual reader-side testing.
+The first suspend test used an interactive ADB shell. A synthetic short power
+press reached the native state machine and caused `/sys/power/state` to enter
+the suspend path, after which the USB/ADB link disappeared. The shell-owned
+native process did not survive that disconnect; on wake, init had restarted
+`zygote` and `system_server`. Launching the process with redirected standard
+streams and an ignored `HUP` trap detached it from the ADB shell, and the
+process remained present while zygote was stopped. This is now the required
+development launch form.
+
+During a monitored physical-button test, no event arrived on any of
+`event0`–`event4` and no new kernel suspend message was emitted; the native
+process remained active. The synthetic path therefore proves the native sleep
+handler, but the physical PMIC/sub-CPU power-button path is not yet verified in
+zygote-isolated mode. The actual physical wake and long-power reboot paths
+still need a working physical power event (or a lower-level PMIC/sub-CPU
+investigation).
 
 ### Raw input injection
 

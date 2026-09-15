@@ -152,8 +152,15 @@ The development procedure is:
 adb push ./prs-t1-agent /data/local/tmp/prs-t1-agent
 adb shell chmod 755 /data/local/tmp/prs-t1-agent
 adb shell stop zygote
-adb shell '/data/local/tmp/prs-t1-agent standalone-test /dev/graphics/fb0'
+adb shell 'trap "" HUP; /data/local/tmp/prs-t1-agent standalone-test /dev/graphics/fb0 </dev/null >/data/local/tmp/prs-t1-agent.log 2>&1 &'
 ```
+
+The `HUP` trap and redirected standard streams are important on this old T1:
+the ADB USB link disappears during suspend, and a process left attached to the
+interactive ADB shell is otherwise lost before it can handle resume. The
+diagnostic process can be checked with `adb shell ps` and its startup errors
+with `adb shell cat /data/local/tmp/prs-t1-agent.log` while the reader is
+awake.
 
 While the test is running:
 
@@ -165,10 +172,15 @@ While the test is running:
 3. Hold a power key for at least two seconds. The test requests `/system/bin/reboot`.
 
 The smoke test has verified the full-screen pattern, wake-lock acquisition,
-and on-screen key data while zygote is stopped. The actual suspend/resume and
-long-power reboot paths still require manual reader-side testing. If the
-reader does not wake, use the hardware reset or `adb reboot` recovery route.
-After any zygote stop, a normal reboot is the supported way to restore Android.
+and on-screen key data while zygote is stopped. A synthetic `KEY_POWER` pair
+also reached the native state machine and entered the kernel suspend path. The
+first attempt was attached to the ADB shell, so the process disappeared when
+USB went away and Android restarted zygote/system_server on resume. A detached
+launch survived that shell lifecycle. A physical short press was then not
+observed on any evdev node during a monitored test window, so the reader-side
+PMIC/sub-CPU power-input path remains unresolved. If the reader does not wake,
+use the hardware reset or `adb reboot` recovery route. After any zygote stop, a
+normal reboot is the supported way to restore Android.
 
 ## What we know about this T1
 
