@@ -259,6 +259,26 @@ persistent native UI while Android remains the active display owner. The next
 display investigation must determine the smallest safe ownership/refresh
 boundary; touch and button mapping should follow that decision.
 
+### Idle timer and power observations
+
+A 90-second render test with Android fully running and no input reported
+`exact_marker_preserved_after_wait=true`. This does not prove that every
+periodic status update is harmless, but it shows no timer/status redraw occurred
+during this interval. The capture is preserved as
+`native-render-idle-90s.pgm` with SHA-256
+`49c9f7bf1b2362a07ec048250004e61cb074b67ccf9c3894d45057ccac983d4c`.
+
+The kernel exposes `/sys/power/state` (`standby mem`) and the Android-era
+`/sys/power/wake_lock` and `wake_unlock` interfaces, owned `0660 radio:system`.
+Root native code should be able to hold a named kernel wake lock while its UI
+is active, preventing suspend without relying on `PowerManagerService`.
+`/sys/android_power/request_state` is absent even though the zygote
+`onrestart` stanza in `/init.rc` still attempts to write it; that init stanza is
+stale on this image. Kernel wake sources, including USB and the reader's power
+controller, remain present independently of zygote, but Android policy for
+sleep/wake and power-key handling lives in `system_server` and would be lost
+when zygote is stopped.
+
 ### Raw input injection
 
 Root ADB can invoke the T1's `/system/bin/input`, but this old build only

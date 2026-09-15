@@ -116,6 +116,13 @@ display/input services; the marker then survived a raw button injection. A
 manual `start zygote` entered a `PackageManager` crash loop, so normal reboot
 is currently the safe recovery path after this ownership experiment.
 
+A 90-second no-input render test with Android running preserved the exact
+marker, so no timer/status redraw was observed during that interval. This is
+not a guarantee against every future status update. The kernel exposes
+`/sys/power/wake_lock` and `wake_unlock`, providing a possible native keep-awake
+mechanism if zygote is stopped; Android's framework sleep/wake and power-key
+policy would still be unavailable.
+
 ## What we know about this T1
 
 - Sony firmware reports `1.0.00.09270`.
