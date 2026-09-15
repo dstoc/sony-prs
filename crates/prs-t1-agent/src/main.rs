@@ -86,6 +86,33 @@ fn run() -> io::Result<()> {
             );
             Ok(())
         }
+        Some("render-test") => {
+            let device = args.next().unwrap_or_else(|| DEFAULT_FRAMEBUFFER.into());
+            let seconds = args
+                .next()
+                .map(|value| {
+                    value.parse::<u64>().map_err(|_| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "render-test wait duration is not an integer",
+                        )
+                    })
+                })
+                .transpose()?
+                .unwrap_or(3);
+            if args.next().is_some() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "render-test accepts FRAMEBUFFER and optional SECONDS",
+                ));
+            }
+            let mut stdout = io::stdout().lock();
+            framebuffer::render_test_to(
+                Path::new(&device),
+                Duration::from_secs(seconds),
+                &mut stdout,
+            )
+        }
         Some(command) => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!("unknown command {command:?}; run `prs-t1-agent help`"),
@@ -105,7 +132,7 @@ fn probe(device: &Path) {
 
 fn print_usage() {
     println!(
-        "prs-t1-agent {}\n\nUsage:\n  prs-t1-agent probe [FRAMEBUFFER]\n  prs-t1-agent input\n  prs-t1-agent events [EVENT_DEVICE] [SECONDS]\n  prs-t1-agent capture [FRAMEBUFFER] > screen.pgm\n\nThe current commands are read-only. `probe` inventories framebuffer, Android\nprocess, and input state. `events` logs a bounded raw evdev stream without\ngrabbing or injecting events. `capture` emits an 8-bit grayscale PGM without\nwriting the framebuffer or issuing a display-refresh ioctl.",
+        "prs-t1-agent {}\n\nUsage:\n  prs-t1-agent probe [FRAMEBUFFER]\n  prs-t1-agent input\n  prs-t1-agent events [EVENT_DEVICE] [SECONDS]\n  prs-t1-agent capture [FRAMEBUFFER] > screen.pgm\n  prs-t1-agent render-test [FRAMEBUFFER] [SECONDS] > render-test.pgm\n\n`probe`, `input`, `events`, and `capture` are read-only. `events` logs a\nbounded raw evdev stream without grabbing or injecting events. `capture` emits\nan 8-bit grayscale PGM. `render-test` is the only write-capable command: it\nbriefly writes a centered RGB565 marker, requests a T1 e-ink update, captures\nthe framebuffer, and restores the original rectangle.",
         env!("CARGO_PKG_VERSION")
     );
 }
