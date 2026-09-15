@@ -199,11 +199,10 @@ and one recovery-selector reboot; the resulting boot showed the launcher
 chooser containing `ADWLauncher EX` and the stock `Home` launcher, consistent
 with the root package having been applied.
 
-After the root-package boot, the T1's USB gadget still exposes only the normal
+After the minimal-root boot, the T1's USB gadget still exposed only the normal
 mass-storage interface. No host-side `/dev/ttyACM*` or `/dev/ttyUSB*` node and
 no ADB interface were present. The minimal package contains the Windows
-`usbser.sys` host driver but no `adbd` binary or ADB configuration payload, so
-ADB is not currently enabled.
+`usbser.sys` host driver but no `adbd` binary or ADB configuration payload.
 
 ## Enable-ADB package
 
@@ -220,9 +219,7 @@ preserved as `device-dumps/prs-t1/packages/enable-adb.zip`.
 
 This is not just a settings toggle: it contains `tmp/ramdisk-adb.uimg` and
 `tmp/nboote.bin`. Its `do_update.sh` writes those payloads directly to the
-internal eMMC at fixed offsets and then switches the boot selector. The
-package has only been downloaded and inspected; it has not been copied to the
-T1 or executed.
+internal eMMC at fixed offsets and then switches the boot selector.
 
 The existing per-partition images do not include the unpartitioned boot area,
 so the offsets were verified with a separate read-only raw-range acquisition
@@ -236,17 +233,22 @@ sectors, matching the package script's 600-sector write. These observations
 verify both package offsets for this T1 without writing anything. The small
 captures are preserved under `device-dumps/prs-t1/boot-area/`.
 
-### Risk assessment
+### Application and verification
 
-The exact boot offsets and image format are now verified for this reader, and
-the shared `PRS-T1 Updater.package` was already accepted by the successful
-minimal-root update. However, `enable-adb` performs raw eMMC writes to boot
-areas and the matching restore or SD-rescue procedure for firmware
-`1.0.00.09270` has not yet been obtained and tested. The two preserved boot
-area captures are useful rollback inputs but are not themselves a bootable
-recovery path. Recommendation: defer this package until a practical rollback
-route is available; if applied, use full battery and stable power and preserve
-the reader's USB connection until the update completes.
+After the exact boot offsets were verified and the matching restore route was
+confirmed, the old minimal-root `updates/` staging tree was moved to the
+reversible hidden directory `.previous-minimal-root-updates` on `READER`. The
+six enable-ADB files were then copied to the root of `READER`, compared
+byte-for-byte with the archive, and the volume was cleanly unmounted. One
+recovery-selector reboot was issued. The reader re-enumerated with mass storage
+and a second USB interface identified as `Reader Android ADB`.
+
+Using the temporary official Android Platform-Tools client, `adb devices -l`
+reported device serial `148427501398348`; `adb shell id` and `adb shell su -c
+id` both returned `uid=0(root) gid=0(root)`. The device-side ADB daemon is
+present at `/sbin/adbd`. This confirms that enable-ADB succeeded and provides
+a root shell over USB. The original partition and boot-area backups remain
+preserved for rollback work.
 
 ## USB failure evidence
 
