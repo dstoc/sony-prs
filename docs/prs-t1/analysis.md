@@ -543,6 +543,24 @@ native image is retained in EINK standby; the hidden standby buffer remains
 supplied for the normal-mode path. This change is ready for a physical wake
 test.
 
+The next EINK test was run with USB physically disconnected before the reader
+was put to sleep. It produced the same result: the log stopped after
+`suspend request queued: Ok(())`, with no return from
+`/sys/power/wait_for_fb_wake`; reset was required. This rules out USB power-key
+gating as the sole explanation for the native wake failure.
+
+The Sony kernel sources narrow the remaining issue to wake routing below the
+native process. EINK early-suspend mode leaves the sub-CPU interrupt path
+enabled, but the `wm831x_on` input driver does not call `enable_irq_wake()`.
+The separate `wake_request_from_sub_cpu` PMIC handler only acquires an Android
+wake lock; it does not itself resume the system or report a key. The native
+process cannot repair either kernel-level condition from user space. Before
+changing the kernel or boot image, a controlled stock-Android test should
+verify whether a second physical press wakes the normal `mem` suspend path
+with USB disconnected. If it does, the native EINK path needs to reproduce
+the stock sub-CPU/PMIC wake setup; if it does not, the board's kernel wake
+configuration is defective or incomplete for this firmware.
+
 ## Exposed storage
 
 The T1 file service exposes the internal eMMC as
