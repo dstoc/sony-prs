@@ -123,6 +123,13 @@ not a guarantee against every future status update. The kernel exposes
 mechanism if zygote is stopped; Android's framework sleep/wake and power-key
 policy would still be unavailable.
 
+The T1 exposes `wm831x_on` and `sub_cpu_pwrbutton` as separate `KEY_POWER`
+evdev sources. Android normally handles short/long power presses in
+`system_server`; that handler disappears when zygote is stopped. No separate
+reset node has been identified, so the verified escape route remains root ADB
+plus normal reboot. A native UI should hold a kernel wake lock while testing
+zygote isolation.
+
 ## What we know about this T1
 
 - Sony firmware reports `1.0.00.09270`.

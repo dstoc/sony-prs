@@ -279,6 +279,26 @@ controller, remain present independently of zygote, but Android policy for
 sleep/wake and power-key handling lives in `system_server` and would be lost
 when zygote is stopped.
 
+### Power-button and reset escape paths
+
+The T1 exposes two power-like Linux input devices: `wm831x_on` on `event2` and
+`sub_cpu_pwrbutton` on `event4`. Both advertise Linux `KEY_POWER` (code 116),
+and the available `qwerty.kl` maps that code to Android `POWER WAKE`. Android's
+higher-level short/long power-button behavior is therefore normally handled by
+the framework window policy in `system_server`; it is unavailable while zygote
+is stopped.
+
+There is no separate reset input node in the current inventory. The
+`sub_cpu_pwrbutton` name suggests a board-level power-controller path, but we
+have not verified that a long press on it performs a hardware reset rather than
+just delivering another Android power key. It should not be treated as the
+primary escape route without a reader-side test.
+
+The verified recovery route is root ADB followed by a normal `adb reboot`.
+`adbd` remained running during zygote isolation, and a normal reboot restored
+the framework. A native UI should also hold a kernel wake lock while zygote is
+stopped so that recovery does not depend on a suspended USB link.
+
 ### Raw input injection
 
 Root ADB can invoke the T1's `/system/bin/input`, but this old build only
