@@ -697,11 +697,12 @@ impl NativeDisplay {
     }
 
     pub fn prepare_for_suspend(&mut self) {
-        self.mapping.take();
+        // The T1's EPDC driver keeps the DMA framebuffer allocated while the
+        // panel is suspended, but rejects a second mmap after resume. Retain
+        // this mapping and refresh only the framebuffer metadata on wake.
     }
 
     pub fn resume_after_suspend(&mut self) -> io::Result<()> {
-        self.mapping.take();
         let mut last_error = None;
         for attempt in 0..20 {
             match self.try_resume_after_suspend() {
@@ -748,11 +749,16 @@ impl NativeDisplay {
         );
         validate(&self.var, &self.fix)?;
         validate_rgb565(&self.var)?;
-        self.mapping = Some(MappedFramebuffer::new_with_protection(
-            &self.file,
-            map_length(&self.fix)?,
-            PROT_READ | PROT_WRITE,
-        )?);
+        if self.mapping.is_none() {
+            self.mapping = Some(MappedFramebuffer::new_with_protection(
+                &self.file,
+                map_length(&self.fix)?,
+                PROT_READ | PROT_WRITE,
+            )?);
+            eprintln!("standalone-test: framebuffer mapping created after resume");
+        } else {
+            eprintln!("standalone-test: framebuffer mapping retained across resume");
+        }
         Ok(())
     }
 }
