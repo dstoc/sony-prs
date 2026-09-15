@@ -369,6 +369,28 @@ zygote-isolated mode. The actual physical wake and long-power reboot paths
 still need a working physical power event (or a lower-level PMIC/sub-CPU
 investigation).
 
+### Normal-mode physical power-button test
+
+After a normal reboot, the live kernel reported `power_key_enable` as enabled.
+Two independent 30-second native readers were attached directly to
+`event2` (`wm831x_on`) and `event4` (`sub_cpu_pwrbutton`) while the reader's
+physical power button was held for approximately eight seconds and released.
+Both readers reported `event_count=0`. The IRQ baseline was 8 for
+`SPI_SUB_INT_IRQ` and 1 for `wm831x_on`; no change attributable to the button
+hold was observed, and the WM831x status count remained 1. A follow-up status
+read showed sub-CPU status register `0x3f` / `EXT_C` equal to `0x00`, with the
+power-key bit `0x04` clear. The two additional sub-CPU IRQs seen afterward
+occurred during the explicit status-query interaction, not the physical hold.
+
+The `gpio-keys` node's advertised key list also excludes code 116
+(`KEY_POWER`). This rules out the ordinary evdev consumer as the missing
+layer: the stock drivers are enabled, but this physical switch is not
+currently producing the PMIC ON-pin interrupt or the sub-CPU status transition
+that would feed either power evdev node. The next investigation should trace
+the switch and its board-level connection to the WM831x or sub-CPU, using the
+service documentation or electrical/IRQ observation; user-space input handling
+cannot recover a signal absent at that layer.
+
 ### Raw input injection
 
 Root ADB can invoke the T1's `/system/bin/input`, but this old build only
