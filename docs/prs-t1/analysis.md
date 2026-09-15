@@ -506,6 +506,22 @@ power button; the exact wake source (a second power transition versus USB
 resume during the same interaction) still needs event-level logging if that
 distinction matters. The retained-mapping fix is committed as `4ad50fc`.
 
+### Wake-source instrumentation
+
+The legacy kernel exposes no `wakeup_count`, wake-reason, or equivalent sysfs
+interface. The native runtime now logs every `KEY_POWER` event with its source
+(`event2` PMIC or `event4` sub-CPU), value, and input timestamp. It also logs
+the elapsed time spent in the `/sys/power/state` suspend request and displays
+that duration in the wake message as `WOKE AFTER NMS`. This distinguishes an
+actual immediate wake from a normal wake whose retained e-ink image was
+observed before the user noticed the redraw.
+
+The diagnostic build is committed as `d99b419`. The next controlled run should
+disconnect USB, initiate one short press, wait without touching the reader,
+and record the displayed duration and persisted event log. A sub-second
+duration with a power event would justify a release/debounce guard; a longer
+duration with no power event would point to another wake source such as USB.
+
 ## Exposed storage
 
 The T1 file service exposes the internal eMMC as
