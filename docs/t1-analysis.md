@@ -236,6 +236,18 @@ sectors, matching the package script's 600-sector write. These observations
 verify both package offsets for this T1 without writing anything. The small
 captures are preserved under `device-dumps/prs-t1/boot-area/`.
 
+### Risk assessment
+
+The exact boot offsets and image format are now verified for this reader, and
+the shared `PRS-T1 Updater.package` was already accepted by the successful
+minimal-root update. However, `enable-adb` performs raw eMMC writes to boot
+areas and the matching restore or SD-rescue procedure for firmware
+`1.0.00.09270` has not yet been obtained and tested. The two preserved boot
+area captures are useful rollback inputs but are not themselves a bootable
+recovery path. Recommendation: defer this package until a practical rollback
+route is available; if applied, use full battery and stable power and preserve
+the reader's USB connection until the update completes.
+
 ## USB failure evidence
 
 During the larger reads, the host reported:
