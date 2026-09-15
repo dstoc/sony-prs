@@ -52,11 +52,11 @@ pub fn print_inventory() {
             }
         }
     }
-    let subcpu = PathBuf::from("/dev/subcpu");
+    let subcpu = PathBuf::from("/dev/sub_cpu");
     if subcpu.exists() {
         print_node(&subcpu);
     } else {
-        println!("  path=/dev/subcpu present=false");
+        println!("  path=/dev/sub_cpu present=false");
     }
 
     println!("input_capabilities=");

@@ -107,9 +107,12 @@ The input devices are:
 | `/dev/input/event4` | `sub_cpu_pwrbutton` | power button |
 
 The event nodes are `0660 root:input`; a non-root native process will need the
-`input` group or an appropriate udev/device-permission arrangement. There is
-no `/dev/subcpu` node on this T1, so the PRS-350 sub-CPU input path must not be
-copied into the T1 agent. The touch device reports `EV_KEY`, `EV_ABS`, and
+`input` group or an appropriate udev/device-permission arrangement. The T1 has
+`/dev/sub_cpu` (major 10, minor 63), not `/dev/subcpu`; this is the kernel's
+sub-CPU SPI byte interface for update mode, not the normal input path. The
+driver returns `EFAULT` when it is read in normal mode, so it is not a useful
+replacement for the power evdev nodes. The PRS-350 sub-CPU input path must not
+be copied into the T1 agent. The touch device reports `EV_KEY`, `EV_ABS`, and
 `EV_SYN`. The native ioctl probe reported these capabilities for `event1`:
 
 ```text
@@ -288,11 +291,19 @@ higher-level short/long power-button behavior is therefore normally handled by
 the framework window policy in `system_server`; it is unavailable while zygote
 is stopped.
 
-There is no separate reset input node in the current inventory. The
-`sub_cpu_pwrbutton` name suggests a board-level power-controller path, but we
-have not verified that a long press on it performs a hardware reset rather than
-just delivering another Android power key. It should not be treated as the
-primary escape route without a reader-side test.
+There is no separate reset input node in the current inventory. The matching
+Sony kernel source shows that `sub_cpu_pwrbutton` is a platform input driver:
+the sub-CPU IRQ thread reads the charger/status register and emits `KEY_POWER`
+when `EXT_C` bit `0x04` changes. The same source shows that `wm831x_on` emits
+`KEY_POWER` from the WM831x ON-pin interrupt and polls the ON-pin status for
+release. The live device reports `power_key_enable` as enabled and status
+register `0x3f` (`EXT_C`) as `0x00` when idle. A physical press captured during
+the investigation produced no event on either evdev node and no corresponding
+interrupt-count change, so the missing signal is below our native event
+consumer rather than a short/long-press policy issue. The physical switch,
+PMIC ON pin, and sub-CPU status path still need electrical/IRQ-level
+correlation before a native UI can depend on them. It should not be treated as
+the primary escape route without that test.
 
 The verified recovery route is root ADB followed by a normal `adb reboot`.
 `adbd` remained running during zygote isolation, and a normal reboot restored
