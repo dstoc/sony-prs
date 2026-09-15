@@ -39,6 +39,46 @@ struct SgIoHdr {
     info: u32,
 }
 
+// The block layer's /dev/bsg/* interface uses the SG v4 layout for SG_IO.
+// Keep this local definition compatible with linux/bsg.h so the client can
+// use BSG without requiring the legacy scsi_generic (sg) module.
+#[repr(C)]
+struct BsgIoV4 {
+    guard: i32,
+    protocol: u32,
+    subprotocol: u32,
+    request_len: u32,
+    request: u64,
+    request_tag: u64,
+    request_attr: u32,
+    request_priority: u32,
+    request_extra: u32,
+    max_response_len: u32,
+    response: u64,
+    dout_iovec_count: u32,
+    dout_xfer_len: u32,
+    din_iovec_count: u32,
+    din_xfer_len: u32,
+    dout_xferp: u64,
+    din_xferp: u64,
+    timeout: u32,
+    flags: u32,
+    usr_ptr: u64,
+    spare_in: u32,
+    driver_status: u32,
+    transport_status: u32,
+    device_status: u32,
+    retry_delay: u32,
+    info: u32,
+    duration: u32,
+    response_len: u32,
+    din_resid: i32,
+    dout_resid: i32,
+    generated_tag: u64,
+    spare_out: u32,
+    padding: u32,
+}
+
 extern "C" {
     fn ioctl(fd: c_int, request: c_ulong, ...) -> c_int;
 }
@@ -112,6 +152,9 @@ impl SgDevice {
                 "a no-data SCSI command cannot have a data buffer".into(),
             ));
         }
+        if is_bsg_path(&self.path) {
+            return self.execute_bsg(cdb, direction, data);
+        }
         let dxfer_len = u32::try_from(data.len())
             .map_err(|_| Error::InvalidArgument("SCSI data buffer is too large".into()))?;
         let timeout_ms = self.timeout.as_millis().min(u32::MAX as u128) as u32;
@@ -175,6 +218,107 @@ impl SgDevice {
         Ok(response)
     }
 
+    fn execute_bsg(
+        &self,
+        cdb: &[u8],
+        direction: DataDirection,
+        data: &mut [u8],
+    ) -> Result<SgResponse> {
+        let data_len = u32::try_from(data.len())
+            .map_err(|_| Error::InvalidArgument("SCSI data buffer is too large".into()))?;
+        let timeout_ms = self.timeout.as_millis().min(u32::MAX as u128) as u32;
+        let mut cdb_buf = [0u8; 16];
+        cdb_buf[..cdb.len()].copy_from_slice(cdb);
+        let mut sense = [0u8; 64];
+        let mut header = BsgIoV4 {
+            guard: b'Q' as i32,
+            protocol: 0,
+            subprotocol: 0,
+            request_len: cdb.len() as u32,
+            request: cdb_buf.as_mut_ptr() as u64,
+            request_tag: 0,
+            request_attr: 0,
+            request_priority: 0,
+            request_extra: 0,
+            max_response_len: sense.len() as u32,
+            response: sense.as_mut_ptr() as u64,
+            dout_iovec_count: 0,
+            dout_xfer_len: if matches!(direction, DataDirection::ToDevice) {
+                data_len
+            } else {
+                0
+            },
+            din_iovec_count: 0,
+            din_xfer_len: if matches!(direction, DataDirection::FromDevice) {
+                data_len
+            } else {
+                0
+            },
+            dout_xferp: if matches!(direction, DataDirection::ToDevice) {
+                data.as_mut_ptr() as u64
+            } else {
+                0
+            },
+            din_xferp: if matches!(direction, DataDirection::FromDevice) {
+                data.as_mut_ptr() as u64
+            } else {
+                0
+            },
+            timeout: timeout_ms,
+            flags: 0,
+            usr_ptr: 0,
+            spare_in: 0,
+            driver_status: 0,
+            transport_status: 0,
+            device_status: 0,
+            retry_delay: 0,
+            info: 0,
+            duration: 0,
+            response_len: 0,
+            din_resid: 0,
+            dout_resid: 0,
+            generated_tag: 0,
+            spare_out: 0,
+            padding: 0,
+        };
+
+        let result = unsafe { ioctl(self.file.as_raw_fd(), SG_IO, &mut header) };
+        if result < 0 {
+            return Err(io_error());
+        }
+
+        let sense_len = usize::try_from(header.response_len)
+            .unwrap_or(usize::MAX)
+            .min(sense.len());
+        let response = SgResponse {
+            status: header.device_status as u8,
+            host_status: header.transport_status as u16,
+            driver_status: header.driver_status as u16,
+            bytes_transferred: transferred_len(
+                data.len(),
+                match direction {
+                    DataDirection::FromDevice => header.din_resid,
+                    DataDirection::ToDevice => header.dout_resid,
+                    DataDirection::None => 0,
+                },
+            ),
+            sense: sense[..sense_len].to_vec(),
+        };
+        let failed = response.status != 0
+            || response.host_status != 0
+            || response.driver_status != 0
+            || (header.info & SG_INFO_OK_MASK) != 0;
+        if failed {
+            return Err(Error::Scsi(ScsiError {
+                status: response.status,
+                host_status: response.host_status,
+                driver_status: response.driver_status,
+                sense: response.sense,
+            }));
+        }
+        Ok(response)
+    }
+
     pub fn inquiry(&self) -> Result<Inquiry> {
         let mut data = [0u8; 96];
         let cdb = [INQUIRY, 0, 0, 0, data.len() as u8, 0];
@@ -212,6 +356,12 @@ fn transferred_len(buffer_len: usize, resid: i32) -> usize {
     } else {
         buffer_len.saturating_sub(resid as usize)
     }
+}
+
+fn is_bsg_path(path: &Path) -> bool {
+    path.parent()
+        .and_then(|parent| parent.file_name())
+        .is_some_and(|name| name == "bsg")
 }
 
 fn io_error() -> Error {
