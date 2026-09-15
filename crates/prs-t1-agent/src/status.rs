@@ -49,6 +49,7 @@ pub struct WifiStatus {
     pub operstate: Option<String>,
     pub carrier: Option<bool>,
     pub signal_dbm: Option<i32>,
+    pub supplicant_state: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -95,6 +96,7 @@ pub fn collect() -> StatusSnapshot {
         operstate: read_field(&wifi_path, "operstate"),
         carrier: read_bool_field(&wifi_path, "carrier"),
         signal_dbm: read_wireless_signal(&wifi_interface),
+        supplicant_state: read_property("init.svc.wpa_supplicant"),
         interface: wifi_interface,
     };
     let processes = process_snapshot();
@@ -145,6 +147,7 @@ pub fn print_status() {
     print_option("wifi.operstate", status.wifi.operstate);
     print_option("wifi.carrier", status.wifi.carrier);
     print_option("wifi.signal_dbm", status.wifi.signal_dbm);
+    print_option("wifi.supplicant_state", status.wifi.supplicant_state);
 
     print_option("adb.persist_enabled", status.adb.persist_enabled);
     print_option("adb.service_state", status.adb.service_state);

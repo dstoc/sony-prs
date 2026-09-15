@@ -645,6 +645,7 @@ power.ac_online=false
 power.usb_online=true
 wifi.interface=wlan0
 wifi.interface_present=false
+wifi.supplicant_state=stopped
 adb.persist_enabled=true
 adb.service_state=running
 adb.process_running=true
@@ -670,6 +671,15 @@ separate fields so a future UI can distinguish unavailable from connected
 state when Wi-Fi is enabled. It also reports `adbd`, `zygote`,
 `system_server`, and `dispd` process presence from `/system/bin/ps`, which does
 not require the Android services to be running.
+
+The command was also verified after `stop zygote`: it continued to report the
+kernel battery, USB, Wi-Fi, and ADB fields, with
+`android.zygote_running=false` and `android.system_server_running=false`,
+while `adbd` and `dispd` remained present. A subsequent `adb reboot` restored
+the normal framework. ADB re-enumerated about 14 seconds after the reboot,
+before `system_server` was ready; the latter was present by about 20 seconds.
+This makes separate ADB-daemon, USB-transport, and framework-readiness states
+useful to the UI rather than a single generic "connected" flag.
 
 ## Exposed storage
 

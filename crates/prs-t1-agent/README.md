@@ -105,7 +105,7 @@ long-running native UI.
 The `status` command collects state that a native UI can poll without asking
 Android's Java services: battery capacity/status/voltage/temperature from
 `/sys/class/power_supply/sub_cpu_battery`, AC and USB power presence, USB
-gadget properties, Wi-Fi interface/link state, ADB enablement and daemon
+gadget properties, Wi-Fi interface/link/supplicant state, ADB enablement and daemon
 state, Android process presence, and uptime.
 
 ```sh
