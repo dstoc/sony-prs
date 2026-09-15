@@ -100,6 +100,27 @@ restored the original rectangle. `adbd`, `zygote`, and `dispd` remained
 running. This does not yet prove that Android will not redraw the region in a
 long-running native UI.
 
+## Read-only device status
+
+The `status` command collects state that a native UI can poll without asking
+Android's Java services: battery capacity/status/voltage/temperature from
+`/sys/class/power_supply/sub_cpu_battery`, AC and USB power presence, USB
+gadget properties, Wi-Fi interface/link state, ADB enablement and daemon
+state, Android process presence, and uptime.
+
+```sh
+adb shell /data/local/tmp/prs-t1-agent status
+```
+
+Kernel/sysfs values are preferred because the Android battery and connectivity
+services disappear when zygote is stopped. On this firmware, the USB power
+node reports cable presence, while the vendor USB gadget's `adb` function is
+not always exposed through sysfs or properties; `adb.process_running` means
+that the device-side daemon is alive, not that the host currently has a
+usable transport. Wi-Fi signal is reported only when `wlan0` appears in
+`/proc/net/wireless`. Missing or unsupported fields are printed as
+`unknown`.
+
 A follow-up 60-second run recorded a physical touch and `KEY_LEFT` button
 press while the marker was active. The exact marker was not preserved after
 input: Android navigated from page 2 back to page 1 and redrew the framebuffer

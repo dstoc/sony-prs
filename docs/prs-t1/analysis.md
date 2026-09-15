@@ -629,6 +629,48 @@ for both the suspend state and the wake-side `on` handoff, with the direct
 `/sys/power/state` write retained as a fallback. The helper source and build
 script are kept with the T1 crate for the next isolated zygote-stopped test.
 
+### Read-only UI status inventory
+
+While physical interaction is paused, the native agent now has a read-only
+`status` command for values that can be polled while the reader is awake or
+while Android's Java framework has been stopped. The first live inventory
+reported:
+
+```text
+battery.status=Full
+battery.capacity_percent=100
+battery.voltage_uv=4200000
+battery.temperature=26
+power.ac_online=false
+power.usb_online=true
+wifi.interface=wlan0
+wifi.interface_present=false
+adb.persist_enabled=true
+adb.service_state=running
+adb.process_running=true
+android.zygote_running=true
+android.system_server_running=true
+```
+
+The T1 exposes `sub_cpu_battery`, `sub_cpu_ac`, and `sub_cpu_usb` under
+`/sys/class/power_supply`. The kernel battery node is more useful than the
+legacy `dumpsys battery` result here: the latter currently reports
+`present=false` despite the kernel reporting a full 4.2 V, 100% battery. The
+USB power node is a reliable cable/power indication (`online=1` while the
+reader is connected), but it is not the same thing as a live host ADB
+transport. The device-side USB gadget sysfs directory is absent and
+`sys.usb.config`/`sys.usb.state` are empty on this boot, so gadget functions
+are reported as unknown; the USB descriptor remains the host-side authority
+for whether the ADB interface actually enumerated.
+
+Wi-Fi is currently disabled or not brought up: `wifi.interface` is `wlan0`,
+but no `wlan0` netdev or `/proc/net/wireless` entry exists. The status code
+therefore reports interface presence, operstate, carrier, and signal as
+separate fields so a future UI can distinguish unavailable from connected
+state when Wi-Fi is enabled. It also reports `adbd`, `zygote`,
+`system_server`, and `dispd` process presence from `/system/bin/ps`, which does
+not require the Android services to be running.
+
 ## Exposed storage
 
 The T1 file service exposes the internal eMMC as

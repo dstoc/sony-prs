@@ -3,6 +3,7 @@ mod display;
 mod framebuffer;
 mod input;
 mod runtime;
+mod status;
 
 use std::env;
 use std::io;
@@ -45,6 +46,16 @@ fn run() -> io::Result<()> {
                 ));
             }
             input::print_inventory();
+            Ok(())
+        }
+        Some("status") => {
+            if args.next().is_some() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "status accepts no arguments",
+                ));
+            }
+            status::print_status();
             Ok(())
         }
         Some("events") => {
@@ -145,11 +156,12 @@ fn probe(device: &Path) {
     }
     android::print_inventory();
     input::print_inventory();
+    status::print_status();
 }
 
 fn print_usage() {
     println!(
-        "prs-t1-agent {}\n\nUsage:\n  prs-t1-agent probe [FRAMEBUFFER]\n  prs-t1-agent input\n  prs-t1-agent events [EVENT_DEVICE] [SECONDS]\n  prs-t1-agent capture [FRAMEBUFFER] > screen.pgm\n  prs-t1-agent render-test [FRAMEBUFFER] [SECONDS] > render-test.pgm\n  prs-t1-agent standalone-test [FRAMEBUFFER] [standby|mem]\n\n`probe`, `input`, `events`, and `capture` are read-only. `events` logs a\nbounded raw evdev stream without grabbing or injecting events. `capture` emits\nan 8-bit grayscale PGM. `render-test` is a write-capable command that briefly\nwrites a centered RGB565 marker, requests a T1 e-ink update, captures the\nframebuffer, and restores the original rectangle. `standalone-test` is a\nlong-running write-capable native UI test for use after stopping zygote; it\nholds a kernel wake lock, displays input data, sleeps on a short power press,\nand reboots on a long power press. Its optional suspend mode defaults to\n`standby`; `mem` selects Android's normal early-suspend path for wake testing.",
+        "prs-t1-agent {}\n\nUsage:\n  prs-t1-agent probe [FRAMEBUFFER]\n  prs-t1-agent status\n  prs-t1-agent input\n  prs-t1-agent events [EVENT_DEVICE] [SECONDS]\n  prs-t1-agent capture [FRAMEBUFFER] > screen.pgm\n  prs-t1-agent render-test [FRAMEBUFFER] [SECONDS] > render-test.pgm\n  prs-t1-agent standalone-test [FRAMEBUFFER] [standby|mem]\n\n`probe`, `status`, `input`, `events`, and `capture` are read-only. `status`\nprints battery, power, USB, Wi-Fi, ADB, uptime, and Android-process state.\n`events` logs a bounded raw evdev stream without grabbing or injecting events.\n`capture` emits an 8-bit grayscale PGM. `render-test` is a write-capable\ncommand that briefly writes a centered RGB565 marker, requests a T1 e-ink\nupdate, captures the framebuffer, and restores the original rectangle.\n`standalone-test` is a long-running write-capable native UI test for use after\nstopping zygote; it holds a kernel wake lock, displays input data, sleeps on a\nshort power press, and reboots on a long power press. Its optional suspend mode\ndefaults to `standby`; `mem` selects Android's normal early-suspend path for\nwake testing.",
         env!("CARGO_PKG_VERSION")
     );
 }
