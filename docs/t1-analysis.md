@@ -161,6 +161,13 @@ Android-based T1.
 
 ## Western minimal root package
 
+The reader's Sony UI reports firmware version `1.0.00.09270` under the Sony
+Reader Settings -> About -> Device Information screen. This is distinct from
+the Android build identifiers captured from the system image (`FRG83`, Android
+2.2.1). The reported version confirms that this is an early Western firmware;
+the exact root-package compatibility should still be treated cautiously until
+the matching restore package is kept available.
+
 The Western Flavor link on the [MobileRead PRST1 rooting page](https://wiki.mobileread.com/wiki/PRST1_Rooting_and_Tweaks)
 was downloaded from:
 
