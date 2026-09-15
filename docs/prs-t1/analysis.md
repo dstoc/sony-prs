@@ -51,7 +51,7 @@ The framebuffer is:
 
 | Property | Observation |
 |---|---|
-| Device | `/dev/fb0`, major/minor `29,0` |
+| Device | `/dev/graphics/fb0`, major/minor `29,0` (`/dev/fb0` is absent) |
 | Permissions | `0666`, owner `root`, group `graphics` |
 | Kernel driver | `mxc_epdc_fb` (`/proc/fb`) |
 | Bits per pixel | `16` |
@@ -82,13 +82,60 @@ The event nodes are `0660 root:input`; a non-root native process will need the
 `input` group or an appropriate udev/device-permission arrangement. There is
 no `/dev/subcpu` node on this T1, so the PRS-350 sub-CPU input path must not be
 copied into the T1 agent. The touch device reports `EV_KEY`, `EV_ABS`, and
-`EV_SYN`; its exact absolute ranges, coordinate orientation, and event
-consumption behavior remain to be captured with a read-only evdev probe.
+`EV_SYN`. The native ioctl probe reported these capabilities for `event1`:
 
-The next native-runtime step is a read-only framebuffer screenshot and event
-inventory while Android remains active. Display-process ownership, framebuffer
-refresh races, and the smallest Android UI component that can be stopped are
-still unknown.
+```text
+name="SONY IR Touchpanel" id=0013:0000:0000:0001
+EV_SYN EV_KEY EV_ABS
+ABS_X min=0 max=800
+ABS_Y min=0 max=600
+ABS_MT_TOUCH_MAJOR min=0 max=31
+ABS_MT_POSITION_X min=0 max=0
+ABS_MT_POSITION_Y min=0 max=0
+```
+
+The zero ranges for the multitouch compatibility axes suggest that the useful
+coordinates are the legacy ABS_X/ABS_Y pair, but this still needs confirmation
+from a bounded raw event capture. The key devices expose ordinary `EV_KEY`
+events.
+
+## Native probe and screenshot
+
+The first `prs-t1-agent` ARMv5-musl build was copied to
+`/data/local/tmp/prs-t1-agent` and run through root ADB while Android remained
+running. The read-only `probe` completed without stopping any Android process.
+It confirmed the framebuffer metadata above and observed `dispd`, `netd`,
+`zygote`, `system_server`, and `/sbin/adbd` running. The init configuration
+defines services for `dispd`, `adbd`, `netd`, `zygote`, `wpa_supplicant`, and
+`dhcpcd`; at the time of the probe, `wpa_supplicant` and `dhcpcd` were stopped.
+
+The Android service manager has a registered `SurfaceFlinger` service, and
+`dumpsys SurfaceFlinger` reports active 600x800 layers, 608-pixel buffer
+strides, and several allocated display buffers. The process listing identifies
+`/system/bin/dispd` as running rather than a process named `surfaceflinger`.
+This makes `dispd` and the SurfaceFlinger-compatible service path the first
+display-ownership candidates; it is not evidence that zygote should be
+stopped.
+
+The native `capture` command opened `/dev/graphics/fb0` read-only and emitted a
+valid 600x800, 16-bpp-to-gray PGM. The preserved ignored artifact is
+`device-dumps/prs-t1/captures/native-agent-framebuffer.pgm`:
+
+```text
+size: 480015 bytes
+sha256: 520e1cda1b9fd1589e24e7cad13074d7b9c1aed616f1aa78d11c08d17c2357aa
+```
+
+The old T1 ADB daemon closes `adb exec-out`, while direct binary output through
+`adb shell` is PTY-translated to CRLF. The reliable capture route is to redirect
+the PGM to `/data/local/tmp` on the reader and retrieve it with `adb pull`.
+No framebuffer write or refresh ioctl has been attempted. Display-process
+ownership, redraw races, and the effect of stopping only the Sony UI layer
+remain to be tested.
+
+The next native-runtime step is a bounded raw evdev event capture while Android
+remains active. Display-process ownership, framebuffer refresh races, and the
+smallest Android UI component that can be stopped are still unknown.
 
 ## Exposed storage
 

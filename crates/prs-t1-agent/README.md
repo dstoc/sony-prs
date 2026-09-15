@@ -5,9 +5,10 @@ display loop and receive touch/button input. It is intentionally separate from
 the PRS-350 agent: the T1 is an Android 2.2.1 reader with a different boot,
 display, input, and service model.
 
-The binary is currently only a buildable scaffold. The first implementation
-milestone is hardware discovery and a safe display/input probe, not replacing
-Android at boot.
+The binary currently implements the first read-only hardware-discovery
+milestone: framebuffer inspection and capture, Android process/service
+inspection, and evdev capability inspection. Replacing Android at boot is not
+part of this milestone.
 
 ## Design goal
 
@@ -36,10 +37,11 @@ open the framebuffer read-only, query `fb_var_screeninfo` and
 an 8-bit grayscale PGM stream, and write that stream to stdout. It must never
 write the mapped framebuffer or issue a display-refresh ioctl.
 
-The preferred host workflow is binary-safe `adb exec-out`:
+The preferred host workflow is binary-safe `adb exec-out` when the device's
+ADB daemon supports it:
 
 ```sh
-adb push target/arm-linux-androideabi/release/prs-t1-agent /data/local/tmp/prs-t1-agent
+adb push ./prs-t1-agent /data/local/tmp/prs-t1-agent
 adb shell chmod 755 /data/local/tmp/prs-t1-agent
 adb exec-out /data/local/tmp/prs-t1-agent capture > t1-screen.pgm
 ```
@@ -50,6 +52,15 @@ capture to `/data/local/tmp/t1-screen.pgm` and the host can retrieve it with
 transition; matching metadata and changing pixels will distinguish a usable
 buffer from a stale or shadow display surface. A screenshot is also the first
 artifact to preserve before any process-ownership experiment.
+
+This T1's old ADB daemon closes the `exec-out` channel, and direct binary output
+through `adb shell` is PTY-translated to CRLF. The tested workflow is therefore
+to redirect on the reader and pull the file:
+
+```sh
+adb shell '/data/local/tmp/prs-t1-agent capture > /data/local/tmp/t1-screen.pgm'
+adb pull /data/local/tmp/t1-screen.pgm ./t1-screen.pgm
+```
 
 ## What we know about this T1
 
@@ -100,9 +111,9 @@ analysis log and keep a stock reboot route available.
 Check both common Android paths and inspect the kernel's registration:
 
 ```sh
-adb shell 'id; ls -l /dev/fb* /dev/graphics/fb* 2>/dev/null'
+adb shell 'ls -l /dev/fb0 /dev/graphics/fb0 2>/dev/null'
 adb shell 'cat /proc/fb 2>/dev/null; cat /proc/devices 2>/dev/null'
-adb shell 'find /sys/class/graphics -maxdepth 2 -type f -print -exec sh -c "echo --- \"$1\"; cat \"$1\"" sh {} \; 2>/dev/null'
+adb shell 'for f in name bits_per_pixel virtual_size stride mode modes state blank rotate; do echo --- $f; cat /sys/class/graphics/fb0/$f 2>/dev/null; done'
 adb shell 'getprop | grep -i -E "fb|display|eink|screen"'
 ```
 
@@ -250,8 +261,17 @@ The crate should not initially depend on Android Java APIs or a graphical
 toolkit. Keep the native surface small, use direct Linux syscalls/ioctls where
 needed, and make every device-mutating operation an explicit opt-in mode.
 
-## Current scaffold
+## Current implementation
 
-The current binary exits with a scaffold status and performs no device I/O.
-The next code change should implement Phase A's read-only framebuffer and
-process inventory, then use the rooted T1 to fill in the unknowns above.
+The current `probe` command runs read-only framebuffer, Android, and input
+inventory. The `input` command performs evdev ioctl capability queries without
+opening an event stream, grabbing a device, or injecting events. The `capture`
+command opens `/dev/graphics/fb0` read-only, maps the framebuffer with
+`PROT_READ`, converts the visible RGB565 pixels to an 8-bit grayscale PGM, and
+writes only the PGM stream to stdout.
+
+The ARMv5 musl build has been deployed and tested on this T1's ARMv7
+userspace. It successfully captured a 600x800 screen and identified the
+touchpanel's absolute axes. The next code change should add a bounded raw
+evdev event logger, then investigate display refresh ownership while Android
+remains running.
