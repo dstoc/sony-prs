@@ -194,8 +194,16 @@ On 2026-09-15, after confirming the Sony UI firmware version
 `1.0.00.09270`, the contents of `sdcard/` and `PRS-T1 Updater.package` were
 copied to the internal `READER` volume. The destination contains the expected
 `tmp/`, `updates/`, and updater marker, and all 28 payload files compare
-byte-for-byte with the package. The reader has not yet been shut down or
-rebooted, so no rooting or flashing operation has been started.
+byte-for-byte with the package. This staging was followed by a clean unmount
+and one recovery-selector reboot; the resulting boot showed the launcher
+chooser containing `ADWLauncher EX` and the stock `Home` launcher, consistent
+with the root package having been applied.
+
+After the root-package boot, the T1's USB gadget still exposes only the normal
+mass-storage interface. No host-side `/dev/ttyACM*` or `/dev/ttyUSB*` node and
+no ADB interface were present. The minimal package contains the Windows
+`usbser.sys` host driver but no `adbd` binary or ADB configuration payload, so
+ADB is not currently enabled.
 
 ## USB failure evidence
 
