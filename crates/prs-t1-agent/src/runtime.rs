@@ -149,8 +149,12 @@ fn sleep_cycle(
     display.prepare_for_suspend();
 
     eprintln!("standalone-test: requesting suspend");
+    let suspend_started = Instant::now();
     let sleep_result = wake_lock.release().and_then(|_| request_suspend());
-    eprintln!("standalone-test: suspend request returned: {sleep_result:?}");
+    let suspend_elapsed_ms = suspend_started.elapsed().as_millis() as u64;
+    eprintln!(
+        "standalone-test: suspend request returned: {sleep_result:?} elapsed_ms={suspend_elapsed_ms}"
+    );
     let acquire_result = wake_lock.acquire();
     eprintln!("standalone-test: wake lock reacquire returned: {acquire_result:?}");
     let resume_result = display.resume_after_suspend();
@@ -161,7 +165,7 @@ fn sleep_cycle(
     resume_result.map_err(|error| display_error("post-resume framebuffer remap", error))?;
 
     state.mode = "ACTIVE";
-    state.message = "WOKE - INPUT READY".into();
+    state.message = format!("WOKE AFTER {suspend_elapsed_ms}MS");
     state.last_power_duration_ms = None;
     state.ignore_power_until = Some(Instant::now() + Duration::from_secs(2));
     redraw(display, state, wake_lock.is_held())
@@ -351,7 +355,14 @@ impl UiState {
             self.last_key = Some((source, event));
             self.key_events += 1;
             if source.is_power() && event.code == KEY_POWER {
-                return self.observe_power(event);
+                eprintln!(
+                    "standalone-test: power event source={} value={} timestamp_us={} mode={}",
+                    source.label(),
+                    event.value,
+                    event.timestamp_micros(),
+                    self.mode,
+                );
+                return self.observe_power(source, event);
             }
             return (true, PowerAction::None);
         }
@@ -359,7 +370,7 @@ impl UiState {
         (false, PowerAction::None)
     }
 
-    fn observe_power(&mut self, event: RawEvent) -> (bool, PowerAction) {
+    fn observe_power(&mut self, source: InputSourceKind, event: RawEvent) -> (bool, PowerAction) {
         if let Some(deadline) = self.ignore_power_until {
             if Instant::now() < deadline {
                 if event.value == 0 {
@@ -387,9 +398,19 @@ impl UiState {
                 self.last_power_duration_ms = Some(duration / 1_000);
                 if duration >= LONG_PRESS_MICROS {
                     self.message = "LONG POWER - REBOOT".into();
+                    eprintln!(
+                        "standalone-test: power release source={} duration_ms={} action=REBOOT",
+                        source.label(),
+                        duration / 1_000
+                    );
                     (true, PowerAction::Reboot)
                 } else {
                     self.message = "SHORT POWER - SLEEP".into();
+                    eprintln!(
+                        "standalone-test: power release source={} duration_ms={} action=SLEEP",
+                        source.label(),
+                        duration / 1_000
+                    );
                     (true, PowerAction::Sleep)
                 }
             }
