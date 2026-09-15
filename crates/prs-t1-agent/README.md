@@ -156,6 +156,14 @@ adb shell stop zygote
 adb shell 'trap "" HUP; /data/local/tmp/prs-t1-agent standalone-test /dev/graphics/fb0 </dev/null >/data/local/tmp/prs-t1-agent.log 2>&1 &'
 ```
 
+The optional final argument selects the suspend request: `standby` (the
+default) uses the T1 EINK early-suspend mode, while `mem` uses Android's
+normal early-suspend path. For example, the stock-style wake test is:
+
+```sh
+adb shell 'trap "" HUP; /data/local/tmp/prs-t1-agent standalone-test /dev/graphics/fb0 mem </dev/null >/data/local/tmp/prs-t1-agent-mem.log 2>&1 &'
+```
+
 The `HUP` trap and redirected standard streams are important on this old T1:
 the ADB USB link disappears during suspend, and a process left attached to the
 interactive ADB shell is otherwise lost before it can handle resume. The

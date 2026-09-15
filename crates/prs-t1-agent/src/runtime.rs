@@ -17,9 +17,41 @@ const ABS_MT_POSITION_Y: u16 = 54;
 const KEY_POWER: u16 = 116;
 const LONG_PRESS_MICROS: u64 = 2_000_000;
 const WAKE_LOCK_NAME: &str = "prs-t1-native-test";
-const SUSPEND_STATE: &[u8] = b"standby\n";
 
-pub fn run(path: &Path) -> io::Result<()> {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SuspendMode {
+    EInk,
+    Normal,
+}
+
+impl SuspendMode {
+    pub fn parse(value: &str) -> io::Result<Self> {
+        match value {
+            "standby" => Ok(Self::EInk),
+            "mem" => Ok(Self::Normal),
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("unknown suspend mode {value:?}; expected standby or mem"),
+            )),
+        }
+    }
+
+    fn state_bytes(self) -> &'static [u8] {
+        match self {
+            Self::EInk => b"standby\n",
+            Self::Normal => b"mem\n",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::EInk => "EINK_STANDBY",
+            Self::Normal => "NORMAL_MEM",
+        }
+    }
+}
+
+pub fn run(path: &Path, suspend_mode: SuspendMode) -> io::Result<()> {
     let mut display = NativeDisplay::open(path)?;
     let mut wake_lock = WakeLock::open()?;
     wake_lock.acquire()?;
@@ -51,7 +83,9 @@ pub fn run(path: &Path) -> io::Result<()> {
         }
 
         match action {
-            PowerAction::Sleep => sleep_cycle(&mut display, &mut wake_lock, &mut state)?,
+            PowerAction::Sleep => {
+                sleep_cycle(&mut display, &mut wake_lock, &mut state, suspend_mode)?
+            }
             PowerAction::Reboot => {
                 state.mode = "REBOOTING";
                 state.message = "REBOOT REQUESTED".into();
@@ -131,9 +165,14 @@ fn sleep_cycle(
     display: &mut NativeDisplay,
     wake_lock: &mut WakeLock,
     state: &mut UiState,
+    suspend_mode: SuspendMode,
 ) -> io::Result<()> {
     state.mode = "SLEEPING";
-    state.message = "EINK STANDBY MODE".into();
+    state.message = match suspend_mode {
+        SuspendMode::EInk => "EINK STANDBY MODE",
+        SuspendMode::Normal => "NORMAL MEM MODE",
+    }
+    .into();
     eprintln!("standalone-test: drawing pre-suspend screen");
     redraw(display, state, wake_lock.is_held())
         .map_err(|error| display_error("pre-suspend redraw", error))?;
@@ -149,9 +188,14 @@ fn sleep_cycle(
     eprintln!("standalone-test: standby screen supplied");
     display.prepare_for_suspend();
 
-    eprintln!("standalone-test: requesting suspend");
+    eprintln!(
+        "standalone-test: requesting suspend mode={}",
+        suspend_mode.label()
+    );
     let suspend_started = Instant::now();
-    let suspend_result = wake_lock.release().and_then(|_| request_suspend());
+    let suspend_result = wake_lock
+        .release()
+        .and_then(|_| request_suspend(suspend_mode));
     eprintln!("standalone-test: suspend request queued: {suspend_result:?}");
     let sleep_result = suspend_result.and_then(|_| wait_for_display_wake());
     let suspend_elapsed_ms = suspend_started.elapsed().as_millis() as u64;
@@ -175,9 +219,9 @@ fn sleep_cycle(
         .map_err(|error| display_error("post-resume redraw", error))
 }
 
-fn request_suspend() -> io::Result<()> {
+fn request_suspend(mode: SuspendMode) -> io::Result<()> {
     let mut state = OpenOptions::new().write(true).open("/sys/power/state")?;
-    state.write_all(SUSPEND_STATE)?;
+    state.write_all(mode.state_bytes())?;
     state.flush()
 }
 
@@ -433,5 +477,21 @@ impl UiState {
             }
             _ => (true, PowerAction::None),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SuspendMode;
+
+    #[test]
+    fn parses_supported_suspend_modes() {
+        assert_eq!(SuspendMode::parse("standby").unwrap(), SuspendMode::EInk);
+        assert_eq!(SuspendMode::parse("mem").unwrap(), SuspendMode::Normal);
+    }
+
+    #[test]
+    fn rejects_unknown_suspend_mode() {
+        assert!(SuspendMode::parse("on").is_err());
     }
 }
