@@ -224,6 +224,18 @@ internal eMMC at fixed offsets and then switches the boot selector. The
 package has only been downloaded and inspected; it has not been copied to the
 T1 or executed.
 
+The existing per-partition images do not include the unpartitioned boot area,
+so the offsets were verified with a separate read-only raw-range acquisition
+from `/dev/block/mmcblk2`. At `0x00500000` the T1 returned a U-Boot uImage named
+`Normal Rootfs`, with ARM load and entry addresses `0x70308000`, matching the
+ADB ramdisk's magic, name, and addresses. At `0x00f00000` it returned the
+current boot environment, including `rawtable=0xF40000` and a boot command
+that reads the normal ramdisk from `0x2800` for `0x1F4` sectors. The package's
+`nboote.bin` has the same environment and changes that count to `0x258`
+sectors, matching the package script's 600-sector write. These observations
+verify both package offsets for this T1 without writing anything. The small
+captures are preserved under `device-dumps/prs-t1/boot-area/`.
+
 ## USB failure evidence
 
 During the larger reads, the host reported:
