@@ -96,6 +96,49 @@ The framebuffer mapping rejects `msync()` with `EINVAL` on this image. The
 vendor gralloc does not call `msync()` either, so the native test relies on the
 shared read/write mapping followed by the EPDC update ioctl.
 
+### Partial refresh and waveform timing
+
+The original native runtime repainted the complete 600x800 screen in response
+to each completed touch frame and submitted a full-screen update rectangle.
+Although the update payload selected `UPDATE_MODE_PARTIAL`, that only made the
+request eligible for partial processing; it did not make the requested region
+small. The runtime now keeps the complete logical framebuffer current but
+submits only the rows whose diagnostic values changed. Touch details use
+`(left=20, top=350, width=560, height=94)`; key and power details use
+`(left=20, top=434, width=560, height=210)`; initial and ownership-sensitive
+redraws remain full-screen.
+
+Device-side timing showed that region size is not the primary latency control
+when using GC16. A full-screen GC16 update completed in about 703--714 ms, a
+560x490 GC16 update in about 703--712 ms, and a 560x94 GC16 touch update in
+about 710 ms after the update queue was clear. The waveform choice is much
+more significant for this panel. The same reversible 200x120 marker probe
+completed in:
+
+| Waveform | Device-side update time | Result |
+|---|---:|---|
+| `DU` (1-bit) | ~273 ms | accepted; fastest tested |
+| `GC4` (4-level grayscale) | ~614 ms | accepted |
+| `GC16` (16-level grayscale) | ~700 ms | accepted |
+| `A2` (2-level) | ~687 ms | accepted, but not fast on this firmware |
+
+The live native touch-region test then completed three `DU` updates in
+377--381 ms. The variability versus the smaller marker probe is consistent
+with panel/update-queue state, but still represents roughly half the GC16
+latency. The native diagnostic screen is deliberately black and white, making
+`DU` a reasonable fast path for its transient details. Repeated `DU` updates
+may trade grayscale quality and ghosting for responsiveness; this has not yet
+been characterized optically on the T1.
+
+The probe accepts only the four waveform values above even though other MXC
+EPDC headers define additional modes. Acceptance of an ioctl does not by
+itself establish good visual output, so unsupported or poor modes should be
+tested with the bounded marker and restored with GC16. The next useful test is
+to repeat many `DU` updates in one small region, make a visual observation
+after the sequence, and determine when a GC16 cleanup refresh is needed. A
+framebuffer capture can verify the memory contents but is not an optical
+capture of the e-ink panel.
+
 The input devices are:
 
 | Node | Name | Handlers / role |

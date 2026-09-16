@@ -134,6 +134,13 @@ framebuffer. It refreshes the status block every five seconds while retaining
 the live touch, key, and power diagnostics, so the same screen remains useful
 when zygote and `system_server` are stopped.
 
+The native test uses the fast `DU` waveform for touch, key, and power-detail
+updates, and keeps `GC16` for the initial, status, and suspend/resume redraws.
+The diagnostic screen is black and white, so it does not need grayscale during
+these small updates. A real UI should periodically use a grayscale/full refresh
+to control ghosting, and should validate the visual quality of repeated `DU`
+updates on the target panel.
+
 A follow-up 60-second run recorded a physical touch and `KEY_LEFT` button
 press while the marker was active. The exact marker was not preserved after
 input: Android navigated from page 2 back to page 1 and redrew the framebuffer
