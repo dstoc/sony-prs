@@ -3,10 +3,10 @@ use crate::framebuffer::NativeDisplay;
 use crate::input::{EventReader, RawEvent};
 use std::fs::OpenOptions;
 use std::io::{self, Read, Write};
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::fd::AsRawFd;
+use std::os::raw::c_int;
 use std::path::Path;
-use std::process::Command;
-use std::sync::mpsc::{self, TryRecvError};
+use std::process::{Child, ChildStdout, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -23,7 +23,13 @@ const LONG_PRESS_MICROS: u64 = 2_000_000;
 const WAKE_LOCK_NAME: &str = "prs-t1-native-test";
 const POWER_STATE_HELPER: &str = "/data/local/tmp/prs-t1-power-state";
 const O_NONBLOCK: i32 = 0x800;
+const F_GETFL: c_int = 3;
+const F_SETFL: c_int = 4;
 const STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
+
+unsafe extern "C" {
+    fn fcntl(fd: c_int, command: c_int, ...) -> c_int;
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SuspendMode {
@@ -319,27 +325,32 @@ fn request_suspend(mode: SuspendMode) -> io::Result<()> {
 }
 
 fn wait_for_display_wake(inputs: &mut InputSet, state: &mut UiState) -> io::Result<()> {
-    let (wake_tx, wake_rx) = mpsc::channel();
-    thread::spawn(move || {
-        let result = read_display_wake_barrier();
-        let _ = wake_tx.send(result);
-    });
+    let mut wake = DisplayWakeReader::spawn()?;
+    let mut buffer = [0u8; 16];
     let mut resume_requested = false;
 
     loop {
-        match wake_rx.try_recv() {
-            Ok(Ok(bytes)) => {
+        match wake.output.read(&mut buffer) {
+            Ok(bytes) if bytes > 0 => {
                 eprintln!("standalone-test: display wake barrier released bytes={bytes}");
                 return Ok(());
             }
-            Ok(Err(error)) => return Err(error),
-            Err(TryRecvError::Empty) => {}
-            Err(TryRecvError::Disconnected) => {
+            Ok(0) => {
                 return Err(io::Error::new(
                     io::ErrorKind::UnexpectedEof,
                     "display wake barrier reader exited without a result",
                 ));
             }
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+            Err(error) => return Err(error),
+        }
+
+        if let Some(status) = wake.child.try_wait()? {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                format!("display wake barrier reader exited with {status}"),
+            ));
         }
 
         for source in &mut inputs.sources {
@@ -372,22 +383,56 @@ fn wait_for_display_wake(inputs: &mut InputSet, state: &mut UiState) -> io::Resu
     }
 }
 
-fn read_display_wake_barrier() -> io::Result<usize> {
-    let mut wake = OpenOptions::new()
-        .read(true)
-        .custom_flags(O_NONBLOCK)
-        .open("/sys/power/wait_for_fb_wake")?;
-    let mut buffer = [0u8; 16];
+struct DisplayWakeReader {
+    child: Child,
+    output: ChildStdout,
+}
 
-    loop {
-        match wake.read(&mut buffer) {
-            Ok(bytes) if bytes > 0 => return Ok(bytes),
-            Ok(_) => {}
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
-            Err(error) => return Err(error),
+impl DisplayWakeReader {
+    fn spawn() -> io::Result<Self> {
+        let mut child = Command::new("/system/bin/cat")
+            .arg("/sys/power/wait_for_fb_wake")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()?;
+        let output = match child.stdout.take() {
+            Some(output) => output,
+            None => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    "display wake barrier reader has no stdout pipe",
+                ));
+            }
+        };
+        if let Err(error) = set_nonblocking(output.as_raw_fd()) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error);
         }
-        thread::sleep(Duration::from_millis(20));
+        Ok(Self { child, output })
     }
+}
+
+impl Drop for DisplayWakeReader {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+fn set_nonblocking(fd: c_int) -> io::Result<()> {
+    let flags = unsafe { fcntl(fd, F_GETFL) };
+    if flags < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let result = unsafe { fcntl(fd, F_SETFL, flags | O_NONBLOCK) };
+    if result < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 fn request_resume() -> io::Result<()> {
