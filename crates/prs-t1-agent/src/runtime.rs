@@ -20,6 +20,7 @@ const LONG_PRESS_MICROS: u64 = 2_000_000;
 const WAKE_LOCK_NAME: &str = "prs-t1-native-test";
 const POWER_STATE_HELPER: &str = "/data/local/tmp/prs-t1-power-state";
 const O_NONBLOCK: i32 = 0x800;
+const STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SuspendMode {
@@ -77,7 +78,7 @@ pub fn run(path: &Path, suspend_mode: SuspendMode) -> io::Result<()> {
         .map_err(|error| display_error("initial redraw", error))?;
 
     loop {
-        let mut redraw_needed = false;
+        let mut redraw_needed = state.refresh_status_if_due();
         let mut action = PowerAction::None;
         for source in &mut inputs.sources {
             loop {
@@ -124,6 +125,7 @@ fn redraw(display: &mut NativeDisplay, state: &UiState, wake_lock_held: bool) ->
 }
 
 fn screen_lines(state: &UiState, wake_lock_held: bool) -> Vec<String> {
+    let status = &state.status;
     let touch = state
         .last_touch
         .map(|event| {
@@ -154,19 +156,73 @@ fn screen_lines(state: &UiState, wake_lock_held: bool) -> Vec<String> {
         .last_power_duration_ms
         .map(|duration| format!("POWER LAST {}MS", duration))
         .unwrap_or_else(|| "POWER SHORT SLEEP LONG REBOOT".into());
+    let battery_level = number_or_unknown(status.battery.capacity_percent);
+    let battery_state = uppercase_or_unknown(status.battery.status.as_deref());
+    let temperature = number_or_unknown(status.battery.temperature);
+    let ac = bool_label(status.power.ac_online);
+    let usb = bool_label(status.power.usb_online);
+    let wifi_state = if status.wifi.interface_present {
+        uppercase_or_unknown(status.wifi.operstate.as_deref())
+    } else {
+        "OFF".into()
+    };
+    let supplicant = uppercase_or_unknown(status.wifi.supplicant_state.as_deref());
+    let framebuffer = match status.screen.framebuffer_state {
+        Some(0) => "ACTIVE",
+        Some(_) => "OTHER",
+        None => "UNKNOWN",
+    };
+    let zygote = if status.android.zygote_running {
+        "RUN"
+    } else {
+        "STOP"
+    };
+    let dispd = if status.android.dispd_running {
+        "RUN"
+    } else {
+        "STOP"
+    };
     vec![
-        "PRS T1 NATIVE TEST".into(),
-        "ZYGOTE STOPPED".into(),
+        "PRS T1 NATIVE UI".into(),
         format!("STATE {}", state.mode),
+        format!("BAT {} {}", battery_level, battery_state),
+        format!("TEMP {} AC {}", temperature, ac),
+        format!(
+            "USB {} ADB {}",
+            usb,
+            if status.adb.process_running {
+                "RUN"
+            } else {
+                "STOP"
+            }
+        ),
         format!("WAKE HELD {}", if wake_lock_held { "YES" } else { "NO" }),
+        format!(
+            "WIFI {} {}",
+            status.wifi.interface.to_ascii_uppercase(),
+            wifi_state
+        ),
+        format!("SUPP {}", supplicant),
+        format!(
+            "DATA {}K FREE",
+            number_or_unknown(status.storage.data.available_kib)
+        ),
+        format!(
+            "SD {}K FREE",
+            number_or_unknown(status.storage.sdcard.available_kib)
+        ),
         coordinates,
         touch,
         format!("TOUCH EVENTS {}", state.touch_events),
         key,
         format!("KEY EVENTS {}", state.key_events),
+        format!(
+            "FB {} ROT {}",
+            framebuffer,
+            number_or_unknown(status.screen.rotate)
+        ),
+        format!("ZYGOTE {} DISP {}", zygote, dispd),
         power,
-        "SHORT SLEEP LONG REBOOT".into(),
-        "ADB REBOOT RECOVERY".into(),
         state.message.clone(),
     ]
 }
@@ -227,6 +283,7 @@ fn sleep_cycle(
     resume_result.map_err(|error| display_error("post-resume framebuffer remap", error))?;
 
     state.mode = "ACTIVE";
+    state.refresh_status();
     state.message = format!("WOKE AFTER {suspend_elapsed_ms}MS");
     state.last_power_duration_ms = None;
     state.ignore_power_until = Some(Instant::now() + Duration::from_secs(2));
@@ -313,6 +370,26 @@ fn request_resume() -> io::Result<()> {
     let mut state = OpenOptions::new().write(true).open("/sys/power/state")?;
     state.write_all(b"on\n")?;
     state.flush()
+}
+
+fn uppercase_or_unknown(value: Option<&str>) -> String {
+    value
+        .map(|value| value.to_ascii_uppercase())
+        .unwrap_or_else(|| "UNKNOWN".into())
+}
+
+fn bool_label(value: Option<bool>) -> &'static str {
+    match value {
+        Some(true) => "ON",
+        Some(false) => "OFF",
+        None => "UNKNOWN",
+    }
+}
+
+fn number_or_unknown(value: Option<i64>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "UNKNOWN".into())
 }
 
 fn run_power_state_helper(state: &str) -> io::Result<()> {
@@ -462,6 +539,8 @@ struct UiState {
     power_press_us: Option<u64>,
     last_power_duration_ms: Option<u64>,
     ignore_power_until: Option<Instant>,
+    status: crate::status::StatusSnapshot,
+    last_status_refresh: Instant,
 }
 
 impl UiState {
@@ -479,7 +558,22 @@ impl UiState {
             power_press_us: None,
             last_power_duration_ms: None,
             ignore_power_until: None,
+            status: crate::status::collect(),
+            last_status_refresh: Instant::now(),
         }
+    }
+
+    fn refresh_status_if_due(&mut self) -> bool {
+        if self.last_status_refresh.elapsed() < STATUS_REFRESH_INTERVAL {
+            return false;
+        }
+        self.refresh_status();
+        true
+    }
+
+    fn refresh_status(&mut self) {
+        self.status = crate::status::collect();
+        self.last_status_refresh = Instant::now();
     }
 
     fn observe(&mut self, source: InputSourceKind, event: RawEvent) -> (bool, PowerAction) {

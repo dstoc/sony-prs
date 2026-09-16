@@ -122,6 +122,11 @@ usable transport. Wi-Fi signal is reported only when `wlan0` appears in
 `/proc/net/wireless`. Missing or unsupported fields are printed as
 `unknown`.
 
+`standalone-test` renders a compact version of this snapshot on the native
+framebuffer. It refreshes the status block every five seconds while retaining
+the live touch, key, and power diagnostics, so the same screen remains useful
+when zygote and `system_server` are stopped.
+
 A follow-up 60-second run recorded a physical touch and `KEY_LEFT` button
 press while the marker was active. The exact marker was not preserved after
 input: Android navigated from page 2 back to page 1 and redrew the framebuffer

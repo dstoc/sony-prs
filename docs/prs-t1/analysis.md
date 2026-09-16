@@ -606,6 +606,27 @@ now polls the power evdev nodes during the wake wait and writes `on` when the
 first wake-side power event arrives; the display barrier is still used before
 the framebuffer is redrawn.
 
+### Native UI status panel
+
+On 2026-09-16, the native status collector was integrated into the
+`standalone-test` framebuffer UI. The panel refreshes its read-only snapshot
+every five seconds and continues to show the native input and power diagnostics
+on the same screen. The displayed fields are deliberately compact so they fit
+the 600x800 T1 panel: battery level/state, temperature and AC, USB power and
+ADB process state, Wi-Fi interface/supplicant state, free space on `/data` and
+`/mnt/sdcard`, framebuffer state/rotation, and zygote/dispd process state.
+
+The deployed test was started with zygote stopped. A device-side framebuffer
+capture returned `600x800 16bpp`; the host-side grayscale conversion produced
+an 8-bit PNG. The captured screen showed `BAT 100 FULL`, `TEMP 25 AC OFF`,
+`USB ON ADB RUN`, `WIFI WLAN0 OFF`, `SUPP STOPPED`, `DATA 22067K FREE`,
+`SD 1396884K FREE`, `FB ACTIVE ROT 3`, and `ZYGOTE STOP DISP RUN`. This is the
+first screenshot of the custom status rendering itself, rather than only a
+local preview. No touch or physical button interaction was needed for this
+test. The native process was terminated by rebooting; ADB returned after about
+11 seconds and zygote, `system_server`, `dispd`, and `adbd` were all present
+again after normal boot completed.
+
 ### Vendor power-state bridge
 
 The installed `/system/lib/libhardware_legacy.so` was pulled from the reader
