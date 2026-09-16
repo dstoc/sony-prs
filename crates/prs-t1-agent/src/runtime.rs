@@ -153,7 +153,13 @@ fn redraw(
     area: DirtyArea,
 ) -> io::Result<()> {
     let lines = screen_lines(state, wake_lock_held);
-    display::draw_screen(display, &lines, area.region(display), area.waveform())
+    display::draw_screen(
+        display,
+        &lines,
+        area.region(display),
+        area.waveform(),
+        area.wait_for_completion(),
+    )
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -196,6 +202,10 @@ impl DirtyArea {
             Self::Touch | Self::Key | Self::Power => WaveformMode::Du,
             Self::Full | Self::Status => WaveformMode::Gc16,
         }
+    }
+
+    fn wait_for_completion(self) -> bool {
+        matches!(self, Self::Full | Self::Status)
     }
 }
 

@@ -411,6 +411,7 @@ pub fn render_test_to(
     path: &Path,
     wait_after_capture: Duration,
     waveform: WaveformMode,
+    wait_for_completion: bool,
     output: &mut impl Write,
 ) -> io::Result<()> {
     let file = OpenOptions::new().read(true).write(true).open(path)?;
@@ -455,13 +456,23 @@ pub fn render_test_to(
     );
     eprintln!("render-test: waveform={}", waveform.label());
     let started = Instant::now();
-    if let Err(error) = request_update(file.as_raw_fd(), rect, waveform, TEST_UPDATE_MARKER) {
+    let update_result = if wait_for_completion {
+        request_update(file.as_raw_fd(), rect, waveform, TEST_UPDATE_MARKER)
+    } else {
+        submit_update(file.as_raw_fd(), rect, waveform, TEST_UPDATE_MARKER)
+    };
+    if let Err(error) = update_result {
         layout.restore(mapping.as_mut_slice(), &backup)?;
         return Err(error);
     }
     eprintln!(
-        "render-test: update_elapsed_ms={} status=ok",
-        started.elapsed().as_millis()
+        "render-test: {}_elapsed_ms={} status=ok",
+        if wait_for_completion {
+            "update"
+        } else {
+            "update_submission"
+        },
+        started.elapsed().as_millis(),
     );
 
     let capture_result = write_pgm(&var, &fix, mapping.as_slice(), output);
@@ -504,6 +515,16 @@ fn request_update(
     waveform: WaveformMode,
     marker: u32,
 ) -> io::Result<()> {
+    submit_update(fd, rect, waveform, marker)?;
+    wait_for_update_complete(fd, marker)
+}
+
+fn submit_update(
+    fd: c_int,
+    rect: MxcfbRect,
+    waveform: WaveformMode,
+    marker: u32,
+) -> io::Result<()> {
     let mut auto_update_mode = AUTO_UPDATE_MODE_REGION;
     let result = unsafe {
         ioctl(
@@ -529,7 +550,10 @@ fn request_update(
     if result < 0 {
         return Err(ioctl_error("send display update"));
     }
+    Ok(())
+}
 
+fn wait_for_update_complete(fd: c_int, marker: u32) -> io::Result<()> {
     let mut completed_marker = marker;
     let result = unsafe {
         ioctl(
@@ -699,6 +723,7 @@ pub struct NativeDisplay {
     fix: FbFixScreeninfo,
     mapping: Option<MappedFramebuffer>,
     next_marker: u32,
+    pending_marker: Option<u32>,
 }
 
 impl NativeDisplay {
@@ -719,6 +744,7 @@ impl NativeDisplay {
             fix,
             mapping,
             next_marker: 10,
+            pending_marker: None,
         })
     }
 
@@ -739,6 +765,33 @@ impl NativeDisplay {
         &mut self,
         region: DisplayRegion,
         waveform: WaveformMode,
+        paint: F,
+    ) -> io::Result<()>
+    where
+        F: FnOnce(&mut DisplayCanvas<'_>),
+    {
+        self.draw_region_with_waveform_and_wait(region, waveform, true, paint)
+    }
+
+    /// Paint and submit an update without waiting for the panel waveform to
+    /// finish. A later blocking update drains the pending marker first.
+    pub fn draw_region_with_waveform_async<F>(
+        &mut self,
+        region: DisplayRegion,
+        waveform: WaveformMode,
+        paint: F,
+    ) -> io::Result<()>
+    where
+        F: FnOnce(&mut DisplayCanvas<'_>),
+    {
+        self.draw_region_with_waveform_and_wait(region, waveform, false, paint)
+    }
+
+    fn draw_region_with_waveform_and_wait<F>(
+        &mut self,
+        region: DisplayRegion,
+        waveform: WaveformMode,
+        wait_for_completion: bool,
         paint: F,
     ) -> io::Result<()>
     where
@@ -776,17 +829,39 @@ impl NativeDisplay {
                 "display update region is empty",
             ));
         }
+        if wait_for_completion {
+            if let Some(pending_marker) = self.pending_marker.take() {
+                let started = Instant::now();
+                wait_for_update_complete(self.file.as_raw_fd(), pending_marker)?;
+                eprintln!(
+                    "standalone-test: waited for pending display marker={} elapsed_ms={}",
+                    pending_marker,
+                    started.elapsed().as_millis(),
+                );
+            }
+        }
         let marker = self.next_marker;
         self.next_marker = self.next_marker.wrapping_add(1).max(10);
         let started = Instant::now();
-        let result = request_update(self.file.as_raw_fd(), region.as_mxcfb(), waveform, marker);
+        let result = submit_update(self.file.as_raw_fd(), region.as_mxcfb(), waveform, marker)
+            .and_then(|()| {
+                if wait_for_completion {
+                    wait_for_update_complete(self.file.as_raw_fd(), marker)
+                } else {
+                    Ok(())
+                }
+            });
+        if result.is_ok() && !wait_for_completion {
+            self.pending_marker = Some(marker);
+        }
         eprintln!(
-            "standalone-test: display refresh region=({},{} {}x{}) waveform={} elapsed_ms={} status={}",
+            "standalone-test: display refresh region=({},{} {}x{}) waveform={} completion={} elapsed_ms={} status={}",
             region.left,
             region.top,
             region.width,
             region.height,
             waveform.label(),
+            if wait_for_completion { "wait" } else { "nowait" },
             started.elapsed().as_millis(),
             if result.is_ok() { "ok" } else { "error" },
         );

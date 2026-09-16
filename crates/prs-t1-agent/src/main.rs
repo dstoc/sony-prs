@@ -119,10 +119,22 @@ fn run() -> io::Result<()> {
                 .map(|value| WaveformMode::parse(&value))
                 .transpose()?
                 .unwrap_or(WaveformMode::Gc16);
+            let wait_for_completion = args
+                .next()
+                .map(|value| match value.to_ascii_uppercase().as_str() {
+                    "WAIT" => Ok(true),
+                    "NOWAIT" => Ok(false),
+                    _ => Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("unknown completion mode {value:?}; expected WAIT or NOWAIT"),
+                    )),
+                })
+                .transpose()?
+                .unwrap_or(true);
             if args.next().is_some() {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    "render-test accepts FRAMEBUFFER, optional SECONDS, and optional WAVEFORM",
+                    "render-test accepts FRAMEBUFFER, optional SECONDS, optional WAVEFORM, and optional WAIT|NOWAIT",
                 ));
             }
             let mut stdout = io::stdout().lock();
@@ -130,6 +142,7 @@ fn run() -> io::Result<()> {
                 Path::new(&device),
                 Duration::from_secs(seconds),
                 waveform,
+                wait_for_completion,
                 &mut stdout,
             )
         }
@@ -168,7 +181,7 @@ fn probe(device: &Path) {
 
 fn print_usage() {
     println!(
-        "prs-t1-agent {}\n\nUsage:\n  prs-t1-agent probe [FRAMEBUFFER]\n  prs-t1-agent status\n  prs-t1-agent input\n  prs-t1-agent events [EVENT_DEVICE] [SECONDS]\n  prs-t1-agent capture [FRAMEBUFFER] > screen.pgm\n  prs-t1-agent render-test [FRAMEBUFFER] [SECONDS] [WAVEFORM] > render-test.pgm\n  prs-t1-agent standalone-test [FRAMEBUFFER] [standby|mem]\n\n`probe`, `status`, `input`, `events`, and `capture` are read-only. `status`\nprints battery, power, USB, Wi-Fi, ADB, uptime, and Android-process state.\n`events` logs a bounded raw evdev stream without grabbing or injecting events.\n`capture` emits an 8-bit grayscale PGM. `render-test` is a write-capable\ncommand that briefly writes a centered RGB565 marker, requests a T1 e-ink\nupdate, captures the framebuffer, and restores the original rectangle. Its\noptional waveform is one of `DU`, `GC16`, `GC4`, or `A2`; it defaults to\n`GC16`. `standalone-test` is a long-running write-capable native UI test for\nuse after stopping zygote; it holds a kernel wake lock, displays input data,\nsleeps on a short power press, and reboots on a long power press. Its optional\nsuspend mode defaults to `standby`; `mem` selects Android's normal early-suspend\npath for wake testing.",
+        "prs-t1-agent {}\n\nUsage:\n  prs-t1-agent probe [FRAMEBUFFER]\n  prs-t1-agent status\n  prs-t1-agent input\n  prs-t1-agent events [EVENT_DEVICE] [SECONDS]\n  prs-t1-agent capture [FRAMEBUFFER] > screen.pgm\n  prs-t1-agent render-test [FRAMEBUFFER] [SECONDS] [WAVEFORM] [WAIT|NOWAIT] > render-test.pgm\n  prs-t1-agent standalone-test [FRAMEBUFFER] [standby|mem]\n\n`probe`, `status`, `input`, `events`, and `capture` are read-only. `status`\nprints battery, power, USB, Wi-Fi, ADB, uptime, and Android-process state.\n`events` logs a bounded raw evdev stream without grabbing or injecting events.\n`capture` emits an 8-bit grayscale PGM. `render-test` is a write-capable\ncommand that briefly writes a centered RGB565 marker, requests a T1 e-ink\nupdate, captures the framebuffer, and restores the original rectangle. Its\noptional waveform is one of `DU`, `GC16`, `GC4`, or `A2`; it defaults to\n`GC16`. `NOWAIT` measures asynchronous submission and leaves completion to the\nbounded wait interval before the restore update; `WAIT` is the default.\n`standalone-test` is a long-running write-capable native UI test for use after\nstopping zygote; it holds a kernel wake lock, displays input data, sleeps on a\nshort power press, and reboots on a long power press. Its optional suspend mode\ndefaults to `standby`; `mem` selects Android's normal early-suspend path for\nwake testing.",
         env!("CARGO_PKG_VERSION")
     );
 }

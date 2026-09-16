@@ -10,34 +10,45 @@ pub fn draw_screen(
     lines: &[String],
     refresh_region: DisplayRegion,
     waveform: WaveformMode,
+    wait_for_completion: bool,
 ) -> std::io::Result<()> {
-    display.draw_region_with_waveform(refresh_region, waveform, |canvas| {
-        draw_pattern(canvas);
-        let positions = [
-            (24, 20),
-            (24, 50),
-            (28, 93),
-            (28, 121),
-            (28, 149),
-            (28, 177),
-            (28, 211),
-            (28, 239),
-            (28, 267),
-            (28, 295),
-            (28, 359),
-            (28, 387),
-            (28, 415),
-            (28, 443),
-            (28, 471),
-            (28, 527),
-            (28, 555),
-            (28, 583),
-            (28, 611),
-        ];
-        for (line, &(x, y)) in lines.iter().zip(positions.iter()) {
-            draw_text(canvas, x, y, line);
-        }
-    })
+    if wait_for_completion {
+        display.draw_region_with_waveform(refresh_region, waveform, |canvas| {
+            draw_screen_contents(canvas, lines)
+        })
+    } else {
+        display.draw_region_with_waveform_async(refresh_region, waveform, |canvas| {
+            draw_screen_contents(canvas, lines)
+        })
+    }
+}
+
+fn draw_screen_contents(canvas: &mut DisplayCanvas<'_>, lines: &[String]) {
+    draw_pattern(canvas);
+    let positions = [
+        (24, 20),
+        (24, 50),
+        (28, 93),
+        (28, 121),
+        (28, 149),
+        (28, 177),
+        (28, 211),
+        (28, 239),
+        (28, 267),
+        (28, 295),
+        (28, 359),
+        (28, 387),
+        (28, 415),
+        (28, 443),
+        (28, 471),
+        (28, 527),
+        (28, 555),
+        (28, 583),
+        (28, 611),
+    ];
+    for (line, &(x, y)) in lines.iter().zip(positions.iter()) {
+        draw_text(canvas, x, y, line);
+    }
 }
 
 /// Render a logical screen into the format expected by the EPDC standby
