@@ -68,10 +68,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "prs-markdown"
+version = "0.1.0"
+dependencies = [
+ "embedded-graphics",
+]
+
+[[package]]
 name = "prs-t1-agent"
 version = "0.1.0"
 dependencies = [
  "embedded-graphics",
+ "prs-markdown",
 ]
 
 [[package]]

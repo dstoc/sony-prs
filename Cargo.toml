@@ -7,5 +7,6 @@ members = [
     "crates/prs350-devctl",
     "crates/prs350-agent",
     "crates/prs-t1-agent",
+    "crates/prs-markdown",
 ]
 resolver = "2"

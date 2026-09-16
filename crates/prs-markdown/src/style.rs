@@ -1,0 +1,76 @@
+//! Host-supplied reader style and font-independent metrics.
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Insets {
+    pub top: u32,
+    pub right: u32,
+    pub bottom: u32,
+    pub left: u32,
+}
+
+impl Insets {
+    pub const fn all(value: u32) -> Self {
+        Self {
+            top: value,
+            right: value,
+            bottom: value,
+            left: value,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TextStyle {
+    pub font_size: u32,
+    pub line_height: u32,
+    pub bold: bool,
+    pub italic: bool,
+    pub code: bool,
+}
+
+impl TextStyle {
+    pub const fn new(font_size: u32, line_height: u32) -> Self {
+        Self {
+            font_size,
+            line_height,
+            bold: false,
+            italic: false,
+            code: false,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReaderStyle {
+    pub body: TextStyle,
+    pub heading: TextStyle,
+    pub code: TextStyle,
+    pub page_padding: Insets,
+    pub paragraph_spacing: u32,
+    pub block_quote_indent: u32,
+    pub list_indent: u32,
+}
+
+impl Default for ReaderStyle {
+    fn default() -> Self {
+        Self {
+            body: TextStyle::new(16, 22),
+            heading: TextStyle::new(22, 28),
+            code: TextStyle {
+                font_size: 14,
+                line_height: 20,
+                code: true,
+                ..TextStyle::new(14, 20)
+            },
+            page_padding: Insets {
+                top: 16,
+                right: 16,
+                bottom: 16,
+                left: 16,
+            },
+            paragraph_spacing: 12,
+            block_quote_indent: 24,
+            list_indent: 24,
+        }
+    }
+}

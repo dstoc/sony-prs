@@ -15,6 +15,7 @@
 ## PRS-T1
 
 - [T1 analysis](prs-t1/analysis.md)
+- [Markdown reader architecture](prs-t1/markdown-reader.md)
 - [Native UI guide](../crates/prs-t1-agent/README.md)
 - [Build and deployment guide](../crates/prs-t1-agent/build.md)
 - [Tap-to-launch APK guide](../tools/prs-t1-launcher/README.md)

@@ -26,6 +26,7 @@ but they are not the current project focus.
 | `crates/prs350-devctl` | Stateful PRS-350 development serial controls. |
 | `crates/prs350-agent` | Cross-compiled ARM-side PRS-350 development agent. |
 | `crates/prs-t1-agent` | Native PRS-T1 framebuffer, input, status, and UI runtime. |
+| `crates/prs-markdown` | Hardware-independent Markdown document, layout, pagination, navigation, and rendering boundaries. |
 | `tools/prs-t1-launcher` | Optional Android 2.2 Home entry point for the T1 runtime. |
 
 The SCSI layers contain no write, delete, update-mode, flash, or arbitrary
@@ -53,6 +54,12 @@ On Linux, access to `/dev/sgN` normally requires root or membership in the
 group owning the SCSI-generic devices.
 
 ## PRS-T1 native UI
+
+The reusable reader architecture is documented in
+[`docs/prs-t1/markdown-reader.md`](docs/prs-t1/markdown-reader.md). The
+`prs-markdown` crate owns document semantics and viewport-relative page
+layouts; the T1 agent owns device input, framebuffer access, and refresh
+policy.
 
 The T1 agent is tested against a rooted Sony PRS-T1 running Android 2.2.1. The
 observed device exposes a 600x800 RGB565 framebuffer at
@@ -161,6 +168,7 @@ prs350-devctl shell /dev/ttyACM0 COMMAND
 - [T1 native UI guide](crates/prs-t1-agent/README.md)
 - [T1 build and deployment guide](crates/prs-t1-agent/build.md)
 - [T1 analysis and device evidence](docs/prs-t1/analysis.md)
+- [Markdown reader architecture](docs/prs-t1/markdown-reader.md)
 - [T1 launcher guide](tools/prs-t1-launcher/README.md)
 - [PRS-350 documentation](docs/prs350/)
 - [Workspace crates](crates/)

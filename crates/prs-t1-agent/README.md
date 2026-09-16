@@ -39,6 +39,14 @@ depending on Android Java services. The current shell deliberately leaves the
 home content area blank for future documents and images while making device
 state and recovery actions visible.
 
+The reusable Markdown reader boundary is in
+[`crates/prs-markdown`](../prs-markdown/) and its canonical design is in
+[`docs/prs-t1/markdown-reader.md`](../../docs/prs-t1/markdown-reader.md).
+The T1 agent supplies the reader's viewport and `embedded-graphics` target,
+translates physical events into reader operations, and chooses when changed
+pixels are sent to the EPDC. It must not move framebuffer, evdev, suspend, or
+refresh-policy code into the reusable crate.
+
 The current control path is root ADB. Deploy test binaries to
 `/data/local/tmp`, use read-only commands while Android is active, and use the
 standalone path only as an explicit ownership experiment. The agent does not
