@@ -79,9 +79,14 @@ Each stage has a stable handoff:
    A page contains display-list commands and semantic hit regions in its own
    viewport coordinates, so a caller can redraw or cache a page without
    knowing how the panel is refreshed.
-4. The renderer accepts a page and an arbitrary `embedded-graphics`
-   `DrawTarget`. Font rasterization, image decoding, and actual pixel commands
-   can be supplied in later milestones without changing device ownership.
+4. The renderer accepts a page, a caller-owned `TextEngine`, and an arbitrary
+   compatible `embedded-graphics` `DrawTarget`. It translates page coordinates
+   to a caller-selected origin, clips to the translated viewport, and submits
+   fills, borders, rules, and antialiased glyph coverage. `Rgb888` is the
+   renderer's intermediate color type; `embedded-graphics` converts it to the
+   target's pixel type, such as the T1 canvas's `Rgb565`. Image fragments are
+   currently rendered as deterministic placeholders until an image decoder
+   supplies image pixels.
 5. The T1 agent compares or refreshes pixels using its existing framebuffer
    and EPDC policy. That final step is outside `prs-markdown`.
 
@@ -106,8 +111,12 @@ contains positioned, non-semantic primitives:
 `FillStyle`, `BorderStyle`, and `Color` are document presentation values, not
 device UI styling. The display list is ordered back-to-front, so a later
 command is drawn over an earlier one. `PageLayout::push_command` clips a
-command to its viewport; renderers may clip again after applying their target
-origin.
+command to its viewport; renderers clip again after applying their target
+origin. `render::EmbeddedGraphicsRenderer` owns no layout policy: it maps
+reader text styles to the supplied typography face, rasterizes each positioned
+glyph, and draws only the resulting coverage pixels. Because a generic
+`DrawTarget` cannot read a background pixel, RGBA values and glyph coverage
+are flattened against white before color conversion.
 
 Semantic links are separate from the display list. Each `HitRegion` associates
 one page-space rectangle with a `NavigationTarget`; a wrapped logical link is
@@ -137,7 +146,7 @@ The initial crate exposes skeletal module boundaries for the pipeline:
 | `pagination` | Pages, display-list commands, and semantic hit regions. |
 | `navigation` | Document paths, anchors, link targets, and history. |
 | `reader` | Page position and navigation state. |
-| `render` | Generic `DrawTarget` adapter. |
+| `render` | Generic `DrawTarget` adapter with origin/viewport clipping, decoration primitives, and caller-supplied glyph rasterization. |
 
 ## Resource and path model
 
@@ -171,10 +180,9 @@ are not interpreted relative to the process working directory. Resolving a
 target does not open it or update history. The high-level reader chooses what
 to do with a document, anchor, asset, or external URL after resolution.
 
-The resource, layout, pagination, and rendering boundaries remain intentionally
-skeletal where their production implementations are follow-up work. Their
-integration points should extend these boundaries instead of moving T1 hardware
-policy into the library.
+The resource boundary remains intentionally extensible for future storage and
+image-decoding implementations. Its integration points should extend these
+boundaries instead of moving T1 hardware policy into the library.
 
 ## Parser and owned document IR
 
