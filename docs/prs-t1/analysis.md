@@ -1259,9 +1259,10 @@ process or USB controller does not return far enough to observe the reconnect.
 
 ## Tap-to-launch native UI
 
-The native UI now has a small Android 2.2/API 8 launcher APK at
-`tools/prs-t1-launcher/`. Its `MAIN`/`LAUNCHER` Activity is labelled `Native
-UI`; on tap it invokes the installed root `su` binary and exits. The companion
+The native UI now has a small Android 2.2/API 8 Home replacement APK at
+`tools/prs-t1-launcher/`. Its `MAIN`/`HOME`/`DEFAULT` Activity is labelled
+`Native UI`; selecting it from Android's Home-app resolver invokes the
+installed root `su` binary and exits. The companion
 `prs-t1-launch` script starts a detached native runtime, stops zygote, waits
 for `zygote` and `system_server` to disappear, and then execs
 `prs-t1-agent standalone-test`. Android therefore only supplies the tap

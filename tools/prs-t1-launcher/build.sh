@@ -16,6 +16,7 @@ D8=${D8:-$BUILD_TOOLS/d8}
 ZIPALIGN=${ZIPALIGN:-$BUILD_TOOLS/zipalign}
 APKSIGNER=${APKSIGNER:-$BUILD_TOOLS/apksigner}
 KEYTOOL=${KEYTOOL:-keytool}
+KEYSTORE=${PRST1_KEYSTORE:-$SDK_ROOT/prs-t1-native-launcher.debug.keystore}
 
 require_file() {
     if [ ! -f "$1" ]; then
@@ -54,9 +55,9 @@ mkdir -p "$OUT_DIR/classes" "$OUT_DIR/dex"
 
 "$JAR" uf "$OUT_DIR/unsigned.apk" -C "$OUT_DIR/dex" classes.dex
 
-if [ ! -f "$OUT_DIR/debug.keystore" ]; then
+if [ ! -f "$KEYSTORE" ]; then
     "$KEYTOOL" -genkeypair \
-        -keystore "$OUT_DIR/debug.keystore" \
+        -keystore "$KEYSTORE" \
         -storepass android \
         -keypass android \
         -alias androiddebugkey \
@@ -69,7 +70,7 @@ fi
 "$ZIPALIGN" -f 4 "$OUT_DIR/unsigned.apk" "$OUT_DIR/aligned.apk"
 
 "$APKSIGNER" sign \
-    --ks "$OUT_DIR/debug.keystore" \
+    --ks "$KEYSTORE" \
     --ks-key-alias androiddebugkey \
     --ks-pass pass:android \
     --key-pass pass:android \

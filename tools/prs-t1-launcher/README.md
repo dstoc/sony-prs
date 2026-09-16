@@ -1,9 +1,9 @@
 # PRS-T1 native UI launcher
 
-This is a deliberately small Android 2.2/API 8 launcher entry point. It is
-not the native UI itself. The launcher Activity invokes `su` on tap, starts the
-detached root handoff script, and exits before the Android framework is
-stopped.
+This is a deliberately small Android 2.2/API 8 Home replacement entry point.
+It is not the native UI itself. The Home Activity invokes `su` when selected
+from Android's Home-app resolver, starts the detached root handoff script, and
+exits before the Android framework is stopped.
 
 The handoff script expects the ARM binary at
 `/data/local/tmp/prs-t1-agent`. It starts that binary after stopping zygote;
@@ -27,6 +27,10 @@ Override it with `PRST1_ANDROID_SDK` if the SDK is elsewhere, then run:
 ```
 
 The signed APK is written under the ignored workspace `target/` directory.
+The signing keystore is kept outside that cleaned output directory at
+`$PRST1_ANDROID_SDK/prs-t1-native-launcher.debug.keystore`; set
+`PRST1_KEYSTORE` to use a different stable keystore. Keeping the same key
+allows `adb install -r` upgrades.
 The build uses the legacy v1 APK signature scheme for compatibility with
 Android 2.2; newer v2/v3/v4 schemes are disabled.
 
@@ -38,8 +42,7 @@ First restore normal Android if the native test is currently running:
 ./crates/prs-t1-agent/tools/native-test.sh reboot
 ```
 
-Then push the agent and handoff script, install the APK, and add the “Native
-UI” application to the Home screen:
+Then push the agent and handoff script and install the APK:
 
 ```sh
 adb push target/armv5te-unknown-linux-musleabi/release/prs-t1-agent /data/local/tmp/prs-t1-agent
@@ -49,11 +52,13 @@ adb shell chmod 755 /data/local/tmp/prs-t1-launch
 adb install -r target/prs-t1-launcher/prs-t1-native-launcher.apk
 ```
 
-Tap the launcher icon once. The handoff log is:
+Press the Home button. Android should offer “Native UI” alongside the stock
+Home choices. Selecting it starts the native runtime; do not mark it as the
+permanent default until the handoff has been tested. The handoff log is:
 
 ```sh
 adb shell 'cat /data/local/tmp/prs-t1-native-launch.log'
 ```
 
-If the application list does not update immediately, reboot Android once or
-use the launcher's application list and drag “Native UI” to a Home page.
+If the Home resolver does not update immediately, reboot Android once and press
+Home again.
