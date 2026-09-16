@@ -1,11 +1,16 @@
 //! Hardware-independent building blocks for a paginated Markdown reader.
 //!
-//! The crate deliberately stops at a generic [`embedded_graphics::DrawTarget`]
+//! The crate deliberately stops at a generic
+//! [`embedded_graphics::draw_target::DrawTarget`]
 //! boundary.  A future parser, font backend, image decoder, and device UI can
 //! be added without making the document engine know about a framebuffer or a
 //! particular reader model. [`parse::ComrakParser`] converts CommonMark/GFM
 //! input into the owned [`Document`] IR; Comrak nodes and arena lifetimes do
 //! not appear in document, layout, pagination, or rendering types.
+//! A caller supplies font bytes to [`typography::FontdueTextEngine`]; the
+//! reader engine does not choose or bundle a licensed font family. A future
+//! shaping backend, image decoder, and device UI can be added without making
+//! the document engine know about a framebuffer or a particular reader model.
 
 pub mod document;
 pub mod geometry;
@@ -17,6 +22,7 @@ pub mod reader;
 pub mod render;
 pub mod resources;
 pub mod style;
+pub mod typography;
 
 pub use document::{
     Block, BlockMetadata, Document, Inline, ListItem, NodeId, SourcePosition, SourceSpan, Table,
@@ -31,6 +37,11 @@ pub use resources::{
     FileSystemResourceProvider, FileSystemResources, ResourceProvider, ResourceTarget,
 };
 pub use style::{BorderStyle, Color, FillStyle, Insets, ReaderStyle, TextStyle};
+pub use typography::{
+    FontConfig, FontError, FontFace, FontLoadConfig, FontdueTextEngine, GlyphBitmap, LineMetrics,
+    PositionedGlyph, SpanId, TextEngine, TextLayout, TextLine, TextMetrics, TextRun,
+    TextStyle as TypographyStyle,
+};
 
 #[cfg(test)]
 mod tests {
