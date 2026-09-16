@@ -5,10 +5,12 @@
 //! and source positions into [`crate::document`] values before returning.
 
 use crate::document::{
-    Block, BlockMetadata, Document, Inline, ListItem, NodeId, SourcePosition, SourceSpan, Table,
-    TableAlignment, TaskState,
+    AlertKind, Block, BlockMetadata, Document, Inline, ListItem, NodeId, SourcePosition,
+    SourceSpan, Table, TableAlignment, TaskState,
 };
-use comrak::nodes::{ListType, NodeValue, TableAlignment as ComrakTableAlignment};
+use comrak::nodes::{
+    AlertType as ComrakAlertType, ListType, NodeValue, TableAlignment as ComrakTableAlignment,
+};
 use comrak::{parse_document, Arena, Node, Options};
 use std::collections::HashMap;
 use std::error::Error;
@@ -123,7 +125,13 @@ impl MarkdownParser for UnsupportedParser {
 
 fn gfm_options() -> Options<'static> {
     let mut options = Options::default();
+    // These are the extensions most often emitted by GitHub-facing coding
+    // agents. The owned IR keeps their content readable even when a caller
+    // later chooses a different parser configuration.
+    options.extension.alerts = true;
     options.extension.autolink = true;
+    options.extension.footnotes = true;
+    options.extension.inline_footnotes = true;
     options.extension.strikethrough = true;
     options.extension.table = true;
     options.extension.tasklist = true;
@@ -188,6 +196,17 @@ impl Converter {
             NodeValue::Table(table) => Some(self.convert_table(node, table.alignments)),
             NodeValue::ThematicBreak => Some(Block::Rule),
             NodeValue::HtmlBlock(html) => Some(Block::Paragraph(vec![Inline::Text(html.literal)])),
+            NodeValue::Math(math) => {
+                Some(Block::Paragraph(vec![Inline::Text(math_fallback(&math))]))
+            }
+            NodeValue::FootnoteDefinition(definition) => Some(Block::FootnoteDefinition {
+                name: definition.name,
+                blocks: self.convert_blocks(node),
+            }),
+            NodeValue::Alert(alert) => Some(self.convert_alert(node, *alert)),
+            NodeValue::BlockDirective(directive) => {
+                Some(self.directive_fallback(node, &directive.info))
+            }
             NodeValue::FrontMatter(text) | NodeValue::Raw(text) => {
                 Some(Block::Paragraph(vec![Inline::Text(text)]))
             }
@@ -198,10 +217,7 @@ impl Converter {
             NodeValue::DescriptionList
             | NodeValue::DescriptionItem(_)
             | NodeValue::DescriptionDetails
-            | NodeValue::FootnoteDefinition(_)
             | NodeValue::TableRow(_)
-            | NodeValue::Alert(_)
-            | NodeValue::BlockDirective(_)
             | NodeValue::Subtext => self.container_fallback(node),
             _ => self.container_fallback(node),
         }
@@ -265,6 +281,28 @@ impl Converter {
         })
     }
 
+    fn convert_alert(&mut self, node: Node<'_>, alert: comrak::nodes::NodeAlert) -> Block {
+        let title = alert
+            .title
+            .unwrap_or_else(|| alert.alert_type.default_title().to_owned());
+        Block::Alert {
+            kind: convert_alert_kind(alert.alert_type),
+            title,
+            blocks: self.convert_blocks(node),
+        }
+    }
+
+    fn directive_fallback(&mut self, node: Node<'_>, info: &str) -> Block {
+        let label = if info.trim().is_empty() {
+            "[unsupported block directive]".to_owned()
+        } else {
+            format!("[unsupported block directive: {}]", info.trim())
+        };
+        let mut blocks = vec![Block::Paragraph(vec![Inline::Text(label)])];
+        blocks.extend(self.convert_blocks(node));
+        Block::Quote(blocks)
+    }
+
     fn convert_inlines(&mut self, parent: Node<'_>) -> Vec<Inline> {
         let children: Vec<_> = parent.children().collect();
         children
@@ -303,15 +341,16 @@ impl Converter {
                 }]
             }
             NodeValue::HtmlInline(text) | NodeValue::Raw(text) => vec![Inline::Text(text)],
-            NodeValue::Math(math) => vec![Inline::Text(math.literal)],
+            NodeValue::Math(math) => vec![Inline::Text(math_fallback(&math))],
             NodeValue::WikiLink(link) => vec![Inline::Link {
                 label: self.convert_inlines(node),
                 destination: link.url,
                 title: None,
             }],
-            NodeValue::FootnoteReference(reference) => {
-                vec![Inline::Text(format!("[^{0}]", reference.name))]
-            }
+            NodeValue::FootnoteReference(reference) => vec![Inline::FootnoteReference {
+                name: reference.name,
+                number: reference.ref_num,
+            }],
             NodeValue::TaskItem(task) => vec![Inline::Text(if task.symbol.is_some() {
                 "[x] ".to_owned()
             } else {
@@ -342,6 +381,21 @@ fn convert_alignment(alignment: ComrakTableAlignment) -> TableAlignment {
         ComrakTableAlignment::Center => TableAlignment::Center,
         ComrakTableAlignment::Right => TableAlignment::Right,
     }
+}
+
+fn convert_alert_kind(kind: ComrakAlertType) -> AlertKind {
+    match kind {
+        ComrakAlertType::Note => AlertKind::Note,
+        ComrakAlertType::Tip => AlertKind::Tip,
+        ComrakAlertType::Important => AlertKind::Important,
+        ComrakAlertType::Warning => AlertKind::Warning,
+        ComrakAlertType::Caution => AlertKind::Caution,
+    }
+}
+
+fn math_fallback(math: &comrak::nodes::NodeMath) -> String {
+    let delimiter = if math.display_math { "$$" } else { "$" };
+    format!("{delimiter}{}{delimiter}", math.literal)
 }
 
 fn non_empty(value: impl Into<String>) -> Option<String> {
@@ -384,6 +438,7 @@ mod tests {
     use crate::document::Block;
 
     const AGENT_MARKDOWN: &str = include_str!("../tests/fixtures/agent-output.md");
+    const MODERN_GFM: &str = include_str!("../tests/fixtures/modern-gfm.md");
 
     #[test]
     fn parses_nested_agent_markdown_into_owned_semantics() {
@@ -534,5 +589,91 @@ mod tests {
         let document = ComrakParser::new().parse(malformed).unwrap();
         assert!(!document.blocks().is_empty());
         assert_eq!(document.source(), Some(malformed));
+    }
+
+    #[test]
+    fn modern_agent_gfm_constructs_remain_owned_and_visible() {
+        let document = ComrakParser::new().parse(MODERN_GFM).unwrap();
+
+        assert!(document.blocks().iter().any(|block| matches!(
+            block,
+            Block::Alert {
+                kind: AlertKind::Note,
+                title,
+                ..
+            } if title == "Reader policy"
+        )));
+        assert!(document.blocks().iter().any(|block| matches!(
+            block,
+            Block::Alert {
+                kind: AlertKind::Warning,
+                title,
+                ..
+            } if title == "Warning"
+        )));
+        assert!(document.blocks().iter().any(|block| matches!(
+            block,
+            Block::FootnoteDefinition { name, .. } if name == "reader"
+        )));
+
+        let paragraph_inlines = document
+            .blocks()
+            .iter()
+            .filter_map(|block| match block {
+                Block::Paragraph(inlines) => Some(inlines),
+                _ => None,
+            })
+            .flatten()
+            .collect::<Vec<_>>();
+        assert!(paragraph_inlines
+            .iter()
+            .any(|inline| matches!(inline, Inline::Strikethrough(_))));
+        assert!(paragraph_inlines.iter().any(|inline| matches!(
+            inline,
+            Inline::Link { destination, .. }
+                if destination == "https://github.com/dstoc/sony-prs"
+        )));
+        assert!(paragraph_inlines.iter().any(|inline| matches!(
+            inline,
+            Inline::Link { destination, .. } if destination == "http://www.example.com"
+        )));
+        assert!(paragraph_inlines.iter().any(|inline| matches!(
+            inline,
+            Inline::Link { destination, .. } if destination == "mailto:reader@example.com"
+        )));
+        assert!(paragraph_inlines.iter().any(|inline| matches!(
+            inline,
+            Inline::FootnoteReference { name, number }
+                if name == "reader" && *number == 1
+        )));
+    }
+
+    #[test]
+    fn enabled_math_is_preserved_as_a_readable_source_fallback() {
+        let mut options = Options::default();
+        options.extension.math_dollars = true;
+        let document = ComrakParser::with_options(options)
+            .parse("Inline $x^2$ remains visible.\n")
+            .unwrap();
+
+        assert_eq!(
+            document.blocks()[0].plain_text(),
+            "Inline $x^2$ remains visible."
+        );
+    }
+
+    #[test]
+    fn enabled_block_directives_get_a_labelled_readable_fallback() {
+        let mut options = Options::default();
+        options.extension.block_directive = true;
+        let document = ComrakParser::with_options(options)
+            .parse(":::mermaid\nflowchart TD\n    A --> B\n:::\n\nAfter\n")
+            .unwrap();
+
+        assert!(document.blocks()[0]
+            .plain_text()
+            .contains("unsupported block directive"));
+        assert!(document.blocks()[0].plain_text().contains("flowchart TD"));
+        assert_eq!(document.blocks()[1].plain_text(), "After");
     }
 }

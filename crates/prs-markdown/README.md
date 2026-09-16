@@ -35,9 +35,10 @@ height, padding, body, heading, and code metrics are configurable with the
 corresponding options shown by `--help`.
 
 The fixture corpus in `tests/fixtures/` covers prose, headings, inline styles,
-nested lists, task lists, quotes, long paragraphs, links and anchors,
-cross-file links, exact page boundaries, agent responses, table placeholders,
-fenced code, image references, and explicit font-face selection. `tests/harness.rs`
+nested lists, task lists, quotes, alerts, footnotes, autolinks, strikethrough,
+long paragraphs, links and anchors, cross-file links, exact page boundaries,
+agent responses, table placeholders, fenced specialist source, raw HTML
+fallbacks, image references, and explicit font-face selection. `tests/harness.rs`
 asserts structural outputs such as page count, logical cursor ranges, visible
 fragments, hit regions, navigation, and PGM encoding. Those structural tests use the
 deterministic approximate measurer and remain independent of font files. The
@@ -51,6 +52,10 @@ command-line harness uses the supplied Fontdue font for both layout metrics and
 rasterization.
 The CLI writes both formats from the same rendered grayscale pixels, so PNGs
 can be opened directly while PGM remains convenient for simple tooling.
+
+The complete Markdown decision record, including deterministic fallbacks for raw
+HTML, Mermaid/diagram source, and optional math/directive extensions, is in the
+[Markdown support matrix](../../docs/prs-t1/markdown-reader.md#markdown-support-matrix).
 
 The corpus regression test compares every page of every checked-in fixture
 against a deterministic PNG golden in `tests/goldens/`. If a comparison fails,

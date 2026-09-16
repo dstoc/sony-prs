@@ -288,12 +288,39 @@ host/device layout over HTML/CSS compatibility.
 ## Parser and owned document IR
 
 The parser stage is implemented by `parse::ComrakParser`. It enables the GFM
-extensions used by agent output (tables, task lists, strikethrough, and
-autolinks), then copies Comrak's arena-backed tree into the owned IR. The IR
-retains fenced-code info strings, link/image destinations, task state, table
-alignment, heading anchors, source text, and source spans for top-level blocks.
-Comrak nodes, arenas, and their lifetimes stop at the parser module; layout and
-later stages consume only `prs-markdown` types.
+extensions used by agent output (tables, task lists, strikethrough, autolinks,
+footnotes, inline footnotes, and GitHub-style alerts), then copies Comrak's
+arena-backed tree into the owned IR. The IR retains fenced-code info strings,
+link/image destinations, task state, footnote definitions and references,
+alert titles and kinds, table alignment, heading anchors, source text, and
+source spans for top-level blocks. Comrak nodes, arenas, and their lifetimes
+stop at the parser module; layout and later stages consume only
+`prs-markdown` types.
+
+## Markdown support matrix
+
+The reader intentionally targets readable, bounded output rather than browser
+compatibility. This is the current contract for Markdown commonly produced by
+coding and AI agents:
+
+| Construct | Reader behaviour |
+| --- | --- |
+| Headings, paragraphs, emphasis, strong, code spans, links, images, lists, quotes, and thematic breaks | First-class owned IR and layout. Images remain deterministic alt-text placeholders until an image decoder is supplied. |
+| GFM task lists | Checked and unchecked markers render as readable `[x]` and `[ ]` list prefixes. There is no toggle action. |
+| GFM strikethrough | Content remains visible with its style bit and a one-pixel strike decoration in the display list. |
+| GFM autolinks | URL, `www`, and email autolinks become ordinary semantic links; external targets are returned to the host as actions. |
+| GFM footnotes and inline footnotes | References render as `[1]` when Comrak supplies a number (or `[^name]` as a name fallback). Definitions render as ordinary, splittable `[^name]: ...` text; no browser-style back-link action is required. |
+| GitHub alerts (`> [!NOTE]`, `TIP`, `IMPORTANT`, `WARNING`, `CAUTION`) | Parsed when enabled, retaining kind, custom/default title, and body. Layout shows a bold title and the body with the reader's quote rule. |
+| Fenced code, including Mermaid, diagram DSLs, and `math` fences | Literal source is retained and rendered in the monospace code treatment. No JavaScript, syntax highlighter, or diagram renderer is required. |
+| TeX/MathML-style math when a Comrak math extension is enabled | The raw expression and delimiters are rendered as text. There is no TeX, MathML, or browser layout engine. |
+| Raw inline or block HTML | Never executed, interpreted, or styled. The original HTML source is rendered as ordinary readable text, so tags do not hide following Markdown. |
+| Comrak block directives when enabled | A labelled `[unsupported block directive: ...]` marker and converted child content are rendered inside the existing quote primitive. |
+| Tables | Rows remain readable pipe-separated lines until column layout exists. |
+
+The matrix is deliberately explicit about fallback behaviour: unsupported
+specialist content is not silently discarded, and every fallback uses existing
+owned blocks, lines, and pagination boundaries. No second HTML/CSS/browser
+layout engine is part of this crate.
 
 The production typography/font backend, syntax highlighting, image decoding,
 and pixel rasterization remain follow-up work. Their integration points should

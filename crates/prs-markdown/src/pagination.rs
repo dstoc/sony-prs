@@ -541,7 +541,7 @@ fn add_line(
     kind: LayoutBlockKind,
     style: &ReaderStyle,
 ) {
-    if kind == LayoutBlockKind::Quote {
+    if matches!(kind, LayoutBlockKind::Quote | LayoutBlockKind::Alert) {
         let border_x = line.bounds.top_left.x.saturating_sub(
             style
                 .block_quote_indent
@@ -580,6 +580,21 @@ fn add_line(
             text: fragment.text.clone(),
             style: fragment.style,
         });
+        if fragment.style.strikethrough && bounds.size.width > 0 {
+            page.push_command(DisplayCommand::Rule {
+                bounds: Rect::new(
+                    Point::new(
+                        bounds.top_left.x,
+                        bounds
+                            .top_left
+                            .y
+                            .saturating_add((bounds.size.height / 2) as i32),
+                    ),
+                    embedded_graphics::geometry::Size::new(bounds.size.width, 1),
+                ),
+                style: BorderStyle::new(Color::BLACK, 1),
+            });
+        }
         if let Some(target) = &fragment.link {
             page.add_hit_region(HitRegion::new(bounds, target.clone()));
         }
@@ -759,6 +774,24 @@ mod tests {
                 command,
                 DisplayCommand::Rule { style, .. } if style.color == Color::rgb(10, 11, 12)
             )
+        }));
+    }
+
+    #[test]
+    fn strikethrough_fragments_get_a_visible_decoration() {
+        let style = pagination_style();
+        let document =
+            Document::from_blocks(vec![Block::Paragraph(vec![Inline::Strikethrough(vec![
+                Inline::Text("retired".into()),
+            ])])]);
+        let layout = crate::LayoutEngine::new(style).layout(&document, Viewport::new(200, 40));
+        let page = Paginator::new(style).paginate(&layout).remove(0);
+
+        assert!(page.commands.iter().any(|command| {
+            matches!(command, DisplayCommand::Text { style, .. } if style.strikethrough)
+        }));
+        assert!(page.commands.iter().any(|command| {
+            matches!(command, DisplayCommand::Rule { bounds, .. } if bounds.size.height == 1)
         }));
     }
 

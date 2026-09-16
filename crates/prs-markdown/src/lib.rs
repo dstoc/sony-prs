@@ -26,8 +26,8 @@ pub mod style;
 pub mod typography;
 
 pub use document::{
-    Block, BlockMetadata, Document, Inline, ListItem, NodeId, SourcePosition, SourceSpan, Table,
-    TableAlignment, TaskState,
+    AlertKind, Block, BlockMetadata, Document, Inline, ListItem, NodeId, SourcePosition,
+    SourceSpan, Table, TableAlignment, TaskState,
 };
 pub use geometry::{intersection, translate, Rect, Viewport};
 pub use harness::{render_page, HostImage, HostReader};

@@ -32,6 +32,8 @@ pub enum LayoutBlockKind {
     Paragraph,
     List,
     Quote,
+    Alert,
+    Footnote,
     Table,
     Code,
     Image,
@@ -198,6 +200,16 @@ impl<M: TextMeasurer> LayoutEngine<M> {
                 LayoutBlockKind::Quote,
                 None,
                 self.quote_lines(blocks, start_y, x, width),
+            ),
+            Block::Alert { title, blocks, .. } => (
+                LayoutBlockKind::Alert,
+                None,
+                self.alert_lines(title, blocks, start_y, x, width),
+            ),
+            Block::FootnoteDefinition { name, blocks } => (
+                LayoutBlockKind::Footnote,
+                None,
+                self.footnote_lines(name, blocks, start_y, x, width),
             ),
             // Tables are intentionally represented as readable pipe-separated
             // rows until table-specific layout defines columns.
@@ -384,6 +396,80 @@ impl<M: TextMeasurer> LayoutEngine<M> {
         result
     }
 
+    fn alert_lines(
+        &self,
+        title: &str,
+        blocks: &[Block],
+        start_y: i32,
+        x: i32,
+        width: u32,
+    ) -> Vec<LayoutLine> {
+        let indent = self
+            .style
+            .block_quote_indent
+            .min(width)
+            .saturating_add(self.style.block_quote_padding.min(width));
+        let inner_x = x.saturating_add(indent as i32);
+        let inner_width = width.saturating_sub(indent);
+        let title_style = TextStyle {
+            bold: true,
+            ..self.style.body
+        };
+        let mut result = wrap_spans(
+            &self.measurer,
+            vec![Span::new(format!("{title}: "), title_style, None, false)],
+            start_y,
+            inner_x,
+            inner_width,
+            title_style.line_height,
+        );
+        let mut y = result
+            .last()
+            .map(|line| rect_bottom(&line.bounds))
+            .unwrap_or(start_y);
+
+        for block in blocks {
+            y = y.saturating_add(self.spacing_before(block));
+            let (_, _, lines) = self.layout_content(block, y, inner_x, inner_width);
+            y = append_lines(&mut result, lines, y);
+            y = y.saturating_add(self.spacing_after(block));
+        }
+        result
+    }
+
+    fn footnote_lines(
+        &self,
+        name: &str,
+        blocks: &[Block],
+        start_y: i32,
+        x: i32,
+        width: u32,
+    ) -> Vec<LayoutLine> {
+        let prefix = Inline::Text(format!("[^{name}]: "));
+        let (first, rest) = match blocks.split_first() {
+            Some((Block::Paragraph(content), rest)) => {
+                let mut inlines = vec![prefix.clone()];
+                inlines.extend(content.iter().cloned());
+                (Some(inlines), rest)
+            }
+            _ => (None, blocks),
+        };
+        let mut result = first
+            .map(|content| self.inline_lines(&content, self.style.body, start_y, x, width))
+            .unwrap_or_else(|| self.inline_lines(&[prefix], self.style.body, start_y, x, width));
+        let mut y = result
+            .last()
+            .map(|line| rect_bottom(&line.bounds))
+            .unwrap_or(start_y);
+        for block in rest {
+            y = y.saturating_add(self.spacing_before(block));
+            let (_, _, lines) = self.layout_content(block, y, x, width);
+            y = append_lines(&mut result, lines, y);
+            y = y.saturating_add(self.spacing_after(block));
+        }
+        result
+    }
+
     fn table_lines(&self, table: &Table, start_y: i32, x: i32, width: u32) -> Vec<LayoutLine> {
         let mut rows = Vec::new();
         if !table.headers.is_empty() {
@@ -510,6 +596,16 @@ fn collect_spans(
                 collect_spans(child, style, Some(target.clone()), spans);
             }
         }
+        Inline::FootnoteReference { name, number } => spans.push(Span::new(
+            if *number == 0 {
+                format!("[^{name}]")
+            } else {
+                format!("[{number}]")
+            },
+            style,
+            inherited_link,
+            false,
+        )),
         Inline::Image { alt, .. } => spans.push(Span::new(
             format!("[image: {alt}]"),
             style,

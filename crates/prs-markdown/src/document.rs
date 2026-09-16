@@ -147,6 +147,28 @@ pub struct BlockMetadata {
     pub source_span: Option<SourceSpan>,
 }
 
+/// The five GitHub-style alert categories understood by Comrak.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AlertKind {
+    Note,
+    Tip,
+    Important,
+    Warning,
+    Caution,
+}
+
+impl AlertKind {
+    pub const fn default_title(self) -> &'static str {
+        match self {
+            Self::Note => "Note",
+            Self::Tip => "Tip",
+            Self::Important => "Important",
+            Self::Warning => "Warning",
+            Self::Caution => "Caution",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Block {
     Heading {
@@ -160,6 +182,20 @@ pub enum Block {
         items: Vec<ListItem>,
     },
     Quote(Vec<Block>),
+    /// A GitHub-style alert. The title is kept separately because it may be
+    /// overridden in the source; layout supplies the compact alert treatment.
+    Alert {
+        kind: AlertKind,
+        title: String,
+        blocks: Vec<Block>,
+    },
+    /// A footnote definition retained as a normal, splittable reader block.
+    /// Keeping the source name makes the fallback useful even when a parser
+    /// supplies no numeric reference metadata.
+    FootnoteDefinition {
+        name: String,
+        blocks: Vec<Block>,
+    },
     Table(Table),
     CodeBlock {
         language: Option<String>,
@@ -207,6 +243,19 @@ impl Block {
                 .map(Self::plain_text)
                 .collect::<Vec<_>>()
                 .join("\n"),
+            Self::Alert { title, blocks, .. } => std::iter::once(title.clone())
+                .chain(blocks.iter().map(Self::plain_text))
+                .collect::<Vec<_>>()
+                .join(": "),
+            Self::FootnoteDefinition { name, blocks } => format!(
+                "[^{}]: {}",
+                name,
+                blocks
+                    .iter()
+                    .map(Self::plain_text)
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ),
             Self::Table(table) => table
                 .headers
                 .iter()
@@ -284,6 +333,12 @@ pub enum Inline {
         destination: String,
         title: Option<String>,
     },
+    /// A footnote reference. `number` is Comrak's occurrence number; zero is
+    /// retained as an explicit name-based fallback for unusual parser trees.
+    FootnoteReference {
+        name: String,
+        number: u32,
+    },
     Image {
         alt: String,
         source: String,
@@ -301,6 +356,13 @@ impl Inline {
                 children.iter().map(Self::plain_text).collect()
             }
             Self::Link { label, .. } => label.iter().map(Self::plain_text).collect(),
+            Self::FootnoteReference { name, number } => {
+                if *number == 0 {
+                    format!("[^{name}]")
+                } else {
+                    format!("[{number}]")
+                }
+            }
             Self::Image { alt, .. } => alt.clone(),
             Self::SoftBreak | Self::HardBreak => "\n".into(),
         }

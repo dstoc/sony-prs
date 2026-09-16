@@ -32,6 +32,7 @@ const FIXTURES: &[(&str, &str)] = &[
     ("font-faces", include_str!("fixtures/font-faces.md")),
     ("linked-chapter", include_str!("fixtures/linked-chapter.md")),
     ("malformed", include_str!("fixtures/malformed.md")),
+    ("modern-gfm", include_str!("fixtures/modern-gfm.md")),
     ("page-boundary", BOUNDARY),
     ("regression", CORPUS),
     (
@@ -166,6 +167,47 @@ fn every_checked_in_fixture_runs_through_host_structure() {
             "fixture {name} has no visible text"
         );
     }
+}
+
+#[test]
+fn modern_gfm_fixture_has_alert_footnote_and_strike_output() {
+    let source = include_str!("fixtures/modern-gfm.md");
+    let reader = HostReader::from_source(source, structural_style(), Viewport::new(180, 120))
+        .expect("modern GFM fixture should parse");
+
+    assert!(reader
+        .layout()
+        .blocks()
+        .iter()
+        .any(|block| block.kind == prs_markdown::layout::LayoutBlockKind::Alert));
+    assert!(reader
+        .layout()
+        .blocks()
+        .iter()
+        .any(|block| block.kind == prs_markdown::layout::LayoutBlockKind::Footnote));
+    assert!(reader
+        .layout()
+        .blocks()
+        .iter()
+        .flat_map(|block| block.lines.iter())
+        .flat_map(|line| line.fragments.iter())
+        .any(|fragment| fragment.style.strikethrough));
+
+    let visible = reader
+        .pagination()
+        .pages()
+        .iter()
+        .flat_map(|page| page.display_list().iter())
+        .filter_map(|command| match command {
+            DisplayCommand::Text { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(visible.contains("Reader"));
+    assert!(visible.contains("policy:"));
+    assert!(visible.contains("[^reader]:"));
+    assert!(visible.contains("flowchart"));
 }
 
 #[test]
