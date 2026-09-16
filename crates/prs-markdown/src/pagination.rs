@@ -182,6 +182,7 @@ impl Paginator {
                     line,
                     Point::new(0, page_origin_y.saturating_neg()),
                     block.kind,
+                    &self.style,
                 );
             }
         }
@@ -193,9 +194,47 @@ impl Paginator {
     }
 }
 
-fn add_line(page: &mut PageLayout, line: &LayoutLine, page_offset: Point, kind: LayoutBlockKind) {
+fn add_line(
+    page: &mut PageLayout,
+    line: &LayoutLine,
+    page_offset: Point,
+    kind: LayoutBlockKind,
+    style: &ReaderStyle,
+) {
+    if kind == LayoutBlockKind::Quote {
+        let border_x = line.bounds.top_left.x.saturating_sub(
+            style
+                .block_quote_indent
+                .saturating_add(style.block_quote_padding) as i32,
+        );
+        page.push_command(DisplayCommand::Rule {
+            bounds: translate(
+                Rect::new(
+                    Point::new(border_x, line.bounds.top_left.y),
+                    embedded_graphics::geometry::Size::new(
+                        style.block_quote_border.width.max(1),
+                        line.bounds.size.height,
+                    ),
+                ),
+                page_offset,
+            ),
+            style: style.block_quote_border,
+        });
+    }
+    if kind == LayoutBlockKind::Code {
+        page.push_command(DisplayCommand::Fill {
+            bounds: translate(line.bounds, page_offset),
+            style: style.code_background,
+        });
+    }
     for fragment in &line.fragments {
         let bounds = translate(fragment.bounds, page_offset);
+        if fragment.style.code && kind != LayoutBlockKind::Code {
+            page.push_command(DisplayCommand::Fill {
+                bounds,
+                style: style.inline_code_background,
+            });
+        }
         page.push_command(DisplayCommand::Text {
             bounds,
             text: fragment.text.clone(),
@@ -210,7 +249,7 @@ fn add_line(page: &mut PageLayout, line: &LayoutLine, page_offset: Point, kind: 
         match kind {
             LayoutBlockKind::Rule => page.push_command(DisplayCommand::Rule {
                 bounds,
-                style: BorderStyle::new(Color::BLACK, 1),
+                style: style.thematic_break,
             }),
             LayoutBlockKind::Image => page.push_command(DisplayCommand::ImagePlaceholder {
                 bounds,
@@ -330,6 +369,55 @@ mod tests {
         assert_eq!(page.display_list().len(), 5);
         assert_eq!(page.display_list()[0].bounds(), bounds);
         assert_eq!(page.display_list()[4].bounds().size, Size::new(40, 18));
+    }
+
+    #[test]
+    fn paginator_uses_layout_style_for_code_quotes_and_rules() {
+        let style = ReaderStyle {
+            page_padding: crate::style::Insets::all(2),
+            inline_code_background: FillStyle::new(Color::rgb(1, 2, 3)),
+            code_background: FillStyle::new(Color::rgb(4, 5, 6)),
+            block_quote_border: BorderStyle::new(Color::rgb(7, 8, 9), 3),
+            thematic_break: BorderStyle::new(Color::rgb(10, 11, 12), 2),
+            ..ReaderStyle::default()
+        };
+        let document = crate::Document::from_blocks(vec![
+            crate::Block::Paragraph(vec![crate::Inline::Code("inline".into())]),
+            crate::Block::CodeBlock {
+                language: None,
+                info: None,
+                code: "block".into(),
+            },
+            crate::Block::Quote(vec![crate::Block::paragraph("quote")]),
+            crate::Block::Rule,
+        ]);
+        let layout = crate::LayoutEngine::new(style).layout(&document, Viewport::new(200, 200));
+        let page = Paginator::new(style).paginate(&layout).remove(0);
+
+        assert!(page.commands.iter().any(|command| {
+            matches!(
+                command,
+                DisplayCommand::Fill { style, .. } if style.color == Color::rgb(1, 2, 3)
+            )
+        }));
+        assert!(page.commands.iter().any(|command| {
+            matches!(
+                command,
+                DisplayCommand::Fill { style, .. } if style.color == Color::rgb(4, 5, 6)
+            )
+        }));
+        assert!(page.commands.iter().any(|command| {
+            matches!(
+                command,
+                DisplayCommand::Rule { style, .. } if style.color == Color::rgb(7, 8, 9)
+            )
+        }));
+        assert!(page.commands.iter().any(|command| {
+            matches!(
+                command,
+                DisplayCommand::Rule { style, .. } if style.color == Color::rgb(10, 11, 12)
+            )
+        }));
     }
 
     #[test]

@@ -132,7 +132,7 @@ renderer about Markdown blocks. Conversely, renderer code depends only on
 
 ## Current crate shape
 
-The initial crate exposes skeletal module boundaries for the pipeline:
+The crate exposes the module boundaries for the pipeline:
 
 | Module | Boundary |
 | --- | --- |
@@ -183,6 +183,27 @@ to do with a document, anchor, asset, or external URL after resolution.
 The resource boundary remains intentionally extensible for future storage and
 image-decoding implementations. Its integration points should extend these
 boundaries instead of moving T1 hardware policy into the library.
+
+Resource decoding, syntax highlighting, and pixel rasterization remain
+follow-up work. The layout stage now handles the core reader structures: it
+recursively lays out paragraphs, headings, inline emphasis/strong/
+strikethrough/code, soft and hard breaks, ordered and unordered (including
+task) lists, nested lists, block quotes, rules, links, and readable
+placeholders for tables and images. All line widths come from the configured
+`TextMeasurer`; a `FontdueTextEngine` therefore supplies real font metrics.
+
+Layout returns the complete document in document coordinates. It exposes each
+positioned line as a legal pagination split and never decides page boundaries.
+Links are retained on each wrapped fragment so pagination can create one hit
+region per visible line portion.
+
+The deliberate visual deviations from browser/GitHub rendering are compact
+reader choices: soft breaks collapse to ordinary whitespace, long unbreakable
+words and URLs split at character boundaries, headings use one configured
+style with a compact level-size reduction, tables are pipe-separated rows,
+images are alt-text placeholders, and block quotes use a configured vertical
+rule with e-reader indentation. These choices favor legibility and bounded
+host/device layout over HTML/CSS compatibility.
 
 ## Parser and owned document IR
 

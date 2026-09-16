@@ -86,6 +86,7 @@ pub struct TextStyle {
     pub bold: bool,
     pub italic: bool,
     pub code: bool,
+    pub strikethrough: bool,
 }
 
 impl TextStyle {
@@ -96,6 +97,7 @@ impl TextStyle {
             bold: false,
             italic: false,
             code: false,
+            strikethrough: false,
         }
     }
 }
@@ -107,15 +109,27 @@ pub struct ReaderStyle {
     pub code: TextStyle,
     pub page_padding: Insets,
     pub paragraph_spacing: u32,
+    /// Space before and after a heading, in page-space units.
+    pub heading_spacing_before: u32,
+    pub heading_spacing_after: u32,
     pub block_quote_indent: u32,
+    pub block_quote_border: BorderStyle,
+    pub block_quote_padding: u32,
     pub list_indent: u32,
+    pub list_item_spacing: u32,
+    pub inline_code_background: FillStyle,
+    pub code_background: FillStyle,
+    pub thematic_break: BorderStyle,
 }
 
 impl Default for ReaderStyle {
     fn default() -> Self {
         Self {
             body: TextStyle::new(16, 22),
-            heading: TextStyle::new(22, 28),
+            heading: TextStyle {
+                bold: true,
+                ..TextStyle::new(22, 28)
+            },
             code: TextStyle {
                 font_size: 14,
                 line_height: 20,
@@ -129,8 +143,16 @@ impl Default for ReaderStyle {
                 left: 16,
             },
             paragraph_spacing: 12,
+            heading_spacing_before: 20,
+            heading_spacing_after: 8,
             block_quote_indent: 24,
+            block_quote_border: BorderStyle::new(Color::rgb(150, 150, 150), 2),
+            block_quote_padding: 8,
             list_indent: 24,
+            list_item_spacing: 4,
+            inline_code_background: FillStyle::new(Color::rgb(242, 242, 242)),
+            code_background: FillStyle::new(Color::rgb(248, 248, 248)),
+            thematic_break: BorderStyle::new(Color::rgb(128, 128, 128), 1),
         }
     }
 }
