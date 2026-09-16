@@ -140,7 +140,20 @@ The diagnostic screen is black and white, so it does not need grayscale during
 these small updates. A real UI should periodically use a grayscale/full refresh
 to control ghosting, and should validate the visual quality of repeated `DU`
 updates on the target panel. Transient updates are submitted asynchronously;
-the next full or status update waits for the pending marker before using GC16.
+the next framebuffer write waits for the pending marker before touching the
+shared mapping.
+
+The runtime now renders each complete logical screen into an owned packed
+RGB565 frame. A completion-tracked shadow frame is compared pixel-for-pixel,
+and only the smallest enclosing changed rectangle is copied into the mapped
+framebuffer and submitted to the EPDC. Identical frames are skipped. The
+semantic touch/key/power/status rectangles still select the normal waveform and
+provide the fallback before the first full synchronization; an unexpected
+change outside the requested region is promoted to GC16. The current planner
+uses exact one-pixel alignment because the T1's EPDC alignment requirement has
+not yet been measured. It is intentionally limited to one rectangle; merging
+multiple disjoint rectangles and a display worker for latest-frame coalescing
+remain follow-up work.
 
 A follow-up 60-second run recorded a physical touch and `KEY_LEFT` button
 press while the marker was active. The exact marker was not preserved after

@@ -102,8 +102,7 @@ The original native runtime repainted the complete 600x800 screen in response
 to each completed touch frame and submitted a full-screen update rectangle.
 Although the update payload selected `UPDATE_MODE_PARTIAL`, that only made the
 request eligible for partial processing; it did not make the requested region
-small. The runtime now keeps the complete logical framebuffer current but
-submits only the rows whose diagnostic values changed. Touch details use
+small. The runtime first moved to semantic regions: touch details use
 `(left=20, top=350, width=560, height=94)`; key and power details use
 `(left=20, top=434, width=560, height=210)`; initial and ownership-sensitive
 redraws remain full-screen.
@@ -165,6 +164,27 @@ to repeat many `DU` updates in one small region, make a visual observation
 after the sequence, and determine when a GC16 cleanup refresh is needed. A
 framebuffer capture can verify the memory contents but is not an optical
 capture of the e-ink panel.
+
+### Pixel damage tracking
+
+The display pass now renders the complete logical screen into an owned,
+tightly packed RGB565 image instead of drawing directly into the shared mmap.
+After the first completed full-screen update, the native display retains a
+completion-tracked shadow image. Each later redraw compares both bytes of every
+visible RGB565 pixel against that shadow and submits the smallest enclosing
+changed rectangle. Identical frames are skipped. The semantic region remains a
+waveform hint and a fallback for an invalid shadow; if the actual change
+escapes that hint, the update is promoted to GC16 rather than silently using
+the DU fast path.
+
+Mapped framebuffer writes are serialized behind one outstanding update.
+Asynchronous transient submissions still return without waiting, but their
+rectangle pixels are snapshotted and the next write waits for their marker
+before touching the mmap. The shadow advances only after the corresponding
+marker completes. This is a correctness baseline; a future display worker can
+coalesce newer frames while one update is in flight. No EPDC alignment quantum
+has been established yet, so damage padding and alignment default to one pixel
+and remain configurable in the pure damage planner.
 
 The input devices are:
 
