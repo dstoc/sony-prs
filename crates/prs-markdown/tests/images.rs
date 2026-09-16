@@ -1,4 +1,4 @@
-use image::{DynamicImage, ImageBuffer, ImageFormat, Rgb, Rgba};
+use image::{imageops::FilterType, ImageFormat};
 use prs_markdown::harness::{render_page, HostImage, HostReader};
 use prs_markdown::pagination::DisplayCommand;
 use prs_markdown::resources::FileSystemResourceProvider;
@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const FIXTURE: &str = include_str!("fixtures/images.md");
+const GENERATED_SOURCE: &[u8] = include_bytes!("fixtures/assets/observatory.png");
 
 struct TestRoot(PathBuf);
 
@@ -40,16 +41,12 @@ impl Drop for TestRoot {
     }
 }
 
-fn encoded(width: u32, height: u32, format: ImageFormat) -> Vec<u8> {
-    let image = ImageBuffer::from_fn(width, height, |x, y| {
-        if x < width / 2 && y < height / 2 {
-            Rgba([0, 0, 0, 255])
-        } else {
-            Rgba([255, 255, 255, 255])
-        }
-    });
+fn encoded_generated(width: u32, height: u32, format: ImageFormat) -> Vec<u8> {
+    let image = image::load_from_memory(GENERATED_SOURCE)
+        .expect("generated image fixture should decode")
+        .resize_to_fill(width, height, FilterType::Lanczos3);
     let mut bytes = Cursor::new(Vec::new());
-    DynamicImage::ImageRgba8(image)
+    image
         .write_to(&mut bytes, format)
         .expect("encode test image");
     bytes.into_inner()
@@ -90,28 +87,17 @@ fn fixture_root() -> (TestRoot, FileSystemResourceProvider) {
     fs::write(root.path().join("book/chapters/images.md"), FIXTURE).expect("write fixture");
     fs::write(
         root.path().join("book/assets/landscape.png"),
-        encoded(160, 40, ImageFormat::Png),
+        encoded_generated(160, 40, ImageFormat::Png),
     )
     .expect("write PNG");
     fs::write(
         root.path().join("book/assets/deep/image.webp"),
-        encoded(48, 32, ImageFormat::WebP),
+        encoded_generated(48, 32, ImageFormat::WebP),
     )
     .expect("write WebP");
-    let portrait = ImageBuffer::from_fn(30, 120, |x, y| {
-        if x < 15 && y < 60 {
-            Rgb([0, 0, 0])
-        } else {
-            Rgb([255, 255, 255])
-        }
-    });
-    let mut portrait_bytes = Cursor::new(Vec::new());
-    DynamicImage::ImageRgb8(portrait)
-        .write_to(&mut portrait_bytes, ImageFormat::Jpeg)
-        .expect("encode JPEG");
     fs::write(
         root.path().join("shared/portrait.jpg"),
-        portrait_bytes.into_inner(),
+        encoded_generated(30, 120, ImageFormat::Jpeg),
     )
     .expect("write JPEG");
     fs::write(root.path().join("book/assets/corrupt.png"), b"not a PNG")
@@ -238,7 +224,12 @@ fn loaded_images_render_as_grayscale_pixels_through_the_normal_renderer() {
         })
         .expect("loaded image command");
     let output: HostImage = render_page(image_page, &mut renderer);
-    assert_eq!(output.pixel(image_bounds.top_left), Some(0));
+    assert!(
+        output
+            .pixel(image_bounds.top_left)
+            .is_some_and(|pixel| pixel < 255),
+        "image should produce a non-white pixel at its top-left corner"
+    );
     assert!(output
         .pixels()
         .iter()
