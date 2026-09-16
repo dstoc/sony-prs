@@ -20,6 +20,9 @@ pub use layout::{DocumentLayout, LayoutEngine, Viewport};
 pub use navigation::{DocumentId, DocumentLocation, NavigationTarget, ReaderHistory};
 pub use pagination::{PageLayout, Paginator};
 pub use reader::ReaderSession;
+pub use resources::{
+    FileSystemResourceProvider, FileSystemResources, ResourceProvider, ResourceTarget,
+};
 
 #[cfg(test)]
 mod tests {

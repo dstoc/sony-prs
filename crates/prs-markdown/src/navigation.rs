@@ -43,6 +43,12 @@ impl DocumentLocation {
 pub enum NavigationTarget {
     Location(DocumentLocation),
     Anchor(String),
+    Document(DocumentId),
+    DocumentAnchor {
+        document: DocumentId,
+        anchor: String,
+    },
+    Asset(DocumentId),
     External(String),
 }
 
@@ -51,7 +57,7 @@ impl NavigationTarget {
         if destination.starts_with('#') {
             return Self::Anchor(destination.trim_start_matches('#').to_owned());
         }
-        if destination.contains("://") || destination.starts_with("mailto:") {
+        if is_external_destination(destination) {
             return Self::External(destination.to_owned());
         }
 
@@ -59,7 +65,67 @@ impl NavigationTarget {
             .split_once('#')
             .map(|(document, anchor)| (document, Some(anchor.to_owned())))
             .unwrap_or((destination, None));
-        Self::Location(DocumentLocation::new(DocumentId::from(document), anchor))
+        let document = DocumentId::from(document);
+        if !is_markdown_destination(document.as_ref()) {
+            return Self::Asset(document);
+        }
+        match anchor {
+            Some(anchor) => Self::DocumentAnchor { document, anchor },
+            None => Self::Document(document),
+        }
+    }
+}
+
+fn is_markdown_destination(destination: &str) -> bool {
+    destination.rsplit_once('.').is_some_and(|(_, extension)| {
+        extension.eq_ignore_ascii_case("md") || extension.eq_ignore_ascii_case("markdown")
+    })
+}
+
+fn is_external_destination(destination: &str) -> bool {
+    if destination.starts_with("//") {
+        return true;
+    }
+
+    let Some(colon) = destination.find(':') else {
+        return false;
+    };
+    let scheme = &destination[..colon];
+    !scheme.is_empty()
+        && scheme.chars().enumerate().all(|(index, character)| {
+            if index == 0 {
+                character.is_ascii_alphabetic()
+            } else {
+                character.is_ascii_alphanumeric() || matches!(character, '+' | '-' | '.')
+            }
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn destinations_keep_document_anchor_asset_and_external_kinds_distinct() {
+        assert_eq!(
+            NavigationTarget::from_destination("chapter.md"),
+            NavigationTarget::Document(DocumentId::from("chapter.md"))
+        );
+        assert_eq!(
+            NavigationTarget::from_destination("chapter.md#results"),
+            NavigationTarget::DocumentAnchor {
+                document: DocumentId::from("chapter.md"),
+                anchor: "results".into(),
+            }
+        );
+        assert_eq!(
+            NavigationTarget::from_destination("images/chart.png"),
+            NavigationTarget::Asset(DocumentId::from("images/chart.png"))
+        );
+        assert_eq!(
+            NavigationTarget::from_destination("https://example.com"),
+            NavigationTarget::External("https://example.com".into())
+        );
     }
 }
 

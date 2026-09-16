@@ -50,8 +50,10 @@ The crate does not own any of the following:
 - assumptions about a particular display size, status-bar height, or panel.
 
 The T1 application provides a viewport and a drawing target, turns physical
-input into reader operations, resolves application/resource paths, and decides
-how and when resulting pixel changes are refreshed on the e-ink panel.
+input into reader operations, chooses the document root/current document for a
+resource provider, and decides how and when resulting pixel changes are
+refreshed on the e-ink panel. It does not parse Markdown links or own their
+path-resolution rules.
 
 ## Processing pipeline
 
@@ -98,6 +100,38 @@ The initial crate exposes skeletal module boundaries for the pipeline:
 | `navigation` | Document paths, anchors, link targets, and history. |
 | `reader` | Page position and navigation state. |
 | `render` | Generic `DrawTarget` adapter. |
+
+## Resource and path model
+
+`ResourceProvider` is the device-independent storage boundary used by the
+reader. It exposes four operations: read a UTF-8 text resource, read opaque
+binary bytes, identify the current document path, and resolve a reference from
+the current or an explicitly supplied containing document. A filesystem-backed
+`FileSystemResourceProvider` is provided for host execution and the T1; a
+different provider can use an archive or a device service without changing the
+reader.
+
+The filesystem provider is configured with a root directory and a current
+document. Paths in the provider namespace are normalized, root-relative paths.
+For a local relative reference, the containing document's directory is joined
+first and then `.` and `..` are normalized. The configured root is a hard
+boundary: a reference whose normalized path escapes it is rejected, and reads
+also reject symlinks that lead outside the root. Missing paths can still be
+resolved to a target, but reading one returns a resource error.
+
+Resolution produces `ResourceTarget` values without navigation state:
+
+- `Anchor` is a fragment-only reference such as `#installation`;
+- `Document` is another Markdown document;
+- `DocumentAnchor` is a Markdown document plus a fragment;
+- `Asset` is a local non-Markdown resource such as `images/chart.png`;
+- `External` is a URL/URI and is never opened by the filesystem provider.
+
+Markdown documents are identified by a case-insensitive `.md` or `.markdown`
+extension. Spaces and Unicode characters remain part of the path; references
+are not interpreted relative to the process working directory. Resolving a
+target does not open it or update history. The high-level reader chooses what
+to do with a document, anchor, asset, or external URL after resolution.
 
 The implementation is intentionally skeletal: the parser, production
 typography/font backend, syntax highlighting, image decoding, and pixel

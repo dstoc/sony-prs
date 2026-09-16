@@ -69,7 +69,11 @@ impl ReaderSession {
             NavigationTarget::Anchor(anchor) => {
                 DocumentLocation::new(self.location.document.clone(), Some(anchor))
             }
-            NavigationTarget::External(_) => return false,
+            NavigationTarget::Document(document) => DocumentLocation::new(document, None),
+            NavigationTarget::DocumentAnchor { document, anchor } => {
+                DocumentLocation::new(document, Some(anchor))
+            }
+            NavigationTarget::Asset(_) | NavigationTarget::External(_) => return false,
         };
         self.history.push(location.clone());
         self.location = location;
