@@ -228,6 +228,10 @@ While the test is running:
    that wait it continues monitoring the power evdev nodes; a wake-side power
    event causes it to request `on`, matching the framework's early-resume
    handoff, before it reacquires the lock and redraws.
+   If persistent ADB is enabled, the test defers restarting `adbd` until the
+   USB power-supply node reports that the cable has been reconnected. This is
+   necessary on the T1: restarting `adbd` while USB is physically disconnected
+   does not reliably cause the legacy USB gadget to re-enumerate later.
 3. Hold a power key for at least two seconds. The test requests `/system/bin/reboot`.
 
 The smoke test has verified the full-screen pattern, wake-lock acquisition,
@@ -240,7 +244,9 @@ return immediately because `/sys/power/state` is asynchronous, and it did not
 leave the sub-CPU power-button wake path usable. The current test uses EINK
 `standby` plus the display-wake barrier. If the reader does not wake, use the
 hardware reset or `adb reboot` recovery route. After any zygote stop, a normal
-reboot is the supported way to restore Android.
+reboot is the supported way to restore Android. If ADB does not return after a
+successful native wake, reconnect the USB cable while the reader is awake and
+leave it connected for a few seconds so the deferred `adbd` restart can run.
 
 ### Vendor power-state bridge
 

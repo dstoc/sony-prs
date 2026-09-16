@@ -1113,3 +1113,56 @@ test, reconnecting USB did not restore ADB; a hardware reset was required to
 recover normal Android and retrieve the preserved log. The EINK standby image
 was stable in this run, unlike the transient corruption observed during the
 earlier `mem` test.
+
+## Native wake-time ADB rebind
+
+The first native EINK wake tests restored the display and input path but did
+not restore host ADB after the USB cable was reconnected. A normal Android
+control test showed that the service itself can be restarted safely:
+
+```text
+stop adbd
+start adbd
+```
+
+ADB re-enumerated after that stop/start sequence. The T1 is using the legacy
+USB-ADB driver rather than the modern `/sys/class/android_usb/android0` gadget
+interface: `/dev/android_adb` and `/dev/android_adb_enable` are present, while
+the modern gadget directory is absent. The old Android ADB implementation
+opens `/dev/android_adb_enable` to enable the USB function and separately
+reopens `/dev/android_adb` to register the transport, which explains why the
+service restart is useful but timing-sensitive. See the
+[Android 2.2.3 ADB USB implementation](https://android.googlesource.com/platform/system/core/%2B/android-2.2.3_r2/adb/usb_linux_client.c).
+
+An initial native implementation restarted `adbd` immediately after issuing
+the vendor resume request. That did not make ADB return after a later cable
+reconnect. The runtime now marks the restart pending during wake and waits for
+`/sys/class/power_supply/sub_cpu_usb/online` to report `1`; it then runs
+`stop adbd`, waits briefly, and runs `start adbd`. This is deliberately tied to
+USB physical presence, not to a claim that the host transport is already
+available.
+
+On 2026-09-16, this deferred strategy was tested with USB disconnected during
+EINK standby and reconnected after the native UI returned to the active state.
+The preserved log shows the relevant sequence:
+
+```text
+wake-side power event source=E4 value=1 timestamp_us=315562853
+requesting early resume
+requesting vendor resume helper state=on
+deferring adbd restart until USB reconnect
+display wake barrier released bytes=4
+suspend/wake wait returned: Ok(()) elapsed_ms=1664
+wake lock reacquire returned: Ok(())
+post-resume framebuffer 600x800 virtual=608x1792 smem_len=2179072 stride=1216 offsets=(0, 896)
+framebuffer mapping retained across resume
+power event source=E4 value=0 timestamp_us=315740310 mode=ACTIVE
+restarting adbd after wake
+adbd restart requested
+```
+
+The host then reported the T1 as an ADB device without pressing reset. This
+confirms that the native suspend/wake path can preserve the development route:
+the required sequence is to reconnect USB after wake and allow the deferred
+restart to run. A hardware reset remains the recovery path if the native
+process or USB controller does not return far enough to observe the reconnect.
