@@ -147,6 +147,7 @@ pub fn run(path: &Path, suspend_mode: SuspendMode) -> io::Result<()> {
                 adb_restart_pending = true;
             })?,
             PowerAction::Reboot | PowerAction::PowerOff => {
+                eprintln!("standalone-test: executing power action={action:?}");
                 state.mode = "REBOOTING";
                 state.message = match action {
                     PowerAction::Reboot => "REBOOT REQUESTED",
@@ -814,7 +815,9 @@ fn run_power_state_helper(state: &str) -> io::Result<()> {
 }
 
 fn request_reboot() -> io::Result<()> {
+    eprintln!("standalone-test: invoking /system/bin/reboot reboot");
     let status = Command::new("/system/bin/reboot").arg("reboot").status()?;
+    eprintln!("standalone-test: /system/bin/reboot reboot returned {status}");
     if status.success() {
         Ok(())
     } else {
@@ -826,7 +829,9 @@ fn request_reboot() -> io::Result<()> {
 }
 
 fn request_poweroff() -> io::Result<()> {
+    eprintln!("standalone-test: invoking /system/bin/reboot -p");
     let status = Command::new("/system/bin/reboot").arg("-p").status()?;
+    eprintln!("standalone-test: /system/bin/reboot -p returned {status}");
     if status.success() {
         Ok(())
     } else {
@@ -1053,6 +1058,10 @@ impl UiState {
                 } else if self.touch_down {
                     self.touch_down = false;
                     let action = self.activate_tap();
+                    eprintln!(
+                        "standalone-test: touch tap x={} y={} page={:?} action={action:?}",
+                        self.touch_x, self.touch_y, self.page
+                    );
                     return (Some(DirtyArea::Full), action);
                 }
             }
@@ -1078,6 +1087,10 @@ impl UiState {
                     self.touch_down = false;
                     self.touch_release_pending = false;
                     let action = self.activate_tap();
+                    eprintln!(
+                        "standalone-test: touch tap x={} y={} page={:?} action={action:?}",
+                        self.touch_x, self.touch_y, self.page
+                    );
                     return (Some(DirtyArea::Full), action);
                 }
                 return (Some(DirtyArea::Touch), PowerAction::None);
