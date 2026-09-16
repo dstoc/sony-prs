@@ -1,4 +1,4 @@
-use crate::framebuffer::{DisplayCanvas, DisplayRegion, NativeDisplay};
+use crate::framebuffer::{DisplayCanvas, DisplayRegion, NativeDisplay, WaveformMode};
 
 const BLACK: u16 = 0x0000;
 const WHITE: u16 = 0xffff;
@@ -9,8 +9,9 @@ pub fn draw_screen(
     display: &mut NativeDisplay,
     lines: &[String],
     refresh_region: DisplayRegion,
+    waveform: WaveformMode,
 ) -> std::io::Result<()> {
-    display.draw_region(refresh_region, |canvas| {
+    display.draw_region_with_waveform(refresh_region, waveform, |canvas| {
         draw_pattern(canvas);
         let positions = [
             (24, 20),

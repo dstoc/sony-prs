@@ -1,4 +1,4 @@
-use crate::framebuffer::{DisplayRegion, NativeDisplay};
+use crate::framebuffer::{DisplayRegion, NativeDisplay, WaveformMode};
 use crate::input::{EventReader, RawEvent};
 use crate::{display, input};
 use std::fs::OpenOptions;
@@ -153,7 +153,7 @@ fn redraw(
     area: DirtyArea,
 ) -> io::Result<()> {
     let lines = screen_lines(state, wake_lock_held);
-    display::draw_screen(display, &lines, area.region(display))
+    display::draw_screen(display, &lines, area.region(display), area.waveform())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -189,6 +189,13 @@ impl DirtyArea {
             Self::Status => DisplayRegion::new(20, 88, 560, 490),
         };
         region.bounded(display.width(), display.height())
+    }
+
+    fn waveform(self) -> WaveformMode {
+        match self {
+            Self::Touch | Self::Key | Self::Power => WaveformMode::Du,
+            Self::Full | Self::Status => WaveformMode::Gc16,
+        }
     }
 }
 

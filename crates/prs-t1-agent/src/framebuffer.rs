@@ -735,7 +735,12 @@ impl NativeDisplay {
     /// The closure still sees the full logical screen so callers can retain a
     /// simple complete-screen renderer while avoiding a full-panel waveform
     /// for small state changes.
-    pub fn draw_region<F>(&mut self, region: DisplayRegion, paint: F) -> io::Result<()>
+    pub fn draw_region_with_waveform<F>(
+        &mut self,
+        region: DisplayRegion,
+        waveform: WaveformMode,
+        paint: F,
+    ) -> io::Result<()>
     where
         F: FnOnce(&mut DisplayCanvas<'_>),
     {
@@ -774,20 +779,15 @@ impl NativeDisplay {
         let marker = self.next_marker;
         self.next_marker = self.next_marker.wrapping_add(1).max(10);
         let started = Instant::now();
-        let result = request_update(
-            self.file.as_raw_fd(),
-            region.as_mxcfb(),
-            WaveformMode::Gc16,
-            marker,
-        );
+        let result = request_update(self.file.as_raw_fd(), region.as_mxcfb(), waveform, marker);
         eprintln!(
             "standalone-test: display refresh region=({},{} {}x{}) waveform={} elapsed_ms={} status={}",
             region.left,
             region.top,
             region.width,
             region.height,
+            waveform.label(),
             started.elapsed().as_millis(),
-            WaveformMode::Gc16.label(),
             if result.is_ok() { "ok" } else { "error" },
         );
         result
