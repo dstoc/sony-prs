@@ -1,22 +1,11 @@
 //! Viewport-relative document layout.
 
 use crate::document::{Block, Inline, ListItem, Table};
+pub use crate::geometry::Viewport;
 use crate::navigation::NavigationTarget;
 use crate::style::{ReaderStyle, TextStyle};
 use embedded_graphics::geometry::{Point, Size};
 use embedded_graphics::primitives::Rectangle;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Viewport {
-    pub width: u32,
-    pub height: u32,
-}
-
-impl Viewport {
-    pub const fn new(width: u32, height: u32) -> Self {
-        Self { width, height }
-    }
-}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DocumentLayout {

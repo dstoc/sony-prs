@@ -6,6 +6,7 @@
 //! particular reader model.
 
 pub mod document;
+pub mod geometry;
 pub mod layout;
 pub mod navigation;
 pub mod pagination;
@@ -16,13 +17,15 @@ pub mod resources;
 pub mod style;
 
 pub use document::{Block, Document, Inline};
-pub use layout::{DocumentLayout, LayoutEngine, Viewport};
+pub use geometry::{intersection, translate, Rect, Viewport};
+pub use layout::{DocumentLayout, LayoutEngine};
 pub use navigation::{DocumentId, DocumentLocation, NavigationTarget, ReaderHistory};
-pub use pagination::{PageLayout, Paginator};
+pub use pagination::{DisplayCommand, DisplayList, HitRegion, PageLayout, Paginator};
 pub use reader::ReaderSession;
 pub use resources::{
     FileSystemResourceProvider, FileSystemResources, ResourceProvider, ResourceTarget,
 };
+pub use style::{BorderStyle, Color, FillStyle, Insets, ReaderStyle, TextStyle};
 
 #[cfg(test)]
 mod tests {

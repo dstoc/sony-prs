@@ -85,6 +85,42 @@ Each stage has a stable handoff:
 5. The T1 agent compares or refreshes pixels using its existing framebuffer
    and EPDC policy. That final step is outside `prs-markdown`.
 
+## Layout/display-list boundary
+
+`geometry::Viewport` describes the width and height supplied by the reader
+application. `geometry::Rect` is the shared, hardware-independent rectangle
+type, and `geometry::translate` plus `Viewport::clip` provide the only
+coordinate operations needed at this boundary. Page-space `(0, 0)` is always
+the top-left of the reader viewport. A T1 application may translate a page to
+the framebuffer origin later; no status-bar offset is stored in a page.
+
+`pagination::PageLayout` is the renderer input. Its ordered `DisplayList`
+contains positioned, non-semantic primitives:
+
+- `Text` carries a text run, its bounds, and common `TextStyle` metrics.
+- `Fill` and `Border` express backgrounds and framed regions.
+- `Rule` expresses horizontal or vertical rules as a stroked rectangle.
+- `ImagePlaceholder` carries bounds, alternative text, and an optional source
+  identifier until an image renderer is supplied.
+
+`FillStyle`, `BorderStyle`, and `Color` are document presentation values, not
+device UI styling. The display list is ordered back-to-front, so a later
+command is drawn over an earlier one. `PageLayout::push_command` clips a
+command to its viewport; renderers may clip again after applying their target
+origin.
+
+Semantic links are separate from the display list. Each `HitRegion` associates
+one page-space rectangle with a `NavigationTarget`; a wrapped logical link is
+represented by several entries with the same target. `PageLayout::hit_test`
+does not inspect rendered pixels and searches regions in reverse insertion
+order, making the topmost overlapping region win deterministically. Regions
+are clipped when added through `PageLayout::add_hit_region`.
+
+Layout may therefore produce any combination of text, fills, borders, rules,
+and image placeholders for tables, quotes, or code blocks without teaching the
+renderer about Markdown blocks. Conversely, renderer code depends only on
+`PageLayout` and these generic styles and geometry types.
+
 ## Current crate shape
 
 The initial crate exposes skeletal module boundaries for the pipeline:
@@ -95,6 +131,7 @@ The initial crate exposes skeletal module boundaries for the pipeline:
 | `parse` | Replaceable Markdown parser trait and parse errors. |
 | `resources` | Host-provided image/include/resource loading. |
 | `style` | Caller-supplied style and font-independent metrics. |
+| `geometry` | Viewport-relative rectangles, translation, and clipping. |
 | `layout` | Viewport-relative blocks, lines, fragments, and link semantics. |
 | `pagination` | Pages, display-list commands, and semantic hit regions. |
 | `navigation` | Document paths, anchors, link targets, and history. |

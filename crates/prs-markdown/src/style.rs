@@ -1,5 +1,65 @@
 //! Host-supplied reader style and font-independent metrics.
 
+/// A device-independent RGBA color for display-list decorations.
+///
+/// The renderer maps this value to the color model of its draw target.  The
+/// layout crate therefore does not choose a framebuffer pixel format.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct Color {
+    pub red: u8,
+    pub green: u8,
+    pub blue: u8,
+    pub alpha: u8,
+}
+
+impl Color {
+    pub const BLACK: Self = Self::rgb(0, 0, 0);
+    pub const WHITE: Self = Self::rgb(255, 255, 255);
+
+    pub const fn rgb(red: u8, green: u8, blue: u8) -> Self {
+        Self {
+            red,
+            green,
+            blue,
+            alpha: 255,
+        }
+    }
+
+    pub const fn rgba(red: u8, green: u8, blue: u8, alpha: u8) -> Self {
+        Self {
+            red,
+            green,
+            blue,
+            alpha,
+        }
+    }
+}
+
+/// Paint used to fill a rectangle.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct FillStyle {
+    pub color: Color,
+}
+
+impl FillStyle {
+    pub const fn new(color: Color) -> Self {
+        Self { color }
+    }
+}
+
+/// Stroke used for borders and rules.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct BorderStyle {
+    pub color: Color,
+    pub width: u32,
+}
+
+impl BorderStyle {
+    pub const fn new(color: Color, width: u32) -> Self {
+        Self { color, width }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Insets {
     pub top: u32,
