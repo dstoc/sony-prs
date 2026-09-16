@@ -10,6 +10,68 @@ use crate::layout::{DocumentLayout, LayoutBlockKind, LayoutLine};
 use crate::navigation::NavigationTarget;
 use crate::style::{BorderStyle, Color, FillStyle, ReaderStyle, TextStyle};
 use embedded_graphics::geometry::Point;
+use std::ops::{Deref, DerefMut};
+
+/// A stable position between the laid-out lines of a document.
+///
+/// `block` identifies a top-level document block and `line` identifies a
+/// line within that block.  A cursor at `(block, 0)` is before the first line
+/// of that block.  The canonical end cursor is `(block_count, 0)`; using the
+/// next block for a boundary avoids having two different cursors for the same
+/// position between blocks.  The cursor is independent of page pixels and can
+/// therefore be used to restore a reading position after a page is rebuilt.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct DocumentCursor {
+    pub block: usize,
+    pub line: usize,
+}
+
+impl DocumentCursor {
+    pub const fn new(block: usize, line: usize) -> Self {
+        Self { block, line }
+    }
+}
+
+/// A half-open logical range of laid-out content: `[start, end)`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct DocumentRange {
+    pub start: DocumentCursor,
+    pub end: DocumentCursor,
+}
+
+impl DocumentRange {
+    pub const fn new(start: DocumentCursor, end: DocumentCursor) -> Self {
+        Self { start, end }
+    }
+
+    pub const fn empty(cursor: DocumentCursor) -> Self {
+        Self {
+            start: cursor,
+            end: cursor,
+        }
+    }
+
+    pub fn contains(&self, cursor: DocumentCursor) -> bool {
+        self.start <= cursor && cursor < self.end
+    }
+
+    pub const fn start(self) -> DocumentCursor {
+        self.start
+    }
+
+    pub const fn end(self) -> DocumentCursor {
+        self.end
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.start == self.end
+    }
+}
+
+/// Short aliases for callers that describe pagination in logical-position
+/// terminology.
+pub type LogicalPosition = DocumentCursor;
+pub type LogicalRange = DocumentRange;
 
 /// An ordered display list. Commands later in the list are drawn on top of
 /// earlier commands.
@@ -19,6 +81,8 @@ pub type DisplayList = Vec<DisplayCommand>;
 pub struct PageLayout {
     pub number: usize,
     pub viewport: Viewport,
+    /// The logical content represented by this page, independent of pixels.
+    pub range: DocumentRange,
     /// Commands are in back-to-front order and are expressed in page space.
     pub commands: DisplayList,
     /// Each entry is one page-space rectangle. Multiple entries may have the
@@ -31,6 +95,17 @@ impl PageLayout {
         Self {
             number,
             viewport,
+            range: DocumentRange::default(),
+            commands: DisplayList::new(),
+            hit_regions: Vec::new(),
+        }
+    }
+
+    pub fn with_range(number: usize, viewport: Viewport, range: DocumentRange) -> Self {
+        Self {
+            number,
+            viewport,
+            range,
             commands: DisplayList::new(),
             hit_regions: Vec::new(),
         }
@@ -42,6 +117,22 @@ impl PageLayout {
 
     pub fn display_list(&self) -> &DisplayList {
         &self.commands
+    }
+
+    pub fn logical_range(&self) -> DocumentRange {
+        self.range
+    }
+
+    pub fn range(&self) -> DocumentRange {
+        self.range
+    }
+
+    pub fn start_cursor(&self) -> DocumentCursor {
+        self.range.start
+    }
+
+    pub fn end_cursor(&self) -> DocumentCursor {
+        self.range.end
     }
 
     /// Add a command after clipping its bounds to the page viewport.
@@ -75,6 +166,97 @@ impl PageLayout {
             .iter()
             .rev()
             .find(|region| region.bounds.contains(point))
+    }
+}
+
+/// The complete logical pagination result.
+///
+/// It dereferences to a page slice for compatibility with callers that only
+/// need indexing or iteration. The explicit methods are useful to navigation
+/// code that should not know how pages are stored.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Pagination {
+    pages: Vec<PageLayout>,
+}
+
+impl Pagination {
+    fn new(pages: Vec<PageLayout>) -> Self {
+        Self { pages }
+    }
+
+    pub fn pages(&self) -> &[PageLayout] {
+        &self.pages
+    }
+
+    pub fn page(&self, index: usize) -> Option<&PageLayout> {
+        self.pages.get(index)
+    }
+
+    pub fn page_mut(&mut self, index: usize) -> Option<&mut PageLayout> {
+        self.pages.get_mut(index)
+    }
+
+    pub fn len(&self) -> usize {
+        self.pages.len()
+    }
+
+    pub fn page_count(&self) -> usize {
+        self.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.pages.is_empty()
+    }
+
+    /// Return the page containing a line-start cursor.
+    pub fn page_for_cursor(&self, cursor: DocumentCursor) -> Option<&PageLayout> {
+        self.pages.iter().find(|page| page.range.contains(cursor))
+    }
+
+    pub fn page_index_for_cursor(&self, cursor: DocumentCursor) -> Option<usize> {
+        self.pages
+            .iter()
+            .position(|page| page.range.contains(cursor))
+    }
+
+    pub fn next_page_index(&self, index: usize) -> Option<usize> {
+        index.checked_add(1).filter(|next| *next < self.pages.len())
+    }
+
+    pub fn previous_page_index(&self, index: usize) -> Option<usize> {
+        (index > 0 && index < self.pages.len()).then_some(index - 1)
+    }
+
+    pub fn next_page(&self, index: usize) -> Option<&PageLayout> {
+        self.next_page_index(index).and_then(|next| self.page(next))
+    }
+
+    pub fn previous_page(&self, index: usize) -> Option<&PageLayout> {
+        self.previous_page_index(index)
+            .and_then(|previous| self.page(previous))
+    }
+
+    /// Retained for source compatibility with the original `Vec` return type.
+    pub fn remove(&mut self, index: usize) -> PageLayout {
+        self.pages.remove(index)
+    }
+
+    pub fn into_pages(self) -> Vec<PageLayout> {
+        self.pages
+    }
+}
+
+impl Deref for Pagination {
+    type Target = [PageLayout];
+
+    fn deref(&self) -> &Self::Target {
+        &self.pages
+    }
+}
+
+impl DerefMut for Pagination {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.pages
     }
 }
 
@@ -147,6 +329,13 @@ pub struct Paginator {
     pub style: ReaderStyle,
 }
 
+#[derive(Clone, Copy)]
+struct PageContext {
+    start: Option<DocumentCursor>,
+    origin_y: i32,
+    height: i32,
+}
+
 impl Default for Paginator {
     fn default() -> Self {
         Self::new(ReaderStyle::default())
@@ -158,17 +347,36 @@ impl Paginator {
         Self { style }
     }
 
-    pub fn paginate(&self, layout: &DocumentLayout) -> Vec<PageLayout> {
+    /// Paginate a complete layout into logical page ranges and display lists.
+    ///
+    /// Pages are formed by a deterministic greedy scan of positioned lines.
+    /// A line whose bottom exactly reaches the usable page bottom belongs to
+    /// that page. Page-space coordinates are reset at every boundary, while
+    /// each page retains the source cursor range that produced it.
+    pub fn paginate(&self, layout: &DocumentLayout) -> Pagination {
         let mut pages = Vec::new();
         let mut page_origin_y = 0;
         let mut page = PageLayout::new(1, layout.viewport);
+        let mut page_start = None;
         let page_height = layout.viewport.height.max(1) as i32;
+        let document_end = DocumentCursor::new(layout.blocks().len(), 0);
 
-        for block in layout.blocks() {
-            for line in &block.lines {
-                if line_bottom(line.bounds) > page_origin_y + page_height
-                    && !page.commands.is_empty()
+        for (block_index, block) in layout.blocks().iter().enumerate() {
+            for (line_index, line) in block.lines.iter().enumerate() {
+                let cursor = DocumentCursor::new(block_index, line_index);
+                if self.should_break_before(
+                    layout,
+                    block_index,
+                    line_index,
+                    line,
+                    PageContext {
+                        start: page_start,
+                        origin_y: page_origin_y,
+                        height: page_height,
+                    },
+                ) && page_start.is_some()
                 {
+                    page.range = DocumentRange::new(page_start.unwrap(), cursor);
                     pages.push(page);
                     page_origin_y = line
                         .bounds
@@ -176,7 +384,9 @@ impl Paginator {
                         .y
                         .saturating_sub(self.style.page_padding.top as i32);
                     page = PageLayout::new(pages.len() + 1, layout.viewport);
+                    page_start = None;
                 }
+                page_start.get_or_insert(cursor);
                 add_line(
                     &mut page,
                     line,
@@ -187,11 +397,141 @@ impl Paginator {
             }
         }
 
-        if !page.commands.is_empty() || pages.is_empty() {
+        if let Some(start) = page_start {
+            page.range = DocumentRange::new(start, document_end);
             pages.push(page);
+        } else if pages.is_empty() {
+            pages.push(PageLayout::with_range(
+                1,
+                layout.viewport,
+                DocumentRange::empty(document_end),
+            ));
         }
-        pages
+        Pagination::new(pages)
     }
+
+    fn should_break_before(
+        &self,
+        layout: &DocumentLayout,
+        block_index: usize,
+        line_index: usize,
+        line: &LayoutLine,
+        context: PageContext,
+    ) -> bool {
+        let Some(page_start) = context.start else {
+            return false;
+        };
+        let page_limit = context
+            .origin_y
+            .saturating_add(context.height)
+            .saturating_sub(self.style.page_padding.bottom as i32);
+        let line_fits = line_bottom(line.bounds) <= page_limit;
+        let block = &layout.blocks()[block_index];
+
+        if !line_fits {
+            // If an image is taller than a page, keep its already-started
+            // placeholder together as the documented oversized-atomic
+            // fallback. A normal image starts at line zero and will have been
+            // moved before this branch when the whole block fits a page.
+            if block.kind == LayoutBlockKind::Image
+                && line_index > 0
+                && page_start.block == block_index
+                && page_start.line == 0
+            {
+                return false;
+            }
+            return true;
+        }
+
+        // Rules and images are atomic when they can fit on a fresh page. An
+        // over-height atomic block is emitted on one page and clipped by the
+        // ordinary display-list boundary rather than being silently dropped.
+        if matches!(block.kind, LayoutBlockKind::Rule | LayoutBlockKind::Image)
+            && line_index == 0
+            && block_bottom(block) > page_limit
+        {
+            return true;
+        }
+
+        // A heading at the bottom is only useful when at least the next line
+        // can follow it. If it cannot, move the heading as a unit when the
+        // heading itself fits a fresh page. A very tall heading falls back to
+        // the ordinary line-by-line rule.
+        if block.kind == LayoutBlockKind::Heading && line_index == 0 {
+            if let Some(next) = next_line(layout, block_index, line_index) {
+                if line_bottom(next.bounds) > page_limit
+                    && block_fits_fresh_page(block, context.height, &self.style)
+                {
+                    return true;
+                }
+            }
+        }
+
+        if block.kind == LayoutBlockKind::Paragraph {
+            let started_on_page = page_start.block < block_index
+                || (page_start.block == block_index && page_start.line == 0);
+            if started_on_page {
+                // Keep a short paragraph together when the fresh-page fit is
+                // available. This also prevents the common one-line orphan
+                // after a heading or preceding paragraph.
+                if line_index == 0
+                    && block_fits_fresh_page(block, context.height, &self.style)
+                    && block_bottom(block) > page_limit
+                {
+                    return true;
+                }
+
+                // Look one line ahead before filling the last available slot.
+                // If the final two lines cannot fit together, move both to the
+                // next page rather than producing a one-line paragraph page.
+                if line_index + 2 == block.lines.len() {
+                    if let Some(last) = block.lines.get(line_index + 1) {
+                        if line_bottom(last.bounds) > page_limit {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+
+        false
+    }
+}
+
+fn next_line(
+    layout: &DocumentLayout,
+    block_index: usize,
+    line_index: usize,
+) -> Option<&LayoutLine> {
+    let block = &layout.blocks()[block_index];
+    block
+        .lines
+        .get(line_index + 1)
+        .or_else(|| layout.blocks().get(block_index + 1)?.lines.first())
+}
+
+fn block_bottom(block: &crate::layout::LayoutBlock) -> i32 {
+    block
+        .lines
+        .last()
+        .map(|line| line_bottom(line.bounds))
+        .unwrap_or(block.bounds.top_left.y)
+}
+
+fn block_fits_fresh_page(
+    block: &crate::layout::LayoutBlock,
+    page_height: i32,
+    style: &ReaderStyle,
+) -> bool {
+    let Some(first) = block.lines.first() else {
+        return true;
+    };
+    let block_height = block_bottom(block).saturating_sub(first.bounds.top_left.y);
+    let available = page_height
+        .saturating_sub(style.page_padding.top as i32)
+        .saturating_sub(style.page_padding.bottom as i32)
+        .max(1);
+    block_height <= available
 }
 
 fn add_line(
@@ -274,8 +614,10 @@ fn line_bottom(rectangle: Rect) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::document::{Block, Document, Inline, ListItem};
     use crate::geometry::Viewport;
-    use crate::layout::{LayoutBlock, LayoutBlockKind, LayoutLine};
+    use crate::layout::{LayoutBlock, LayoutBlockKind, LayoutEngine, LayoutLine};
+    use crate::style::Insets;
     use embedded_graphics::geometry::Size;
 
     fn page() -> PageLayout {
@@ -471,5 +813,206 @@ mod tests {
         assert_eq!(pages.len(), 2);
         assert_eq!(pages[0].display_list()[0].bounds().top_left.y, 4);
         assert_eq!(pages[1].display_list()[0].bounds().top_left.y, 4);
+    }
+
+    fn pagination_style() -> ReaderStyle {
+        ReaderStyle {
+            page_padding: Insets::all(0),
+            body: TextStyle::new(10, 10),
+            heading: TextStyle {
+                bold: true,
+                ..TextStyle::new(10, 10)
+            },
+            code: TextStyle::new(10, 10),
+            paragraph_spacing: 0,
+            heading_spacing_before: 0,
+            heading_spacing_after: 0,
+            list_item_spacing: 2,
+            ..ReaderStyle::default()
+        }
+    }
+
+    fn text(block: &LayoutBlock) -> String {
+        block
+            .lines
+            .iter()
+            .flat_map(|line| line.fragments.iter().map(|fragment| fragment.text.as_str()))
+            .collect()
+    }
+
+    #[test]
+    fn exact_fit_stays_on_page_and_one_line_overflow_starts_next_page() {
+        let style = pagination_style();
+        let document = Document::from_blocks(vec![
+            Block::paragraph("first"),
+            Block::paragraph("second"),
+            Block::paragraph("third"),
+        ]);
+        let layout = LayoutEngine::new(style).layout(&document, Viewport::new(200, 20));
+        let pages = Paginator::new(style).paginate(&layout);
+
+        assert_eq!(pages.len(), 2);
+        assert_eq!(
+            pages[0].range,
+            DocumentRange::new(DocumentCursor::new(0, 0), DocumentCursor::new(2, 0),)
+        );
+        assert_eq!(
+            pages[1].range,
+            DocumentRange::new(DocumentCursor::new(2, 0), DocumentCursor::new(3, 0),)
+        );
+        assert_eq!(pages[0].display_list()[1].bounds().top_left.y, 10);
+        assert_eq!(pages[1].display_list()[0].bounds().top_left.y, 0);
+    }
+
+    #[test]
+    fn heading_near_bottom_moves_with_following_content() {
+        let style = pagination_style();
+        let document = Document::from_blocks(vec![
+            Block::paragraph("intro"),
+            Block::heading(1, "section"),
+            Block::paragraph("body"),
+        ]);
+        let layout = LayoutEngine::new(style).layout(&document, Viewport::new(200, 20));
+        let pages = Paginator::new(style).paginate(&layout);
+
+        assert_eq!(pages.len(), 2);
+        assert_eq!(pages[0].range.end, DocumentCursor::new(1, 0));
+        assert_eq!(pages[1].range.start, DocumentCursor::new(1, 0));
+        assert_eq!(pages[1].display_list()[0].bounds().top_left.y, 0);
+        assert_eq!(pages[1].display_list()[1].bounds().top_left.y, 10);
+    }
+
+    #[test]
+    fn lists_split_at_line_boundaries_without_losing_nested_content() {
+        let style = pagination_style();
+        let mut nested = ListItem::new(vec![Inline::Text("nested item".into())]);
+        nested.children.push(Block::paragraph("nested detail"));
+        let document = Document::from_blocks(vec![Block::List {
+            ordered: false,
+            items: vec![
+                ListItem::new(vec![Inline::Text("first item".into())]),
+                {
+                    let mut item = ListItem::new(vec![Inline::Text("second item".into())]);
+                    item.children.push(Block::List {
+                        ordered: false,
+                        items: vec![nested],
+                    });
+                    item
+                },
+                ListItem::new(vec![Inline::Text("third item".into())]),
+            ],
+        }]);
+        let layout = LayoutEngine::new(style).layout(&document, Viewport::new(200, 24));
+        let pages = Paginator::new(style).paginate(&layout);
+
+        let rendered: String = pages
+            .iter()
+            .flat_map(|page| page.display_list().iter())
+            .filter_map(|command| match command {
+                DisplayCommand::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        let laid_out = text(&layout.blocks()[0]);
+        assert!(pages.len() > 1);
+        assert!(rendered.contains("first item"));
+        assert!(rendered.contains("second item"));
+        assert!(rendered.contains("nested item"));
+        assert!(rendered.contains("nested detail"));
+        assert!(rendered.contains("third item"));
+        assert_eq!(rendered.replace(' ', ""), laid_out.replace(' ', ""));
+    }
+
+    #[test]
+    fn long_paragraph_uses_line_ranges_and_repeated_pagination_is_identical() {
+        let style = pagination_style();
+        let document = Document::from_blocks(vec![Block::paragraph(
+            "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen",
+        )]);
+        let layout = LayoutEngine::new(style).layout(&document, Viewport::new(45, 24));
+        let paginator = Paginator::new(style);
+        let first = paginator.paginate(&layout);
+        let second = paginator.paginate(&layout);
+
+        assert_eq!(first, second);
+        assert!(first.len() > 1);
+        assert_eq!(first[0].range.start, DocumentCursor::new(0, 0));
+        assert_eq!(first.last().unwrap().range.end, DocumentCursor::new(1, 0));
+        for pair in first.windows(2) {
+            assert_eq!(pair[0].range.end, pair[1].range.start);
+        }
+    }
+
+    #[test]
+    fn pagination_navigation_round_trips_by_logical_page() {
+        let style = pagination_style();
+        let document = Document::from_blocks(vec![
+            Block::paragraph("one"),
+            Block::paragraph("two"),
+            Block::paragraph("three"),
+        ]);
+        let layout = LayoutEngine::new(style).layout(&document, Viewport::new(200, 10));
+        let pages = Paginator::new(style).paginate(&layout);
+        assert_eq!(pages.page_index_for_cursor(pages[1].range.start), Some(1));
+        let next = pages.next_page(0).expect("next page");
+        let previous = pages.previous_page(next.number - 1).expect("previous page");
+        assert_eq!(previous.range, pages[0].range);
+        assert_eq!(pages.page(usize::MAX), None);
+    }
+
+    #[test]
+    fn empty_document_has_one_empty_logical_page() {
+        let style = pagination_style();
+        let layout = LayoutEngine::new(style).layout(&Document::new(), Viewport::new(100, 20));
+        let pages = Paginator::new(style).paginate(&layout);
+
+        assert_eq!(pages.len(), 1);
+        assert_eq!(
+            pages[0].range,
+            DocumentRange::empty(DocumentCursor::new(0, 0))
+        );
+        assert!(pages[0].display_list().is_empty());
+    }
+
+    #[test]
+    fn rules_remain_atomic_while_quotes_and_code_split_by_line() {
+        let style = pagination_style();
+        let document = Document::from_blocks(vec![
+            Block::paragraph("before"),
+            Block::Rule,
+            Block::Quote(vec![Block::Paragraph(vec![
+                Inline::Text("one".into()),
+                Inline::HardBreak,
+                Inline::Text("two".into()),
+                Inline::HardBreak,
+                Inline::Text("three".into()),
+            ])]),
+            Block::CodeBlock {
+                language: None,
+                info: None,
+                code: "a\nb\nc".into(),
+            },
+        ]);
+        let layout = LayoutEngine::new(style).layout(&document, Viewport::new(200, 15));
+        let pages = Paginator::new(style).paginate(&layout);
+
+        assert!(pages.len() >= 4);
+        assert!(matches!(
+            pages[1].display_list().first(),
+            Some(DisplayCommand::Rule { style, .. })
+                if *style == pagination_style().thematic_break
+        ));
+        assert!(pages.iter().any(|page| {
+            page.display_list().iter().any(|command| {
+                matches!(command, DisplayCommand::Fill { style, .. }
+                    if *style == pagination_style().code_background)
+            })
+        }));
+        assert!(pages.iter().any(|page| {
+            page.display_list().iter().any(|command| {
+                matches!(command, DisplayCommand::Rule { style, .. }
+                    if *style == pagination_style().block_quote_border)
+            })
+        }));
     }
 }

@@ -451,6 +451,7 @@ mod tests {
         let page = PageLayout {
             number: 1,
             viewport: crate::geometry::Viewport::new(5, 4),
+            range: crate::pagination::DocumentRange::default(),
             commands: DisplayList::from([
                 DisplayCommand::Fill {
                     bounds: Rect::new(Point::new(-2, -1), Size::new(5, 4)),
@@ -485,6 +486,7 @@ mod tests {
         let page = PageLayout {
             number: 1,
             viewport: crate::geometry::Viewport::new(2, 2),
+            range: crate::pagination::DocumentRange::default(),
             commands: DisplayList::from([DisplayCommand::Fill {
                 bounds: Rect::new(Point::zero(), Size::new(2, 2)),
                 style: crate::style::FillStyle::new(Color::BLACK),

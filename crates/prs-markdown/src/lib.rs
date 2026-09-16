@@ -31,7 +31,10 @@ pub use document::{
 pub use geometry::{intersection, translate, Rect, Viewport};
 pub use layout::{DocumentLayout, LayoutEngine};
 pub use navigation::{DocumentId, DocumentLocation, NavigationTarget, ReaderHistory};
-pub use pagination::{DisplayCommand, DisplayList, HitRegion, PageLayout, Paginator};
+pub use pagination::{
+    DisplayCommand, DisplayList, DocumentCursor, DocumentRange, HitRegion, LogicalPosition,
+    LogicalRange, PageLayout, Pagination, Paginator,
+};
 pub use reader::ReaderSession;
 pub use render::EmbeddedGraphicsRenderer;
 pub use resources::{

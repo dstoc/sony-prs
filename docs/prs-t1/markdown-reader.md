@@ -75,10 +75,10 @@ Each stage has a stable handoff:
    a caller-supplied viewport. It produces positioned lines and fragments,
    retaining link semantics rather than converting links into pixel-only
    state.
-3. Pagination turns the document layout into independent `PageLayout` values.
-   A page contains display-list commands and semantic hit regions in its own
-   viewport coordinates, so a caller can redraw or cache a page without
-   knowing how the panel is refreshed.
+3. Pagination turns the document layout into a `Pagination` of independent
+   `PageLayout` values. A page contains display-list commands and semantic hit
+   regions in its own viewport coordinates, so a caller can redraw or cache a
+   page without knowing how the panel is refreshed.
 4. The renderer accepts a page, a caller-owned `TextEngine`, and an arbitrary
    compatible `embedded-graphics` `DrawTarget`. It translates page coordinates
    to a caller-selected origin, clips to the translated viewport, and submits
@@ -130,6 +130,46 @@ and image placeholders for tables, quotes, or code blocks without teaching the
 renderer about Markdown blocks. Conversely, renderer code depends only on
 `PageLayout` and these generic styles and geometry types.
 
+## Deterministic pagination rules
+
+`Paginator` scans the positioned layout once and returns a `Pagination`. Each
+`PageLayout` contains a half-open `DocumentRange` of `DocumentCursor` values;
+the cursor identifies a top-level block and a line within that block. The
+canonical position between blocks is `(next_block, 0)`, and the document end is
+`(block_count, 0)`. Page navigation can therefore use `page_for_cursor`,
+`next_page`, and `previous_page` without retaining rendered pixels.
+
+The paginator is a greedy line scanner with deterministic local lookahead; it
+does not optimise a document globally. A line whose bottom exactly reaches the
+usable page bottom fits. A page break is made before a line that would
+overflow, and the first line on a new page is translated to the configured
+top padding. The bottom padding is reserved when deciding whether a line fits.
+
+The split policy is:
+
+- paragraphs split only between layout lines. A short paragraph that fits a
+  fresh page is moved as a unit when the current page cannot hold it; a
+  two-line tail is kept together when this avoids a one-line orphan;
+- headings use the same line boundaries, but a heading that would otherwise be
+  the last content on a page is moved with the next line when the heading fits
+  a fresh page;
+- lists and block quotes may continue on another page at any line boundary.
+  This permits an item or nested child to split when its lines cannot fit,
+  while ordinary item boundaries remain natural layout-line boundaries;
+- thematic rules are atomic and are moved to the next page when they do not
+  fit. The current image placeholder is also kept atomic when it fits a fresh
+  page. An atomic block taller than a viewport uses a deterministic clipped
+  single-page fallback until a size-aware image layout is available;
+- code and the current pipe-separated table placeholder split at layout-line
+  boundaries. Future code/table/image layout should preserve this paginator
+  boundary and add display-line, row, or image-fragment metadata without
+  changing cursor semantics.
+
+These rules operate on `DocumentLayout` lines and display-list commands only;
+pagination never allocates or depends on full-page bitmaps or E-ink refresh
+behaviour. Re-running pagination with the same layout and style produces the
+same page count, ranges, and page-space commands.
+
 ## Current crate shape
 
 The crate exposes the module boundaries for the pipeline:
@@ -143,7 +183,7 @@ The crate exposes the module boundaries for the pipeline:
 | `geometry` | Viewport-relative rectangles, translation, and clipping. |
 | `typography` | Fontdue-backed font loading, proportional measurement, styled wrapping, glyph positions, line metrics, and bounded raster caching. |
 | `layout` | Viewport-relative blocks, lines, fragments, and link semantics. |
-| `pagination` | Pages, display-list commands, and semantic hit regions. |
+| `pagination` | Logical page ranges, pages, display-list commands, and semantic hit regions. |
 | `navigation` | Document paths, anchors, link targets, and history. |
 | `reader` | Page position and navigation state. |
 | `render` | Generic `DrawTarget` adapter with origin/viewport clipping, decoration primitives, and caller-supplied glyph rasterization. |
