@@ -160,10 +160,12 @@ The split policy is:
   fit. The current image placeholder is also kept atomic when it fits a fresh
   page. An atomic block taller than a viewport uses a deterministic clipped
   single-page fallback until a size-aware image layout is available;
-- code and the current pipe-separated table placeholder split at layout-line
-  boundaries. Future code/table/image layout should preserve this paginator
-  boundary and add display-line, row, or image-fragment metadata without
-  changing cursor semantics.
+- code splits at layout-line boundaries. Tables split only before a complete
+  row when the row fits a fresh page; every continuation page synthesizes the
+  current group's header above the row without adding a second logical cursor
+  range. A row taller than one page is an explicit fallback: it is placed once
+  and then split at its layout-line boundaries, with the header repeated on
+  each continuation page.
 
 These rules operate on `DocumentLayout` lines and display-list commands only;
 pagination never allocates or depends on full-page bitmaps or E-ink refresh
@@ -269,7 +271,7 @@ follow-up work. The layout stage now handles the core reader structures: it
 recursively lays out paragraphs, headings, inline emphasis/strong/
 strikethrough/code, soft and hard breaks, ordered and unordered (including
 task) lists, nested lists, block quotes, rules, links, and readable
-placeholders for tables and images. All line widths come from the configured
+placeholders for images and fully styled table cells. All line widths come from the configured
 `TextMeasurer`; a `FontdueTextEngine` therefore supplies real font metrics.
 
 Layout returns the complete document in document coordinates. It exposes each
@@ -280,10 +282,18 @@ region per visible line portion.
 The deliberate visual deviations from browser/GitHub rendering are compact
 reader choices: soft breaks collapse to ordinary whitespace, long unbreakable
 words and URLs split at character boundaries, headings use one configured
-style with a compact level-size reduction, tables are pipe-separated rows,
-images are alt-text placeholders, and block quotes use a configured vertical
-rule with e-reader indentation. These choices favor legibility and bounded
-host/device layout over HTML/CSS compatibility.
+style with a compact level-size reduction, images are alt-text placeholders,
+and block quotes use a configured vertical rule with e-reader indentation.
+Tables use a deterministic sizing pass: minimum widths come from unbreakable
+cell tokens and preferred widths come from normally wrapped cell content. The
+available width is allocated in source-column order, with GFM left/center/right
+alignment, cell padding, borders, and a bold/heavier-rule header treatment.
+If normal body text cannot fit, tables retry with a bounded compact font and
+then character-level wrapping. If the frame still cannot hold all columns,
+the table is continued vertically in deterministic column groups; the first
+key column is repeated in each group where the viewport can hold it. These
+choices favor legibility and bounded host/device layout over HTML/CSS
+compatibility.
 
 ## Parser and owned document IR
 
