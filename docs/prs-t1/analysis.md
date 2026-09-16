@@ -1256,3 +1256,21 @@ confirms that the native suspend/wake path can preserve the development route:
 the required sequence is to reconnect USB after wake and allow the deferred
 restart to run. A hardware reset remains the recovery path if the native
 process or USB controller does not return far enough to observe the reconnect.
+
+## Tap-to-launch native UI
+
+The native UI now has a small Android 2.2/API 8 launcher APK at
+`tools/prs-t1-launcher/`. Its `MAIN`/`LAUNCHER` Activity is labelled `Native
+UI`; on tap it invokes the installed root `su` binary and exits. The companion
+`prs-t1-launch` script starts a detached native runtime, stops zygote, waits
+for `zygote` and `system_server` to disappear, and then execs
+`prs-t1-agent standalone-test`. Android therefore only supplies the tap
+surface; the native process owns the display after the handoff, and reboot or
+reset remains the return path.
+
+On 2026-09-16, the signed v1 APK was built and installed as
+`org.prs.t1.nativeui` at `/data/app/org.prs.t1.nativeui-1.apk`. Package Manager
+registered `org.prs.t1.nativeui/.LauncherActivity` as a launcher Activity. The
+current device is back in normal Android with the APK, handoff script, and
+current ARM agent staged. The first tap-to-launch handoff still needs a manual
+test; no automatic startup hook was added.
