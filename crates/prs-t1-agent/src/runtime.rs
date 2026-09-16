@@ -22,6 +22,7 @@ const KEY_POWER: u16 = 116;
 const LONG_PRESS_MICROS: u64 = 2_000_000;
 const WAKE_LOCK_NAME: &str = "prs-t1-native-test";
 const POWER_STATE_HELPER: &str = "/data/local/tmp/prs-t1-power-state";
+const FRAMEWORK_STOP_TIMEOUT_SECONDS: u32 = 15;
 const O_NONBLOCK: i32 = 0x800;
 const F_GETFL: c_int = 3;
 const F_SETFL: c_int = 4;
@@ -29,6 +30,10 @@ const STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 
 unsafe extern "C" {
     fn fcntl(fd: c_int, command: c_int, ...) -> c_int;
+    fn fork() -> c_int;
+    fn getuid() -> u32;
+    fn setsid() -> c_int;
+    fn _exit(status: c_int) -> !;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -144,6 +149,73 @@ pub fn run(path: &Path, suspend_mode: SuspendMode) -> io::Result<()> {
         }
         thread::sleep(Duration::from_millis(20));
     }
+}
+
+/// Start the native runtime from an Android-launched `su` process.
+///
+/// Android's `stop zygote` tears down the process group inherited by an APK
+/// process. The caller must therefore create a new session before requesting
+/// the stop; doing this in a shell script, even with `&`, is not sufficient.
+pub fn launch(path: &Path, suspend_mode: SuspendMode) -> io::Result<()> {
+    if unsafe { getuid() } != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "launch-standalone requires a root su session",
+        ));
+    }
+
+    let child = unsafe { fork() };
+    if child < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if child > 0 {
+        // The APK-launched side must return to Superuser promptly. The
+        // detached child owns the rest of the handoff.
+        unsafe { _exit(0) };
+    }
+
+    if unsafe { setsid() } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    eprintln!("launch-standalone: detached session; stopping zygote");
+    let status = Command::new("/system/bin/stop").arg("zygote").status()?;
+    if !status.success() {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!("stop zygote exited with {status}"),
+        ));
+    }
+    wait_for_framework_stop()?;
+    eprintln!("launch-standalone: Android framework stopped; entering native test");
+    run(path, suspend_mode)
+}
+
+fn wait_for_framework_stop() -> io::Result<()> {
+    for attempt in 0..=FRAMEWORK_STOP_TIMEOUT_SECONDS {
+        match crate::status::ensure_native_ownership() {
+            Ok(()) => return Ok(()),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::PermissionDenied | io::ErrorKind::Other
+                ) && attempt < FRAMEWORK_STOP_TIMEOUT_SECONDS =>
+            {
+                thread::sleep(Duration::from_secs(1));
+            }
+            Err(error) if attempt >= FRAMEWORK_STOP_TIMEOUT_SECONDS => {
+                return Err(io::Error::new(
+                    error.kind(),
+                    format!(
+                        "Android framework did not stop within {} seconds: {error}",
+                        FRAMEWORK_STOP_TIMEOUT_SECONDS
+                    ),
+                ));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    unreachable!("framework stop loop always returns");
 }
 
 fn redraw(

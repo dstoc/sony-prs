@@ -1270,8 +1270,25 @@ surface; the native process owns the display after the handoff, and reboot or
 reset remains the return path.
 
 On 2026-09-16, the signed v1 APK was built and installed as
-`org.prs.t1.nativeui` at `/data/app/org.prs.t1.nativeui-1.apk`. Package Manager
-registered `org.prs.t1.nativeui/.LauncherActivity` as a launcher Activity. The
-current device is back in normal Android with the APK, handoff script, and
-current ARM agent staged. The first tap-to-launch handoff still needs a manual
-test; no automatic startup hook was added.
+`org.prs.t1.nativeui`. Package Manager registered
+`org.prs.t1.nativeui/.LauncherActivity` as a launcher Activity. The first
+installed APK was stale when the source was changed: it still invoked the old
+`su -c /data/local/tmp/prs-t1-launch` handoff, which stopped zygote but did not
+leave `prs-t1-agent` running. A manual `start zygote` restored the processes
+briefly but caused repeated `system_server` PackageManager crashes with
+`Can't get mount service`; a normal reboot was required to restore Android's
+service ordering. This confirms that starting zygote in place is not a valid
+recovery procedure.
+
+The launcher now deliberately uses the restored `su`/Superuser companion path;
+the separate custom setuid helper was removed. The staged script redirects
+away from the Activity pipes and invokes the agent's privileged handoff mode.
+That mode forks and calls `setsid()` before stopping zygote: the Android 2.2
+shell has no `[`/`test` command, and, more importantly, an APK-launched shell
+background job remains in the zygote process group and is killed when zygote
+stops. The earlier handoff log ended immediately after `su handoff started`,
+with zygote and `system_server` absent and no agent process, confirming this
+failure boundary. The current APK, handoff script, and rebuilt ARM agent still
+use the corrected handoff. A direct ADB-side launch verified the detached
+agent path, and a subsequent manual Home → Native UI → Superuser approval test
+successfully launched the native screen. No automatic startup hook was added.

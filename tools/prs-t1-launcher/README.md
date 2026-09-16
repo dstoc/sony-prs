@@ -1,14 +1,20 @@
 # PRS-T1 native UI launcher
 
 This is a deliberately small Android 2.2/API 8 Home replacement entry point.
-It is not the native UI itself. The Home Activity invokes `su` when selected
-from Android's Home-app resolver, starts the detached root handoff script, and
-exits before the Android framework is stopped.
+It is not the native UI itself. The Home Activity invokes a narrowly scoped
+`su` request when selected from Android's Home-app resolver. The restored
+Superuser companion approves that request; the root handoff script then
+detaches from the Activity's streams and invokes the native agent's privileged
+handoff mode. The agent creates a new session before stopping the Android
+framework, then enters the native runtime.
 
-The handoff script expects the ARM binary at
-`/data/local/tmp/prs-t1-agent`. It starts that binary after stopping zygote;
-`prs-t1-agent` then owns the framebuffer and input devices. Reboot or hardware
-reset is the supported return path to Android.
+The handoff script and ARM binary both live in `/data/local/tmp`; the `nosuid`
+mount option on `/data` does not prevent an already-root `su` process from
+executing them. The agent must create a new session before stopping zygote:
+Android tears down the APK's inherited zygote process group, so a shell
+background job is not sufficient. `prs-t1-agent` owns the framebuffer and
+input devices after zygote stops. Reboot or hardware reset is the supported
+return path to Android.
 
 ## Build
 
@@ -42,7 +48,9 @@ First restore normal Android if the native test is currently running:
 ./crates/prs-t1-agent/tools/native-test.sh reboot
 ```
 
-Then push the agent and handoff script and install the APK:
+Then push the agent and handoff script, and install the APK. The
+`com.noshufou.android.su` Superuser companion must already be installed and
+enabled:
 
 ```sh
 adb push target/armv5te-unknown-linux-musleabi/release/prs-t1-agent /data/local/tmp/prs-t1-agent
@@ -54,7 +62,8 @@ adb install -r target/prs-t1-launcher/prs-t1-native-launcher.apk
 
 Press the Home button. Android should offer “Native UI” alongside the stock
 Home choices. Selecting it starts the native runtime; do not mark it as the
-permanent default until the handoff has been tested. The handoff log is:
+permanent default until the handoff has been tested. Approve the Superuser
+request. The handoff log is:
 
 ```sh
 adb shell 'cat /data/local/tmp/prs-t1-native-launch.log'

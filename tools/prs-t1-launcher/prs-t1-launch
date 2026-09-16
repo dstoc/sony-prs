@@ -3,31 +3,21 @@
 AGENT=/data/local/tmp/prs-t1-agent
 LOG=/data/local/tmp/prs-t1-native-launch.log
 
-if [ ! -x "$AGENT" ]; then
-    echo "native agent is missing or not executable" > "$LOG"
+# Keep the root session independent of the Activity's pipes. The agent creates
+# a new session before stopping zygote; a shell background job is not enough on
+# this device because the APK inherits zygote's process group.
+exec </dev/null >> "$LOG" 2>&1
+
+# This old Android shell does not provide the `[`/`test` command. Executing
+# the agent's read-only help path is both an existence/executable check and a
+# useful preflight before stopping the Android framework.
+if "$AGENT" help >/dev/null 2>&1; then
+    :
+else
+    echo "native agent is missing or not executable: $AGENT"
     exit 1
 fi
 
-# The child is detached from the Activity's standard streams before the
-# Android framework is stopped. It waits for zygote/system_server to disappear
-# and then execs the native runtime, which performs its own ownership checks.
-(
-    trap "" HUP
-    /system/bin/stop zygote
-    attempts=0
-    while [ "$attempts" -lt 15 ]; do
-        processes=`/system/bin/ps 2>/dev/null`
-        case "$processes" in
-            *zygote*|*system_server*)
-                /system/bin/sleep 1
-                attempts=$((attempts + 1))
-                ;;
-            *)
-                exec "$AGENT" standalone-test /dev/graphics/fb0 standby
-                ;;
-        esac
-    done
-    echo "zygote/system_server did not stop" > "$LOG"
-) </dev/null > "$LOG" 2>&1 &
-
-exit 0
+trap "" HUP
+echo "su handoff started"
+exec "$AGENT" launch-standalone /dev/graphics/fb0 standby
