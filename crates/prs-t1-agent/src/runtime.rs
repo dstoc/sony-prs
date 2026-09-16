@@ -1,6 +1,8 @@
 use crate::framebuffer::{DisplayRegion, NativeDisplay, WaveformMode};
 use crate::input::{EventReader, RawEvent};
-use crate::{display, input};
+use crate::{display, input, reader};
+use embedded_graphics::geometry::Point;
+use prs_markdown::reader::ReaderEvent;
 use std::fs::OpenOptions;
 use std::io::{self, Read, Write};
 use std::os::fd::AsRawFd;
@@ -93,6 +95,11 @@ pub fn run(path: &Path, suspend_mode: SuspendMode) -> io::Result<()> {
         .map_err(|error| display_error("acquire wake lock", error))?;
     let mut inputs =
         InputSet::open().map_err(|error| display_error("open input devices", error))?;
+    let mut markdown_reader = reader::T1Reader::open(
+        reader::ReaderConfig::from_environment(),
+        reader::viewport_for_display(display.width(), display.height()),
+    )
+    .map_err(|error| display_error("open development Markdown reader", error))?;
     let mut state = UiState::new();
     let mut adb_restart_pending = false;
 
@@ -101,8 +108,14 @@ pub fn run(path: &Path, suspend_mode: SuspendMode) -> io::Result<()> {
         display.width(),
         display.height()
     );
-    redraw(&mut display, &state, wake_lock.is_held(), DirtyArea::Full)
-        .map_err(|error| display_error("initial redraw", error))?;
+    redraw(
+        &mut display,
+        &state,
+        &mut markdown_reader,
+        wake_lock.is_held(),
+        DirtyArea::Full,
+    )
+    .map_err(|error| display_error("initial redraw", error))?;
 
     loop {
         if adb_restart_pending && usb_power_online() {
@@ -132,6 +145,25 @@ pub fn run(path: &Path, suspend_mode: SuspendMode) -> io::Result<()> {
                 if event_action != PowerAction::None {
                     action = event_action;
                 }
+                if let Some(point) = state.take_reader_tap() {
+                    match markdown_reader.tap(point) {
+                        Ok(event) => {
+                            state.message = reader_event_message(&event);
+                            redraw_area = Some(match redraw_area {
+                                Some(existing) => existing.merge(DirtyArea::Full),
+                                None => DirtyArea::Full,
+                            });
+                        }
+                        Err(error) => {
+                            state.message = format!("Reader error: {error}");
+                            eprintln!("standalone-test: Markdown tap failed: {error}");
+                            redraw_area = Some(match redraw_area {
+                                Some(existing) => existing.merge(DirtyArea::Full),
+                                None => DirtyArea::Full,
+                            });
+                        }
+                    }
+                }
             }
         }
 
@@ -141,6 +173,7 @@ pub fn run(path: &Path, suspend_mode: SuspendMode) -> io::Result<()> {
                 &mut wake_lock,
                 &mut inputs,
                 &mut state,
+                &mut markdown_reader,
                 suspend_mode,
             )
             .map(|()| {
@@ -155,8 +188,14 @@ pub fn run(path: &Path, suspend_mode: SuspendMode) -> io::Result<()> {
                     PowerAction::None | PowerAction::Sleep => unreachable!(),
                 }
                 .into();
-                redraw(&mut display, &state, wake_lock.is_held(), DirtyArea::Full)
-                    .map_err(|error| display_error("reboot redraw", error))?;
+                redraw(
+                    &mut display,
+                    &state,
+                    &mut markdown_reader,
+                    wake_lock.is_held(),
+                    DirtyArea::Full,
+                )
+                .map_err(|error| display_error("reboot redraw", error))?;
                 match action {
                     PowerAction::Reboot => request_reboot()?,
                     PowerAction::PowerOff => request_poweroff()?,
@@ -165,8 +204,14 @@ pub fn run(path: &Path, suspend_mode: SuspendMode) -> io::Result<()> {
                 return Ok(());
             }
             PowerAction::None if let Some(area) = redraw_area => {
-                redraw(&mut display, &state, wake_lock.is_held(), area)
-                    .map_err(|error| display_error("input redraw", error))?;
+                redraw(
+                    &mut display,
+                    &state,
+                    &mut markdown_reader,
+                    wake_lock.is_held(),
+                    area,
+                )
+                .map_err(|error| display_error("input redraw", error))?;
             }
             PowerAction::None => {}
         }
@@ -244,10 +289,22 @@ fn wait_for_framework_stop() -> io::Result<()> {
 fn redraw(
     display: &mut NativeDisplay,
     state: &UiState,
+    markdown_reader: &mut reader::T1Reader,
     wake_lock_held: bool,
     area: DirtyArea,
 ) -> io::Result<()> {
     let lines = screen_lines(state, wake_lock_held);
+    if state.page == UiPage::Home {
+        let status_line = lines.first().map(String::as_str).unwrap_or_default();
+        return markdown_reader.draw(
+            display,
+            status_line,
+            area.region(display),
+            area.waveform(),
+            area.wait_for_completion(),
+            area.force_refresh(),
+        );
+    }
     display::draw_screen(
         display,
         &lines,
@@ -256,6 +313,45 @@ fn redraw(
         area.wait_for_completion(),
         area.force_refresh(),
     )
+}
+
+fn reader_event_message(event: &ReaderEvent) -> String {
+    match event {
+        ReaderEvent::Opened { page_count, .. } => format!("Opened document ({page_count} pages)"),
+        ReaderEvent::PageChanged { page, page_count } => {
+            format!("Page {} of {page_count}", page.saturating_add(1))
+        }
+        ReaderEvent::Navigated {
+            location,
+            page,
+            page_count,
+        } => format!(
+            "Opened {} page {} of {page_count}",
+            location.document.as_ref(),
+            page.saturating_add(1)
+        ),
+        ReaderEvent::Back {
+            location,
+            page,
+            page_count,
+        } => format!(
+            "Back to {} page {} of {page_count}",
+            location.document.as_ref(),
+            page.saturating_add(1)
+        ),
+        ReaderEvent::Forward {
+            location,
+            page,
+            page_count,
+        } => format!(
+            "Forward to {} page {} of {page_count}",
+            location.document.as_ref(),
+            page.saturating_add(1)
+        ),
+        ReaderEvent::ExternalUrl(url) => format!("External link: {url}"),
+        ReaderEvent::Asset(path) => format!("Asset selected: {}", path.display()),
+        ReaderEvent::NoAction => "Reading unchanged".into(),
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -528,6 +624,7 @@ fn sleep_cycle(
     wake_lock: &mut WakeLock,
     inputs: &mut InputSet,
     state: &mut UiState,
+    markdown_reader: &mut reader::T1Reader,
     suspend_mode: SuspendMode,
 ) -> io::Result<()> {
     state.mode = "SLEEPING";
@@ -537,14 +634,31 @@ fn sleep_cycle(
     }
     .into();
     eprintln!("standalone-test: drawing pre-suspend screen");
-    redraw(display, state, wake_lock.is_held(), DirtyArea::Full)
-        .map_err(|error| display_error("pre-suspend redraw", error))?;
+    redraw(
+        display,
+        state,
+        markdown_reader,
+        wake_lock.is_held(),
+        DirtyArea::Full,
+    )
+    .map_err(|error| display_error("pre-suspend redraw", error))?;
     let standby_lines = screen_lines(state, wake_lock.is_held());
-    let standby = display::standby_screen(
-        &standby_lines,
-        display.width() as usize,
-        display.height() as usize,
-    );
+    let standby = if state.page == UiPage::Home {
+        markdown_reader.render_frame(
+            standby_lines
+                .first()
+                .map(String::as_str)
+                .unwrap_or_default(),
+            display.width(),
+            display.height(),
+        )?
+    } else {
+        display::standby_screen(
+            &standby_lines,
+            display.width() as usize,
+            display.height() as usize,
+        )
+    };
     display
         .write_standby(&standby)
         .map_err(|error| display_error("standby screen write", error))?;
@@ -579,8 +693,14 @@ fn sleep_cycle(
     state.message = format!("Woke after {suspend_elapsed_ms}ms");
     state.last_power_duration_ms = None;
     state.ignore_power_until = Some(Instant::now() + Duration::from_secs(2));
-    redraw(display, state, wake_lock.is_held(), DirtyArea::Full)
-        .map_err(|error| display_error("post-resume redraw", error))
+    redraw(
+        display,
+        state,
+        markdown_reader,
+        wake_lock.is_held(),
+        DirtyArea::Full,
+    )
+    .map_err(|error| display_error("post-resume redraw", error))
 }
 
 fn request_suspend(mode: SuspendMode) -> io::Result<()> {
@@ -963,6 +1083,7 @@ struct UiState {
     page: UiPage,
     mode: &'static str,
     message: String,
+    reader_tap: Option<Point>,
     touch_seen: bool,
     touch_x: i32,
     touch_y: i32,
@@ -988,6 +1109,7 @@ impl UiState {
             page: UiPage::Home,
             mode: "ACTIVE",
             message: "Input ready".into(),
+            reader_tap: None,
             touch_seen: false,
             touch_x: 0,
             touch_y: 0,
@@ -1019,6 +1141,10 @@ impl UiState {
     fn refresh_status(&mut self) {
         self.status = crate::status::collect();
         self.last_status_refresh = Instant::now();
+    }
+
+    fn take_reader_tap(&mut self) -> Option<Point> {
+        self.reader_tap.take()
     }
 
     fn observe(
@@ -1207,6 +1333,7 @@ impl UiState {
             return PowerAction::None;
         }
         if self.page != UiPage::Details {
+            self.reader_tap = Some(Point::new(self.touch_x, self.touch_y));
             return PowerAction::None;
         }
         let within_action_x = self.touch_x >= display::DETAILS_ACTION_MARGIN as i32
@@ -1299,9 +1426,9 @@ impl UiState {
 #[cfg(test)]
 mod tests {
     use super::{
-        DirtyArea, InputSourceKind, SuspendMode, UiPage, UiState, ABS_MT_POSITION_X,
-        ABS_MT_POSITION_Y, ABS_MT_TOUCH_MAJOR, ABS_MT_TRACKING_ID, ABS_X, ABS_Y, BTN_TOUCH,
-        EVENT_ABS, EVENT_KEY, EVENT_SYN, KEY_MENU, SYN_REPORT,
+        display, DirtyArea, InputSourceKind, Point, SuspendMode, UiPage, UiState,
+        ABS_MT_POSITION_X, ABS_MT_POSITION_Y, ABS_MT_TOUCH_MAJOR, ABS_MT_TRACKING_ID, ABS_X, ABS_Y,
+        BTN_TOUCH, EVENT_ABS, EVENT_KEY, EVENT_SYN, KEY_MENU, SYN_REPORT,
     };
     use crate::input::RawEvent;
     use std::time::{Duration, Instant};
@@ -1340,6 +1467,20 @@ mod tests {
 
         state.touch_down = true;
         let _ = state.observe(InputSourceKind::Touch, event(BTN_TOUCH, 0, 2_000_000));
+        assert_eq!(state.page, UiPage::Home);
+    }
+
+    #[test]
+    fn content_tap_is_deferred_to_the_markdown_reader() {
+        let mut state = UiState::new();
+        state.touch_x = 500;
+        state.touch_y = display::CONTENT_TOP as i32 + 80;
+        state.touch_down = true;
+
+        let (_, action) = state.observe(InputSourceKind::Touch, event(BTN_TOUCH, 0, 1_000_000));
+
+        assert_eq!(action, super::PowerAction::None);
+        assert_eq!(state.take_reader_tap(), Some(Point::new(500, 156)));
         assert_eq!(state.page, UiPage::Home);
     }
 

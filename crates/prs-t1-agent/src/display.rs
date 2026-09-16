@@ -102,7 +102,7 @@ fn render_screen(lines: &[String], width: usize, height: usize) -> Vec<u8> {
     image
 }
 
-fn draw_status_bar(canvas: &mut DisplayCanvas<'_>, lines: &[String]) {
+pub(crate) fn draw_status_bar(canvas: &mut DisplayCanvas<'_>, lines: &[String]) {
     let width = canvas.width();
     canvas.fill_rect(0, 0, width, STATUS_BAR_HEIGHT, BLACK);
 

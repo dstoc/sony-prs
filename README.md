@@ -5,11 +5,12 @@ device-side experiments for two readers with different operating systems.
 
 The active development focus is the PRS-T1 native UI in
 [`crates/prs-t1-agent`](crates/prs-t1-agent/). It is now a usable, manually
-launched native UI prototype: it renders a custom status bar and diagnostics
-screen, reads touch and hardware input, tracks pixel damage, and handles
-development sleep/wake and reboot actions. It still requires a rooted reader
-and an explicit ADB or launcher handoff; it is not a persistent replacement
-for the stock Android UI yet.
+launched native UI prototype: it renders a custom status bar and paginated
+Markdown reading surface, retains the diagnostics screen, reads touch and
+hardware input, tracks pixel damage, and handles development sleep/wake and
+reboot actions. It still requires a rooted reader and an explicit ADB or
+launcher handoff; it is not a persistent replacement for the stock Android UI
+yet.
 
 PRS-350 work is on hold while waiting for hardware unbricking. The existing
 PRS-350 controls remain available for development when hardware access returns,
@@ -105,8 +106,10 @@ adb shell '/data/local/tmp/prs-t1-agent capture > /data/local/tmp/t1-screen.pgm'
 adb pull /data/local/tmp/t1-screen.pgm ./t1-screen.pgm
 ```
 
-The native UI's status bar opens a details page. The home canvas is intentionally
-quiet for future documents and images; the details page groups the device
+The native UI's status bar opens a details page. The home canvas renders the
+configured development Markdown document through the shared `prs-markdown`
+reader; see [`crates/prs-t1-agent/README.md`](crates/prs-t1-agent/README.md)
+for staging and environment overrides. The details page groups the device
 snapshot under Power, Connectivity, System, Storage, and Input and provides
 reboot, power-off, and return actions. The runtime polls status every five
 seconds, uses fast DU updates for transient diagnostics, and promotes an

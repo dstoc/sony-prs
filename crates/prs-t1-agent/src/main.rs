@@ -3,6 +3,7 @@ mod damage;
 mod display;
 mod framebuffer;
 mod input;
+mod reader;
 mod runtime;
 mod status;
 

@@ -20,7 +20,7 @@ The current tested T1 path is:
 | Framebuffer discovery and capture | Implemented; `/dev/graphics/fb0` is queried using its visible geometry, stride, offsets, and RGB565 format. |
 | EPDC refresh | Implemented for the recovered T1 ioctl ABI, including `DU`, `GC4`, `GC16`, and `A2` waveform probes. |
 | Status and diagnostics | Implemented; battery, power, USB, Wi-Fi, ADB, Android processes, framebuffer, storage, and input state are displayed. |
-| Native shell | Implemented as an opt-in standalone runtime with a status bar, details page, touch navigation, menu full refresh, and power actions. |
+| Native shell | Implemented as an opt-in standalone runtime with a status bar, paginated Markdown reading surface, details page, touch navigation, menu full refresh, and power actions. |
 | Pixel damage | Implemented; complete logical frames are diffed and only the smallest changed rectangle is submitted. |
 | Sleep and wake | Native EINK standby and wake-side power handoff have been exercised; USB/ADB rebind is deferred until the cable is detected after wake. |
 | Android handoff | Implemented for manual ADB use and the tap-to-launch APK; no automatic startup integration. |
@@ -34,18 +34,22 @@ revision.
 ## Design goal and boundary
 
 The near-term goal is a small native process that can own the visible T1 UI
-for development and eventually provide a document-reading surface without
-depending on Android Java services. The current shell deliberately leaves the
-home content area blank for future documents and images while making device
-state and recovery actions visible.
+for development and provide a document-reading surface without depending on
+Android Java services. The current shell opens one configured development
+Markdown document while making device state and recovery actions visible;
+document browsing and broader asset support remain future work.
 
 The reusable Markdown reader boundary is in
 [`crates/prs-markdown`](../prs-markdown/) and its canonical design is in
 [`docs/prs-t1/markdown-reader.md`](../../docs/prs-t1/markdown-reader.md).
 The T1 agent supplies the reader's viewport and `embedded-graphics` target,
 translates physical events into reader operations, and chooses when changed
-pixels are sent to the EPDC. It must not move framebuffer, evdev, suspend, or
-refresh-policy code into the reusable crate.
+pixels are sent to the EPDC. The home/reading page is rendered by the shared
+`prs-markdown::EmbeddedGraphicsRenderer` into the existing packed RGB565
+`DisplayCanvas`; there is no T1-only Markdown renderer. The T1 adapter owns
+font loading, the development resource root, the content viewport below the
+status bar, and the mapping from taps to link/page actions. It must not move
+framebuffer, evdev, suspend, or refresh-policy code into the reusable crate.
 
 The current control path is root ADB. Deploy test binaries to
 `/data/local/tmp`, use read-only commands while Android is active, and use the
@@ -121,8 +125,44 @@ script is intentionally not an automatic startup mechanism.
 
 The shell renders a 48-pixel black status bar with white 20x20 binary sprites
 and compact text. It reports battery level, active USB/Wi-Fi/ADB indicators,
-exceptional mode such as sleeping or rebooting, and the local time. The home
-content area is otherwise quiet for future reading content.
+exceptional mode such as sleeping or rebooting, and the local time. Below the
+bar, the home page renders the current paginated Markdown document. The page
+viewport starts at y=76, leaving a small separation below the bar and a bottom
+margin for the reader.
+
+### Development Markdown document
+
+The first integration deliberately opens one configured file rather than
+providing a document browser. Stage the checked-in smoke-test document before
+starting the native runtime:
+
+```sh
+adb shell mkdir -p /data/local/tmp/prs-t1-markdown
+adb push docs/prs-t1/development.md /data/local/tmp/prs-t1-markdown/index.md
+```
+
+The default configuration is:
+
+| Environment variable | Default | Purpose |
+| --- | --- | --- |
+| `PRS_T1_DOCUMENT_ROOT` | `/data/local/tmp/prs-t1-markdown` | Root for Markdown and relative resources. |
+| `PRS_T1_DOCUMENT` | `index.md` | Root-relative document opened at startup. |
+| `PRS_T1_FONT` | `/system/fonts/DroidSans.ttf` | Required regular TrueType face. |
+| `PRS_T1_FONT_BOLD` | regular face | Optional bold face. |
+| `PRS_T1_FONT_ITALIC` | regular face | Optional italic face. |
+| `PRS_T1_FONT_BOLD_ITALIC` | regular face | Optional bold-italic face. |
+| `PRS_T1_FONT_MONOSPACE` | `/system/fonts/DroidSansMono.ttf` | Optional code face; falls back to regular if absent. |
+
+The four optional proportional faces fall back to the regular font bytes when
+their configured files are unavailable. To read another staged document from
+the helper workflow, set `PRS_T1_DOCUMENT_ROOT` and `PRS_T1_DOCUMENT` in the
+environment used to launch the agent. Relative links are resolved by the
+shared `FileSystemResourceProvider` inside that root.
+
+The reader handles link activation through `prs-markdown` first. A tap on an
+otherwise empty page area advances on the right half and goes back on the left
+half. External URLs are reported as application events and are not opened by
+the native runtime.
 
 Tap the status bar to open **Details / Settings**. The details page groups the
 live snapshot under:
@@ -232,8 +272,8 @@ the recovery path explicit:
 2. Characterize repeated DU updates on the physical panel and choose a GC16
    cleanup policy.
 3. Improve the standby image and USB/ADB recovery behavior across suspend.
-4. Add document/image content to the quiet home canvas after the ownership and
-   refresh policy are reliable.
+4. Expand the configured reading surface with document browsing and image
+   content after the ownership and refresh policy are reliable.
 5. Only then evaluate a persistent startup integration.
 
 The older discovery procedure and full evidence ledger remain available in

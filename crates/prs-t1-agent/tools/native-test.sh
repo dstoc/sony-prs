@@ -7,6 +7,8 @@ REMOTE_LOG=${REMOTE_LOG:-/data/local/tmp/prs-t1-native-test.log}
 LOCAL_AGENT=${PRS_T1_AGENT_BINARY:-target/armv5te-unknown-linux-musleabi/release/prs-t1-agent}
 FRAMEBUFFER=${PRS_T1_FRAMEBUFFER:-/dev/graphics/fb0}
 SUSPEND_MODE=${PRS_T1_SUSPEND_MODE:-standby}
+DOCUMENT_ROOT=${PRS_T1_DOCUMENT_ROOT:-/data/local/tmp/prs-t1-markdown}
+DOCUMENT=${PRS_T1_DOCUMENT:-index.md}
 
 usage() {
     printf '%s\n' \
@@ -14,7 +16,9 @@ usage() {
         "" \
         "start   push and launch the detached native test after stopping zygote" \
         "status  print the device process/status snapshot" \
-        "reboot  restore normal Android and wait for ADB"
+        "reboot  restore normal Android and wait for ADB" \
+        "" \
+        "set PRS_T1_DOCUMENT_ROOT and PRS_T1_DOCUMENT to choose the staged Markdown file"
 }
 
 require_adb() {
@@ -71,7 +75,7 @@ start_test() {
     adb shell chmod 755 "$REMOTE_AGENT"
     adb shell stop zygote
     wait_for_framework_stopped
-    adb shell "trap \"\" HUP; $REMOTE_AGENT standalone-test $FRAMEBUFFER $SUSPEND_MODE </dev/null >$REMOTE_LOG 2>&1 &"
+    adb shell "trap \"\" HUP; PRS_T1_DOCUMENT_ROOT='$DOCUMENT_ROOT' PRS_T1_DOCUMENT='$DOCUMENT' $REMOTE_AGENT standalone-test $FRAMEBUFFER $SUSPEND_MODE </dev/null >$REMOTE_LOG 2>&1 &"
     sleep 2
     if ! adb shell ps | rg -q '[/ ]prs-t1-agent([ -]|$)'; then
         printf '%s\n' 'native test did not remain running; recent log:' >&2
