@@ -11,16 +11,16 @@ pub fn draw_screen(
     refresh_region: DisplayRegion,
     waveform: WaveformMode,
     wait_for_completion: bool,
+    force_refresh: bool,
 ) -> std::io::Result<()> {
-    if wait_for_completion {
-        display.draw_region_with_waveform(refresh_region, waveform, |canvas| {
-            draw_screen_contents(canvas, lines)
-        })
-    } else {
-        display.draw_region_with_waveform_async(refresh_region, waveform, |canvas| {
-            draw_screen_contents(canvas, lines)
-        })
-    }
+    let frame = render_screen(lines, display.width() as usize, display.height() as usize);
+    display.draw_frame_with_waveform(
+        &frame,
+        refresh_region,
+        waveform,
+        wait_for_completion,
+        force_refresh,
+    )
 }
 
 fn draw_screen_contents(canvas: &mut DisplayCanvas<'_>, lines: &[String]) {
@@ -54,35 +54,15 @@ fn draw_screen_contents(canvas: &mut DisplayCanvas<'_>, lines: &[String]) {
 /// Render a logical screen into the format expected by the EPDC standby
 /// framebuffer ioctl. This buffer has no virtual-screen padding or offsets.
 pub fn standby_screen(lines: &[String], width: usize, height: usize) -> Vec<u8> {
+    render_screen(lines, width, height)
+}
+
+fn render_screen(lines: &[String], width: usize, height: usize) -> Vec<u8> {
     let mut image = vec![0u8; width.saturating_mul(height).saturating_mul(2)];
     {
         let mut canvas =
             DisplayCanvas::new(&mut image, width, height, width.saturating_mul(2), 0, 0);
-        draw_pattern(&mut canvas);
-        let positions = [
-            (24, 20),
-            (24, 50),
-            (28, 93),
-            (28, 121),
-            (28, 149),
-            (28, 177),
-            (28, 211),
-            (28, 239),
-            (28, 267),
-            (28, 295),
-            (28, 359),
-            (28, 387),
-            (28, 415),
-            (28, 443),
-            (28, 471),
-            (28, 527),
-            (28, 555),
-            (28, 583),
-            (28, 611),
-        ];
-        for (line, &(x, y)) in lines.iter().zip(positions.iter()) {
-            draw_text(&mut canvas, x, y, line);
-        }
+        draw_screen_contents(&mut canvas, lines);
     }
     image
 }

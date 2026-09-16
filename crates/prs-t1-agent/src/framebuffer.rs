@@ -1,3 +1,4 @@
+use crate::damage::{self, DamageOptions};
 use std::fmt;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
@@ -222,6 +223,21 @@ impl DisplayRegion {
             width: self.width.min(width.saturating_sub(left)),
             height: self.height.min(height.saturating_sub(top)),
         }
+    }
+
+    pub fn right(self) -> u32 {
+        self.left.saturating_add(self.width)
+    }
+
+    pub fn bottom(self) -> u32 {
+        self.top.saturating_add(self.height)
+    }
+
+    pub fn contains(self, other: Self) -> bool {
+        other.left >= self.left
+            && other.top >= self.top
+            && other.right() <= self.right()
+            && other.bottom() <= self.bottom()
     }
 
     fn as_mxcfb(self) -> MxcfbRect {
@@ -685,6 +701,12 @@ struct MappedFramebuffer {
     length: usize,
 }
 
+struct PendingUpdate {
+    marker: u32,
+    region: DisplayRegion,
+    pixels: Vec<u8>,
+}
+
 impl MappedFramebuffer {
     fn new(file: &File, length: usize) -> io::Result<Self> {
         Self::new_with_protection(file, length, PROT_READ)
@@ -723,7 +745,8 @@ pub struct NativeDisplay {
     fix: FbFixScreeninfo,
     mapping: Option<MappedFramebuffer>,
     next_marker: u32,
-    pending_marker: Option<u32>,
+    pending_update: Option<PendingUpdate>,
+    presented: Option<Vec<u8>>,
 }
 
 impl NativeDisplay {
@@ -744,7 +767,8 @@ impl NativeDisplay {
             fix,
             mapping,
             next_marker: 10,
-            pending_marker: None,
+            pending_update: None,
+            presented: None,
         })
     }
 
@@ -756,103 +780,104 @@ impl NativeDisplay {
         self.var.yres
     }
 
-    /// Paint the shared framebuffer and refresh only `region` on the panel.
+    /// Compare an owned packed RGB565 frame with the last completed frame,
+    /// copy only the changed rectangle into the mapped framebuffer, and
+    /// submit that rectangle to the EPDC.
     ///
-    /// The closure still sees the full logical screen so callers can retain a
-    /// simple complete-screen renderer while avoiding a full-panel waveform
-    /// for small state changes.
-    pub fn draw_region_with_waveform<F>(
+    /// The semantic `requested_region` remains useful as a waveform hint and
+    /// as the fallback when no completed shadow exists. The actual update
+    /// geometry comes from the pixel diff, so unchanged pixels in a semantic
+    /// region are no longer refreshed. The mapped framebuffer is never
+    /// modified while an earlier asynchronous update is outstanding.
+    pub fn draw_frame_with_waveform(
         &mut self,
-        region: DisplayRegion,
-        waveform: WaveformMode,
-        paint: F,
-    ) -> io::Result<()>
-    where
-        F: FnOnce(&mut DisplayCanvas<'_>),
-    {
-        self.draw_region_with_waveform_and_wait(region, waveform, true, paint)
-    }
-
-    /// Paint and submit an update without waiting for the panel waveform to
-    /// finish. A later blocking update drains the pending marker first.
-    pub fn draw_region_with_waveform_async<F>(
-        &mut self,
-        region: DisplayRegion,
-        waveform: WaveformMode,
-        paint: F,
-    ) -> io::Result<()>
-    where
-        F: FnOnce(&mut DisplayCanvas<'_>),
-    {
-        self.draw_region_with_waveform_and_wait(region, waveform, false, paint)
-    }
-
-    fn draw_region_with_waveform_and_wait<F>(
-        &mut self,
-        region: DisplayRegion,
+        frame: &[u8],
+        requested_region: DisplayRegion,
         waveform: WaveformMode,
         wait_for_completion: bool,
-        paint: F,
-    ) -> io::Result<()>
-    where
-        F: FnOnce(&mut DisplayCanvas<'_>),
-    {
+        force_refresh: bool,
+    ) -> io::Result<()> {
         let width = usize::try_from(self.var.xres)
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid display width"))?;
         let height = usize::try_from(self.var.yres)
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid display height"))?;
-        let stride = usize::try_from(self.fix.line_length)
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid display stride"))?;
-        let xoffset = usize::try_from(self.var.xoffset)
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid display x offset"))?;
-        let yoffset = usize::try_from(self.var.yoffset)
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid display y offset"))?;
-        {
-            let mapping = self.mapping.as_mut().ok_or_else(|| {
-                io::Error::new(io::ErrorKind::NotConnected, "framebuffer is not mapped")
-            })?;
-            let mut canvas = DisplayCanvas {
-                buffer: mapping.as_mut_slice(),
-                width,
-                height,
-                stride,
-                xoffset,
-                yoffset,
-            };
-            paint(&mut canvas);
+        let expected = packed_frame_len(width, height)?;
+        if frame.len() != expected {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "display frame is {} bytes, expected {expected}",
+                    frame.len()
+                ),
+            ));
         }
-
-        let region = region.bounded(self.var.xres, self.var.yres);
-        if region.width == 0 || region.height == 0 {
+        let requested_region = requested_region.bounded(self.var.xres, self.var.yres);
+        if requested_region.width == 0 || requested_region.height == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "display update region is empty",
             ));
         }
-        if wait_for_completion {
-            if let Some(pending_marker) = self.pending_marker.take() {
-                let started = Instant::now();
-                wait_for_update_complete(self.file.as_raw_fd(), pending_marker)?;
-                eprintln!(
-                    "standalone-test: waited for pending display marker={} elapsed_ms={}",
-                    pending_marker,
-                    started.elapsed().as_millis(),
-                );
-            }
-        }
+
+        // One outstanding update is the safe baseline until we have a display
+        // worker with an immutable queue of submitted regions. Rendering can
+        // happen ahead of this barrier because `frame` is owned by the caller.
+        self.wait_for_pending_update()?;
+
+        let changed = if force_refresh || self.presented.is_none() {
+            Some(requested_region)
+        } else {
+            damage::changed_region(
+                frame,
+                self.presented.as_ref().expect("presented checked above"),
+                self.var.xres,
+                self.var.yres,
+                DamageOptions::default(),
+            )?
+        };
+        let Some(region) = changed else {
+            eprintln!(
+                "standalone-test: display refresh skipped unchanged requested=({},{} {}x{})",
+                requested_region.left,
+                requested_region.top,
+                requested_region.width,
+                requested_region.height,
+            );
+            return Ok(());
+        };
+        let waveform = if requested_region.contains(region) {
+            waveform
+        } else {
+            // An unexpected change escaped the semantic hint. Use the safer
+            // waveform until the runtime has an explicit damage set.
+            WaveformMode::Gc16
+        };
+        let pixels = self.copy_frame_region(frame, region)?;
+
         let marker = self.next_marker;
         self.next_marker = self.next_marker.wrapping_add(1).max(10);
         let started = Instant::now();
-        let result = submit_update(self.file.as_raw_fd(), region.as_mxcfb(), waveform, marker)
-            .and_then(|()| {
-                if wait_for_completion {
-                    wait_for_update_complete(self.file.as_raw_fd(), marker)
-                } else {
-                    Ok(())
+        submit_update(self.file.as_raw_fd(), region.as_mxcfb(), waveform, marker)?;
+        let pending = PendingUpdate {
+            marker,
+            region,
+            pixels,
+        };
+        if wait_for_completion {
+            match wait_for_update_complete(self.file.as_raw_fd(), marker) {
+                Ok(()) => {
+                    if let Err(error) = self.commit_update(&pending) {
+                        self.pending_update = Some(pending);
+                        return Err(error);
+                    }
                 }
-            });
-        if result.is_ok() && !wait_for_completion {
-            self.pending_marker = Some(marker);
+                Err(error) => {
+                    self.pending_update = Some(pending);
+                    return Err(error);
+                }
+            }
+        } else {
+            self.pending_update = Some(pending);
         }
         eprintln!(
             "standalone-test: display refresh region=({},{} {}x{}) waveform={} completion={} elapsed_ms={} status={}",
@@ -863,9 +888,120 @@ impl NativeDisplay {
             waveform.label(),
             if wait_for_completion { "wait" } else { "nowait" },
             started.elapsed().as_millis(),
-            if result.is_ok() { "ok" } else { "error" },
+            "ok",
         );
-        result
+        Ok(())
+    }
+
+    fn wait_for_pending_update(&mut self) -> io::Result<()> {
+        let Some(pending) = self.pending_update.take() else {
+            return Ok(());
+        };
+        let marker = pending.marker;
+        let started = Instant::now();
+        if let Err(error) = wait_for_update_complete(self.file.as_raw_fd(), marker) {
+            self.pending_update = Some(pending);
+            return Err(error);
+        }
+        if let Err(error) = self.commit_update(&pending) {
+            self.pending_update = Some(pending);
+            return Err(error);
+        }
+        eprintln!(
+            "standalone-test: waited for pending display marker={} elapsed_ms={}",
+            marker,
+            started.elapsed().as_millis(),
+        );
+        Ok(())
+    }
+
+    fn copy_frame_region(&mut self, frame: &[u8], region: DisplayRegion) -> io::Result<Vec<u8>> {
+        let width = usize::try_from(self.var.xres)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid display width"))?;
+        let stride = usize::try_from(self.fix.line_length)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid display stride"))?;
+        let xoffset = usize::try_from(self.var.xoffset)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid display x offset"))?;
+        let yoffset = usize::try_from(self.var.yoffset)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid display y offset"))?;
+        let region_width = usize::try_from(region.width)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid update width"))?;
+        let region_height = usize::try_from(region.height)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid update height"))?;
+        let row_bytes = region_width
+            .checked_mul(2)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "update row overflow"))?;
+        let mut pixels =
+            Vec::with_capacity(row_bytes.checked_mul(region_height).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "update size overflow")
+            })?);
+        let mapping = self.mapping.as_mut().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::NotConnected, "framebuffer is not mapped")
+        })?;
+        for row in 0..region_height {
+            let source_row = usize::try_from(region.top)
+                .unwrap()
+                .checked_add(row)
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "update row overflow"))?;
+            let source_column = usize::try_from(region.left).unwrap();
+            let source_start = source_row
+                .checked_mul(width)
+                .and_then(|offset| offset.checked_add(source_column))
+                .and_then(|offset| offset.checked_mul(2))
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "update offset overflow")
+                })?;
+            let source_end = source_start
+                .checked_add(row_bytes)
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "update row overflow"))?;
+            let source = frame.get(source_start..source_end).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "update exceeds packed frame")
+            })?;
+            pixels.extend_from_slice(source);
+
+            let target_start = yoffset
+                .checked_add(source_row)
+                .and_then(|offset| offset.checked_mul(stride))
+                .and_then(|offset| {
+                    offset.checked_add(xoffset.checked_add(source_column)?.checked_mul(2)?)
+                })
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "update offset overflow")
+                })?;
+            let target_end = target_start
+                .checked_add(row_bytes)
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "update row overflow"))?;
+            if target_end > mapping.length {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "update exceeds mapped framebuffer",
+                ));
+            }
+            mapping.as_mut_slice()[target_start..target_end].copy_from_slice(source);
+        }
+        Ok(pixels)
+    }
+
+    fn commit_update(&mut self, pending: &PendingUpdate) -> io::Result<()> {
+        let width = self.var.xres;
+        let height = self.var.yres;
+        let full = DisplayRegion::full(width, height);
+        if self.presented.is_none() {
+            if pending.region != full {
+                // A partial update cannot establish pixels outside its own
+                // rectangle. Keep the shadow invalid until a full sync.
+                return Ok(());
+            }
+            self.presented = Some(vec![0; packed_frame_len_u32(width, height)?]);
+        }
+        copy_packed_region(
+            self.presented
+                .as_mut()
+                .expect("presented initialized above"),
+            width,
+            pending.region,
+            &pending.pixels,
+        )
     }
 
     /// Copy a logical RGB565 screen into the EPDC driver's hidden standby
@@ -961,6 +1097,10 @@ impl NativeDisplay {
         } else {
             eprintln!("standalone-test: framebuffer mapping retained across resume");
         }
+        // The panel's visible contents after suspend are not represented by
+        // the retained mmap contents. Require a complete synchronization
+        // before accepting another incremental update.
+        self.presented = None;
         Ok(())
     }
 }
@@ -1069,6 +1209,75 @@ impl DisplayCanvas<'_> {
             self.set_pixel(x, row, pixel);
         }
     }
+}
+
+fn packed_frame_len(width: usize, height: usize) -> io::Result<usize> {
+    width
+        .checked_mul(height)
+        .and_then(|pixels| pixels.checked_mul(2))
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "display frame is too large"))
+}
+
+fn packed_frame_len_u32(width: u32, height: u32) -> io::Result<usize> {
+    packed_frame_len(
+        usize::try_from(width)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid display width"))?,
+        usize::try_from(height)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid display height"))?,
+    )
+}
+
+fn copy_packed_region(
+    target: &mut [u8],
+    width: u32,
+    region: DisplayRegion,
+    pixels: &[u8],
+) -> io::Result<()> {
+    let width = usize::try_from(width)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid display width"))?;
+    let region_width = usize::try_from(region.width)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid update width"))?;
+    let region_height = usize::try_from(region.height)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid update height"))?;
+    let row_bytes = region_width
+        .checked_mul(2)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "update row overflow"))?;
+    let expected = row_bytes
+        .checked_mul(region_height)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "update size overflow"))?;
+    if pixels.len() != expected {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "update snapshot is {} bytes, expected {expected}",
+                pixels.len()
+            ),
+        ));
+    }
+    let full_row_bytes = width
+        .checked_mul(2)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "display row overflow"))?;
+    for row in 0..region_height {
+        let source_start = row * row_bytes;
+        let target_start = (usize::try_from(region.top).unwrap() + row)
+            .checked_mul(full_row_bytes)
+            .and_then(|offset| {
+                offset.checked_add(usize::try_from(region.left).unwrap().checked_mul(2)?)
+            })
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "shadow offset overflow"))?;
+        let target_end = target_start
+            .checked_add(row_bytes)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "shadow row overflow"))?;
+        if target_end > target.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "update exceeds packed shadow",
+            ));
+        }
+        target[target_start..target_end]
+            .copy_from_slice(&pixels[source_start..source_start + row_bytes]);
+    }
+    Ok(())
 }
 
 fn map_length(fix: &FbFixScreeninfo) -> io::Result<usize> {
@@ -1382,5 +1591,25 @@ mod tests {
         canvas.set_pixel(0, 0, 0x1234);
         assert_eq!(&buffer[18..20], &0x1234u16.to_ne_bytes());
         assert_eq!(&buffer[0..2], &[0xa5, 0xa5]);
+    }
+
+    #[test]
+    fn packed_region_copy_preserves_unrelated_pixels() {
+        let mut shadow = vec![0xa5; 6 * 4 * 2];
+        let pixels = [
+            0x1111u16.to_ne_bytes(),
+            0x2222u16.to_ne_bytes(),
+            0x3333u16.to_ne_bytes(),
+            0x4444u16.to_ne_bytes(),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+        copy_packed_region(&mut shadow, 6, DisplayRegion::new(2, 1, 2, 2), &pixels).unwrap();
+
+        assert_eq!(&shadow[0..4], &[0xa5; 4]);
+        assert_eq!(&shadow[(1 * 6 + 2) * 2..(1 * 6 + 4) * 2], &pixels[0..4]);
+        assert_eq!(&shadow[(2 * 6 + 2) * 2..(2 * 6 + 4) * 2], &pixels[4..8]);
+        assert_eq!(&shadow[(1 * 6 + 4) * 2..(1 * 6 + 6) * 2], &[0xa5; 4]);
     }
 }

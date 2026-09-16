@@ -1,4 +1,5 @@
 mod android;
+mod damage;
 mod display;
 mod framebuffer;
 mod input;

@@ -159,6 +159,7 @@ fn redraw(
         area.region(display),
         area.waveform(),
         area.wait_for_completion(),
+        area.force_refresh(),
     )
 }
 
@@ -206,6 +207,10 @@ impl DirtyArea {
 
     fn wait_for_completion(self) -> bool {
         matches!(self, Self::Full | Self::Status)
+    }
+
+    fn force_refresh(self) -> bool {
+        matches!(self, Self::Full)
     }
 }
 
