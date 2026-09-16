@@ -8,16 +8,24 @@ use prs_markdown::navigation::{DocumentId, NavigationTarget};
 use prs_markdown::pagination::{DisplayCommand, DocumentCursor};
 use prs_markdown::reader::ReaderSession;
 use prs_markdown::style::{Insets, ReaderStyle, TextStyle};
+use prs_markdown::typography::{
+    FontConfig, FontFace, FontdueTextEngine, TextEngine, TextRun, TextStyle as FontTextStyle,
+};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 const CORPUS: &str = include_str!("fixtures/regression.md");
 const BOUNDARY: &str = include_str!("fixtures/page-boundary.md");
-const HOST_PAGE_GOLDEN: &[u8] = include_bytes!("goldens/host-page.png");
+const GOLDEN_REGULAR: &[u8] = include_bytes!("fonts/DejaVuSans.ttf");
+const GOLDEN_BOLD: &[u8] = include_bytes!("fonts/DejaVuSans-Bold.ttf");
+const GOLDEN_ITALIC: &[u8] = include_bytes!("fonts/DejaVuSansMono-Oblique.ttf");
+const GOLDEN_BOLD_ITALIC: &[u8] = include_bytes!("fonts/DejaVuSansMono-BoldOblique.ttf");
+const GOLDEN_MONOSPACE: &[u8] = include_bytes!("fonts/DejaVuSansMono.ttf");
 const FIXTURES: &[(&str, &str)] = &[
     ("agent-output", include_str!("fixtures/agent-output.md")),
     ("agent-response", include_str!("fixtures/agent-response.md")),
+    ("font-faces", include_str!("fixtures/font-faces.md")),
     ("linked-chapter", include_str!("fixtures/linked-chapter.md")),
     ("malformed", include_str!("fixtures/malformed.md")),
     ("page-boundary", BOUNDARY),
@@ -212,9 +220,15 @@ fn every_checked_in_fixture_matches_png_goldens() {
 
 fn assert_fixture_goldens(name: &str, source: &str) {
     let viewport = Viewport::new(180, 120);
-    let reader = HostReader::from_source(source, structural_style(), viewport)
-        .unwrap_or_else(|error| panic!("fixture {name} should parse: {error}"));
-    let mut renderer = prs_markdown::EmbeddedGraphicsRenderer::new(TestTextEngine);
+    let font_engine = golden_font_engine();
+    let reader = HostReader::from_source_with_measurer(
+        source,
+        structural_style(),
+        viewport,
+        font_engine.clone(),
+    )
+    .unwrap_or_else(|error| panic!("fixture {name} should parse: {error}"));
+    let mut renderer = prs_markdown::EmbeddedGraphicsRenderer::new(font_engine);
 
     for (page_index, page) in reader.pagination().pages().iter().enumerate() {
         let image = render_page(page, &mut renderer);
@@ -222,8 +236,30 @@ fn assert_fixture_goldens(name: &str, source: &str) {
     }
 }
 
+fn golden_font_engine() -> FontdueTextEngine {
+    FontdueTextEngine::new(
+        FontConfig::from_faces(
+            GOLDEN_REGULAR,
+            GOLDEN_BOLD,
+            GOLDEN_ITALIC,
+            GOLDEN_BOLD_ITALIC,
+            GOLDEN_MONOSPACE,
+        ),
+        512,
+    )
+    .expect("checked-in golden fonts should parse")
+}
+
 fn assert_png_golden(name: &str, page_number: usize, image: &HostImage) {
-    let golden = golden_path(name, page_number);
+    assert_png_golden_at(
+        golden_path(name, page_number),
+        golden_failure_path(name, page_number),
+        &format!("{name} page {page_number}"),
+        image,
+    );
+}
+
+fn assert_png_golden_at(golden: PathBuf, failure: PathBuf, label: &str, image: &HostImage) {
     let actual = image.png_bytes();
 
     if env::var_os("PRS_MARKDOWN_UPDATE_GOLDENS").is_some() {
@@ -232,7 +268,6 @@ fn assert_png_golden(name: &str, page_number: usize, image: &HostImage) {
         return;
     }
 
-    let failure = golden_failure_path(name, page_number);
     let expected = match fs::read(&golden) {
         Ok(expected) => expected,
         Err(error) => {
@@ -240,8 +275,8 @@ fn assert_png_golden(name: &str, page_number: usize, image: &HostImage) {
             panic!(
                 concat!(
                     "missing golden {} ({}); rendered output was written to {}. ",
-                    "Inspect it, then promote it with `PRS_MARKDOWN_UPDATE_GOLDENS=1 ",
-                    "cargo test -p prs-markdown --test harness every_checked_in_fixture_matches_png_goldens`"
+                    "Inspect it, then promote inspected renders with `PRS_MARKDOWN_UPDATE_GOLDENS=1 ",
+                    "cargo test -p prs-markdown --test harness`"
                 ),
                 golden.display(),
                 error,
@@ -254,12 +289,11 @@ fn assert_png_golden(name: &str, page_number: usize, image: &HostImage) {
         write_golden_failure(&failure, &actual);
         panic!(
             concat!(
-                "PNG golden mismatch for {} page {}; rendered output was written to {}. ",
-                "Inspect it, then promote it with `PRS_MARKDOWN_UPDATE_GOLDENS=1 ",
-                "cargo test -p prs-markdown --test harness every_checked_in_fixture_matches_png_goldens`"
+                "PNG golden mismatch for {}; rendered output was written to {}. ",
+                "Inspect it, then promote inspected renders with `PRS_MARKDOWN_UPDATE_GOLDENS=1 ",
+                "cargo test -p prs-markdown --test harness`"
             ),
-            name,
-            page_number,
+            label,
             failure.display()
         );
     }
@@ -314,7 +348,7 @@ fn host_render_helper_uses_the_production_renderer() {
         Viewport::new(120, 80),
     )
     .unwrap();
-    let mut renderer = prs_markdown::EmbeddedGraphicsRenderer::new(TestTextEngine);
+    let mut renderer = prs_markdown::EmbeddedGraphicsRenderer::new(golden_font_engine());
     let image = render_page(reader.page(0).unwrap(), &mut renderer);
 
     assert_eq!(image.width(), 120);
@@ -324,101 +358,68 @@ fn host_render_helper_uses_the_production_renderer() {
 
 #[test]
 fn rendered_host_page_matches_checked_in_png_golden() {
-    let reader = HostReader::from_source(
+    let font_engine = golden_font_engine();
+    let reader = HostReader::from_source_with_measurer(
         "# Host page\n\nA visible paragraph.",
         structural_style(),
         Viewport::new(120, 80),
+        font_engine.clone(),
     )
     .unwrap();
-    let mut renderer = prs_markdown::EmbeddedGraphicsRenderer::new(TestTextEngine);
+    let mut renderer = prs_markdown::EmbeddedGraphicsRenderer::new(font_engine);
     let image = render_page(reader.page(0).unwrap(), &mut renderer);
     assert!(image.pixels().iter().any(|pixel| *pixel < 255));
-    assert_eq!(image.png_bytes(), HOST_PAGE_GOLDEN);
+
+    assert_png_golden_at(
+        host_page_golden_path(),
+        host_page_golden_failure_path(),
+        "host page",
+        &image,
+    );
 }
 
-#[derive(Debug)]
-struct TestTextEngine;
+fn host_page_golden_path() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/goldens/host-page.png")
+}
 
-impl prs_markdown::TextEngine for TestTextEngine {
-    fn measure(&self, _run: &prs_markdown::TextRun<'_>) -> prs_markdown::TextMetrics {
-        prs_markdown::TextMetrics {
-            advance_width: 6.0,
-            width: 6,
-            line: prs_markdown::LineMetrics {
-                ascent: 7,
-                descent: 1,
-                line_gap: 0,
-                line_height: 10,
-                baseline: 7,
-            },
-        }
-    }
+fn host_page_golden_failure_path() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/prs-markdown-golden-failures/host-page.png")
+}
 
-    fn wrap(
-        &self,
-        runs: &[prs_markdown::TextRun<'_>],
-        _available_width: u32,
-    ) -> prs_markdown::TextLayout {
-        let text = runs.iter().map(|run| run.text).collect::<String>();
-        let glyphs = text
-            .chars()
-            .enumerate()
-            .map(|(index, character)| prs_markdown::PositionedGlyph {
-                character,
-                glyph_id: 0,
-                face: prs_markdown::FontFace::Regular,
-                font_size: 10,
-                x: index as i32 * 6,
-                y: 0,
-                width: 5,
-                height: 7,
-                advance_width: 6.0,
-                byte_offset: index,
-                span_id: None,
-            })
-            .collect::<Vec<_>>();
-        prs_markdown::TextLayout {
-            lines: vec![prs_markdown::TextLine {
-                glyph_range: 0..glyphs.len(),
-                width: glyphs.len() as u32 * 6,
-                metrics: prs_markdown::LineMetrics {
-                    ascent: 7,
-                    descent: 1,
-                    line_gap: 0,
-                    line_height: 10,
-                    baseline: 7,
-                },
-            }],
-            glyphs,
-        }
-    }
+#[test]
+fn golden_font_assets_cover_each_reader_face() {
+    let mut engine = golden_font_engine();
+    let faces = [
+        FontFace::Regular,
+        FontFace::Bold,
+        FontFace::Italic,
+        FontFace::BoldItalic,
+        FontFace::Monospace,
+    ];
+    let rasters = faces
+        .into_iter()
+        .map(|face| {
+            let layout = engine.layout(&[TextRun::new("Ag", FontTextStyle::new(face, 20))], 100);
+            let glyph = layout
+                .glyphs()
+                .first()
+                .expect("font should produce a glyph");
+            assert!(
+                glyph.width > 0,
+                "{face:?} glyph should have visible geometry"
+            );
+            TextEngine::rasterize_glyph(&mut engine, glyph).alpha
+        })
+        .collect::<Vec<_>>();
 
-    fn rasterize_glyph(
-        &mut self,
-        glyph: &prs_markdown::PositionedGlyph,
-    ) -> prs_markdown::GlyphBitmap {
-        let width = 5;
-        let height = 7;
-        let alpha = (0..height)
-            .flat_map(|row| {
-                (0..width).map(move |column| {
-                    let edge = row == 0 || row == height - 1 || column == 0 || column == width - 1;
-                    let mark = (u32::from(glyph.character) + row + column) % 7 == 0;
-                    if !glyph.character.is_whitespace() && (edge || mark) {
-                        255
-                    } else {
-                        0
-                    }
-                })
-            })
-            .collect();
-        prs_markdown::GlyphBitmap {
-            width,
-            height,
-            left: 0,
-            top: 0,
-            advance_width: 6.0,
-            alpha,
-        }
+    assert!(rasters
+        .iter()
+        .all(|alpha| alpha.iter().any(|pixel| *pixel > 0)));
+    for (index, raster) in rasters.iter().enumerate() {
+        assert!(
+            rasters[..index].iter().all(|previous| previous != raster),
+            "golden face {index} should have distinct glyph coverage"
+        );
     }
 }

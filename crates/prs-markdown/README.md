@@ -37,13 +37,15 @@ corresponding options shown by `--help`.
 The fixture corpus in `tests/fixtures/` covers prose, headings, inline styles,
 nested lists, task lists, quotes, long paragraphs, links and anchors,
 cross-file links, exact page boundaries, agent responses, table placeholders,
-fenced code, and image references. `tests/harness.rs` asserts structural
-outputs such as page count, logical cursor ranges, visible fragments, hit
-regions, navigation, PGM encoding, and the checked-in
-`tests/goldens/host-page.png` visual golden. These structural tests use the
-deterministic approximate measurer; the golden uses a deterministic test glyph
-backend so CI does not depend on a system font. The command-line harness uses
-the supplied Fontdue font for both layout metrics and rasterization.
+fenced code, image references, and explicit font-face selection. `tests/harness.rs`
+asserts structural outputs such as page count, logical cursor ranges, visible
+fragments, hit regions, navigation, and PGM encoding. Those structural tests use the
+deterministic approximate measurer and remain independent of font files. The
+checked-in corpus PNG goldens use the production Fontdue pipeline with the
+bundled DejaVu Sans and Sans Mono faces in `tests/fonts/`, so they are readable,
+deterministic across CI hosts, and sensitive to glyph geometry, bold/italic
+selection, and code-font selection. The command-line harness uses the supplied
+Fontdue font for both layout metrics and rasterization.
 The CLI writes both formats from the same rendered grayscale pixels, so PNGs
 can be opened directly while PGM remains convenient for simple tooling.
 
@@ -55,8 +57,7 @@ have been inspected:
 
 ```sh
 PRS_MARKDOWN_UPDATE_GOLDENS=1 \
-  cargo test -p prs-markdown --test harness \
-  every_checked_in_fixture_matches_png_goldens
+  cargo test -p prs-markdown --test harness
 ```
 
 Run the focused harness tests with:
