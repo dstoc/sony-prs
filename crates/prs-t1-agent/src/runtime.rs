@@ -6,6 +6,7 @@ use std::io::{self, Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::process::Command;
+use std::sync::mpsc::{self, TryRecvError};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -318,22 +319,27 @@ fn request_suspend(mode: SuspendMode) -> io::Result<()> {
 }
 
 fn wait_for_display_wake(inputs: &mut InputSet, state: &mut UiState) -> io::Result<()> {
-    let mut wake = OpenOptions::new()
-        .read(true)
-        .custom_flags(O_NONBLOCK)
-        .open("/sys/power/wait_for_fb_wake")?;
-    let mut buffer = [0u8; 16];
+    let (wake_tx, wake_rx) = mpsc::channel();
+    thread::spawn(move || {
+        let result = read_display_wake_barrier();
+        let _ = wake_tx.send(result);
+    });
     let mut resume_requested = false;
 
     loop {
-        match wake.read(&mut buffer) {
-            Ok(bytes) if bytes > 0 => {
+        match wake_rx.try_recv() {
+            Ok(Ok(bytes)) => {
                 eprintln!("standalone-test: display wake barrier released bytes={bytes}");
                 return Ok(());
             }
-            Ok(_) => {}
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
-            Err(error) => return Err(error),
+            Ok(Err(error)) => return Err(error),
+            Err(TryRecvError::Empty) => {}
+            Err(TryRecvError::Disconnected) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "display wake barrier reader exited without a result",
+                ));
+            }
         }
 
         for source in &mut inputs.sources {
@@ -362,6 +368,24 @@ fn wait_for_display_wake(inputs: &mut InputSet, state: &mut UiState) -> io::Resu
             }
         }
 
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn read_display_wake_barrier() -> io::Result<usize> {
+    let mut wake = OpenOptions::new()
+        .read(true)
+        .custom_flags(O_NONBLOCK)
+        .open("/sys/power/wait_for_fb_wake")?;
+    let mut buffer = [0u8; 16];
+
+    loop {
+        match wake.read(&mut buffer) {
+            Ok(bytes) if bytes > 0 => return Ok(bytes),
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+            Err(error) => return Err(error),
+        }
         thread::sleep(Duration::from_millis(20));
     }
 }
