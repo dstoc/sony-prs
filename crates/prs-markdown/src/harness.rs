@@ -117,9 +117,9 @@ impl HostReader {
 
 /// A host framebuffer that stores the renderer's output as 8-bit grayscale.
 ///
-/// PGM was chosen as the interchange format because it is trivial to inspect,
-/// has no metadata or compression surprises, and maps naturally to the
-/// reader's e-ink-oriented grayscale output.
+/// PGM is the lossless, easy-to-inspect interchange format used by the device
+/// tooling. The same pixels can also be written as a grayscale PNG for image
+/// viewers and checked-in visual regression goldens.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HostImage {
     width: u32,
@@ -180,6 +180,72 @@ impl HostImage {
         self.write_pgm(&mut file)
     }
 
+    /// Return this image as an 8-bit grayscale PNG.
+    ///
+    /// The encoder intentionally has no image-library dependency: it emits
+    /// filter-zero scanlines in zlib stored blocks. This keeps host rendering
+    /// available in the same minimal workspace and makes the golden format
+    /// stable across platforms and library versions.
+    pub fn png_bytes(&self) -> Vec<u8> {
+        let mut output = Vec::new();
+        self.write_png(&mut output)
+            .expect("writing a PNG to memory cannot fail");
+        output
+    }
+
+    pub fn write_png<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+        const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
+        if self.width == 0 || self.height == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "PNG dimensions must be non-zero",
+            ));
+        }
+        writer.write_all(PNG_SIGNATURE)?;
+
+        let mut header = Vec::with_capacity(13);
+        header.extend_from_slice(&self.width.to_be_bytes());
+        header.extend_from_slice(&self.height.to_be_bytes());
+        // 8-bit grayscale, no palette, compression/filter/interlace method 0.
+        header.extend_from_slice(&[8, 0, 0, 0, 0]);
+        write_png_chunk(writer, b"IHDR", &header)?;
+
+        let row_width = usize::try_from(self.width).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "PNG row width does not fit usize",
+            )
+        })?;
+        let row_count = usize::try_from(self.height).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "PNG row count does not fit usize",
+            )
+        })?;
+        let mut scanlines = Vec::with_capacity(
+            row_width
+                .checked_add(1)
+                .and_then(|row| row.checked_mul(row_count))
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "PNG image is too large")
+                })?,
+        );
+        for row in self.pixels.chunks_exact(row_width) {
+            scanlines.push(0); // PNG filter type: None.
+            scanlines.extend_from_slice(row);
+        }
+
+        let mut compressed = Vec::new();
+        write_zlib_stored(&scanlines, &mut compressed);
+        write_png_chunk(writer, b"IDAT", &compressed)?;
+        write_png_chunk(writer, b"IEND", &[])
+    }
+
+    pub fn save_png(&self, path: impl AsRef<Path>) -> io::Result<()> {
+        let mut file = std::fs::File::create(path)?;
+        self.write_png(&mut file)
+    }
+
     fn index(&self, point: Point) -> Option<usize> {
         if point.x < 0
             || point.y < 0
@@ -192,6 +258,59 @@ impl HostImage {
         let y = point.y as usize;
         y.checked_mul(self.width as usize)?.checked_add(x)
     }
+}
+
+fn write_png_chunk<W: Write>(writer: &mut W, kind: &[u8; 4], data: &[u8]) -> io::Result<()> {
+    let length = u32::try_from(data.len())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "PNG chunk is too large"))?;
+    writer.write_all(&length.to_be_bytes())?;
+    writer.write_all(kind)?;
+    writer.write_all(data)?;
+    writer.write_all(&png_crc(kind, data).to_be_bytes())
+}
+
+fn write_zlib_stored(data: &[u8], output: &mut Vec<u8>) {
+    // CMF/FLG for deflate with a 32 KiB window and no compression. Stored
+    // blocks still carry the exact scanline bytes and are easy to implement
+    // without bringing a compressor into the host harness.
+    output.extend_from_slice(&[0x78, 0x01]);
+    if data.is_empty() {
+        output.extend_from_slice(&[1, 0, 0, 0xff, 0xff]);
+    } else {
+        let mut offset = 0;
+        while offset < data.len() {
+            let end = offset.saturating_add(u16::MAX as usize).min(data.len());
+            output.push(u8::from(end == data.len()));
+            let length = (end - offset) as u16;
+            output.extend_from_slice(&length.to_le_bytes());
+            output.extend_from_slice(&(!length).to_le_bytes());
+            output.extend_from_slice(&data[offset..end]);
+            offset = end;
+        }
+    }
+    output.extend_from_slice(&adler32(data).to_be_bytes());
+}
+
+fn adler32(data: &[u8]) -> u32 {
+    const MODULO: u32 = 65_521;
+    let (mut low, mut high) = (1u32, 0u32);
+    for byte in data {
+        low = (low + u32::from(*byte)) % MODULO;
+        high = (high + low) % MODULO;
+    }
+    high << 16 | low
+}
+
+fn png_crc(kind: &[u8; 4], data: &[u8]) -> u32 {
+    let mut crc = u32::MAX;
+    for byte in kind.iter().chain(data) {
+        crc ^= u32::from(*byte);
+        for _ in 0..8 {
+            let mask = 0u32.wrapping_sub(crc & 1);
+            crc = (crc >> 1) ^ (0xedb8_8320 & mask);
+        }
+    }
+    !crc
 }
 
 impl Dimensions for HostImage {
