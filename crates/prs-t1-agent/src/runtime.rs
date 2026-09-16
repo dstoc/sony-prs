@@ -22,7 +22,11 @@ const ABS_MT_POSITION_Y: u16 = 54;
 const ABS_MT_TRACKING_ID: u16 = 57;
 const BTN_TOUCH: u16 = 330;
 const KEY_POWER: u16 = 116;
+// The first key device (/dev/input/event0) reports the physical menu button
+// as "Unknown" code 357 (the diagnostic label is E0 Unknown C357).
+const KEY_MENU: u16 = 357;
 const LONG_PRESS_MICROS: u64 = 2_000_000;
+const MENU_HOLD_MICROS: u64 = 1_000_000;
 const WAKE_LOCK_NAME: &str = "prs-t1-native-test";
 const POWER_STATE_HELPER: &str = "/data/local/tmp/prs-t1-power-state";
 const FRAMEWORK_STOP_TIMEOUT_SECONDS: u32 = 15;
@@ -106,6 +110,12 @@ pub fn run(path: &Path, suspend_mode: SuspendMode) -> io::Result<()> {
             adb_restart_pending = false;
         }
         let mut redraw_area = state.refresh_status_if_due().then_some(DirtyArea::Status);
+        if let Some(dirty) = state.poll_menu_hold() {
+            redraw_area = Some(match redraw_area {
+                Some(existing) => existing.merge(dirty),
+                None => dirty,
+            });
+        }
         let mut action = PowerAction::None;
         for source in &mut inputs.sources {
             loop {
@@ -958,6 +968,9 @@ struct UiState {
     touch_events: u64,
     key_events: u64,
     power_press_us: Option<u64>,
+    menu_press_us: Option<u64>,
+    menu_pressed_at: Option<Instant>,
+    menu_hold_triggered: bool,
     last_power_duration_ms: Option<u64>,
     ignore_power_until: Option<Instant>,
     status: crate::status::StatusSnapshot,
@@ -980,6 +993,9 @@ impl UiState {
             touch_events: 0,
             key_events: 0,
             power_press_us: None,
+            menu_press_us: None,
+            menu_pressed_at: None,
+            menu_hold_triggered: false,
             last_power_duration_ms: None,
             ignore_power_until: None,
             status: crate::status::collect(),
@@ -1072,6 +1088,9 @@ impl UiState {
         if event.event_type == EVENT_KEY {
             self.last_key = Some((source, event));
             self.key_events += 1;
+            if source == InputSourceKind::Keys && event.code == KEY_MENU {
+                return self.observe_menu(event);
+            }
             if source.is_power() && event.code == KEY_POWER {
                 eprintln!(
                     "standalone-test: power event source={} value={} timestamp_us={} mode={}",
@@ -1091,6 +1110,74 @@ impl UiState {
         }
 
         (None, PowerAction::None)
+    }
+
+    fn poll_menu_hold(&mut self) -> Option<DirtyArea> {
+        let due = self
+            .menu_pressed_at
+            .map(|started| {
+                !self.menu_hold_triggered
+                    && started.elapsed() >= Duration::from_micros(MENU_HOLD_MICROS)
+            })
+            .unwrap_or(false);
+        due.then(|| self.trigger_menu_redraw())
+    }
+
+    fn observe_menu(&mut self, event: RawEvent) -> (Option<DirtyArea>, PowerAction) {
+        match event.value {
+            1 => {
+                if self.menu_press_us.is_none() {
+                    self.menu_press_us = Some(event.timestamp_micros());
+                    self.menu_pressed_at = Some(Instant::now());
+                    self.menu_hold_triggered = false;
+                    self.message = "Menu held".into();
+                }
+                (Some(DirtyArea::Key), PowerAction::None)
+            }
+            2 => {
+                let due = !self.menu_hold_triggered
+                    && self
+                        .menu_press_us
+                        .map(|started| {
+                            event.timestamp_micros().saturating_sub(started) >= MENU_HOLD_MICROS
+                        })
+                        .unwrap_or(false);
+                if due {
+                    (Some(self.trigger_menu_redraw()), PowerAction::None)
+                } else {
+                    self.message = "Menu repeat".into();
+                    (Some(DirtyArea::Key), PowerAction::None)
+                }
+            }
+            0 => {
+                let duration = self
+                    .menu_press_us
+                    .take()
+                    .map(|start| event.timestamp_micros().saturating_sub(start))
+                    .unwrap_or_default();
+                self.menu_pressed_at = None;
+                let already_triggered = self.menu_hold_triggered;
+                self.menu_hold_triggered = false;
+                if !already_triggered && duration >= MENU_HOLD_MICROS {
+                    (Some(self.trigger_menu_redraw()), PowerAction::None)
+                } else {
+                    self.message = "Menu released".into();
+                    (Some(DirtyArea::Key), PowerAction::None)
+                }
+            }
+            _ => (Some(DirtyArea::Key), PowerAction::None),
+        }
+    }
+
+    fn trigger_menu_redraw(&mut self) -> DirtyArea {
+        self.menu_hold_triggered = true;
+        self.message = "Menu hold - full redraw".into();
+        eprintln!(
+            "standalone-test: menu hold reached {}ms; requesting full {} redraw",
+            MENU_HOLD_MICROS / 1_000,
+            WaveformMode::Gc16.label()
+        );
+        DirtyArea::Full
     }
 
     fn activate_tap(&mut self) -> PowerAction {
@@ -1199,11 +1286,12 @@ impl UiState {
 #[cfg(test)]
 mod tests {
     use super::{
-        InputSourceKind, SuspendMode, UiPage, UiState, ABS_MT_POSITION_X, ABS_MT_POSITION_Y,
-        ABS_MT_TOUCH_MAJOR, ABS_MT_TRACKING_ID, ABS_X, ABS_Y, BTN_TOUCH, EVENT_ABS, EVENT_KEY,
-        EVENT_SYN, SYN_REPORT,
+        DirtyArea, InputSourceKind, SuspendMode, UiPage, UiState, ABS_MT_POSITION_X,
+        ABS_MT_POSITION_Y, ABS_MT_TOUCH_MAJOR, ABS_MT_TRACKING_ID, ABS_X, ABS_Y, BTN_TOUCH,
+        EVENT_ABS, EVENT_KEY, EVENT_SYN, KEY_MENU, SYN_REPORT,
     };
     use crate::input::RawEvent;
+    use std::time::{Duration, Instant};
 
     fn event(code: u16, value: i32, timestamp_micros: u64) -> RawEvent {
         RawEvent {
@@ -1247,6 +1335,40 @@ mod tests {
         let state = UiState::new();
         let lines = super::screen_lines(&state, true);
         assert_eq!(lines[0].split('|').nth(4), Some(""));
+    }
+
+    #[test]
+    fn menu_hold_requests_full_redraw_at_one_second() {
+        let mut state = UiState::new();
+
+        let (dirty, action) = state.observe(InputSourceKind::Keys, event(KEY_MENU, 1, 1_000_000));
+        assert_eq!(dirty, Some(DirtyArea::Key));
+        assert_eq!(action, super::PowerAction::None);
+
+        let (dirty, action) = state.observe(InputSourceKind::Keys, event(KEY_MENU, 0, 2_000_000));
+        assert_eq!(dirty, Some(DirtyArea::Full));
+        assert_eq!(action, super::PowerAction::None);
+        assert!(state.menu_press_us.is_none());
+    }
+
+    #[test]
+    fn short_menu_press_does_not_force_full_redraw() {
+        let mut state = UiState::new();
+        state.observe(InputSourceKind::Keys, event(KEY_MENU, 1, 1_000_000));
+
+        let (dirty, action) = state.observe(InputSourceKind::Keys, event(KEY_MENU, 0, 1_999_999));
+        assert_eq!(dirty, Some(DirtyArea::Key));
+        assert_eq!(action, super::PowerAction::None);
+    }
+
+    #[test]
+    fn menu_hold_timer_triggers_once_without_key_repeat() {
+        let mut state = UiState::new();
+        state.observe(InputSourceKind::Keys, event(KEY_MENU, 1, 1_000_000));
+        state.menu_pressed_at = Some(Instant::now() - Duration::from_secs(1));
+
+        assert_eq!(state.poll_menu_hold(), Some(DirtyArea::Full));
+        assert_eq!(state.poll_menu_hold(), None);
     }
 
     #[test]

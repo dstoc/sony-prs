@@ -183,6 +183,13 @@ codes 106 (`KEY_RIGHT`) and 105 (`KEY_LEFT`) navigated the reader between its
 two home pages. The Android `input keyevent` utility is present but did not
 navigate this vendor UI with the corresponding Android DPAD keycodes.
 
+The physical menu button is reported by `/dev/input/event0` as `KEY` code 357
+(`Unknown`, shown by the diagnostics as `E0 Unknown C357`). Holding it for at
+least one second requests a full-screen GC16 redraw. The runtime detects the
+threshold from its timer even if the device emits no key-repeat event, and
+also handles a repeat or release event as a fallback. A short menu press only
+updates the key diagnostics; the hold action is fired once per press.
+
 The native touch decoder accepts both the observed `ABS_MT_POSITION_X/Y`
 coordinates and the T1's legacy `ABS_X/Y` compatibility axes. The latter are
 advertised with an 800x600 range on the 600x800 display, so they are normalized

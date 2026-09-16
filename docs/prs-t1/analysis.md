@@ -1357,6 +1357,19 @@ button labels use measured text bounds for horizontal and vertical centering.
 The details actions now use three stacked full-width touch targets so their
 visual and hit-test geometry share the same rectangles. The dependency remains
 `default-features = false`; the current optimized ARMv5 release binary is
-622,576 bytes. A general-purpose renderer such as `tiny-skia` would bring
+623,112 bytes. A general-purpose renderer such as `tiny-skia` would bring
 more capability than this shell needs and its default feature set is less
 appropriate for the T1's small ARMv5 runtime.
+
+### Menu-button full refresh
+
+The first key device, `/dev/input/event0` (E0), reports the physical menu
+button as event type `KEY`, code 357, value 1 on press and 0 on release. The
+kernel names this code `Unknown`; it is the `E0 Unknown C357` control seen in
+the diagnostics. A hold of at least one second now requests `DirtyArea::Full`.
+That path clears and redraws the entire framebuffer using the existing GC16
+waveform, which is the slowest and highest-quality mode currently exposed by
+the T1 EPDC ABI. The timer is checked by the main loop so a device without
+key-repeat events still triggers while the button remains down; repeat and
+release timestamps provide event-driven fallbacks. The trigger is latched so
+one physical hold cannot cause repeated full refreshes.
