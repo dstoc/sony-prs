@@ -1292,3 +1292,71 @@ failure boundary. The current APK, handoff script, and rebuilt ARM agent still
 use the corrected handoff. A direct ADB-side launch verified the detached
 agent path, and a subsequent manual Home → Native UI → Superuser approval test
 successfully launched the native screen. No automatic startup hook was added.
+
+## Native UI shell
+
+The first real shell pass replaces the earlier diagnostic pattern with a
+document-oriented layout. The home page now reserves a 48-pixel single-line
+status bar and leaves the remaining canvas quiet for future document and image
+content. The bar reports battery percentage, Wi-Fi state, USB presence, ADB
+state, the native active/sleeping mode, and the local date/time from the T1's
+`date` command. The current visual direction is a solid black strip with crisp
+white 20x20 binary sprites cropped from the generated icon sheet and fit to
+their individual glyph bounds. Battery and clock retain short values; Wi-Fi,
+USB, and ADB are packed tightly after the battery and show only their sprites
+when active. The normal Active label is hidden, leaving the mode slot for
+states such as Sleeping or Rebooting. Only `HH:MM` remains in the strip and the
+full date is shown in Details. Fixed outer margins and a reserved clock slot
+prevent longer status values from crowding adjacent groups. This keeps the
+status bar legible without introducing gray text, grid lines, or thin
+low-contrast controls that would be unreliable on the panel.
+
+The status bar is also the first navigation surface. A touch release in its
+area toggles a details page. That page retains the useful diagnostics from the
+standalone test—battery health and voltage, power state, Wi-Fi and supplicant,
+USB gadget state, ADB service state, framebuffer/Android ownership, wake lock,
+storage, and raw touch/key observations—but gives the power actions priority.
+Details now groups the rows under Power, Connectivity, System, Storage, and
+Input headings, formats battery percentage and voltage as user-facing values,
+and shows the full local date/time. The bottom controls request Android reboot,
+power-off through the T1 reboot utility's verified `-p` option, or return to
+the document canvas. They retain 48-pixel touch targets with a 20-pixel bottom
+margin, and hit testing is constrained to the drawn button width. Physical
+short/long power-button behavior remains unchanged: short press sleeps and a
+long press reboots.
+
+The touchpanel inventory reports a useful screen-sized multitouch coordinate
+pair (`ABS_MT_POSITION_X/Y`, observed as x=73/y=771 for a lower-left tap), so
+the shell uses the raw screen coordinates for hit testing. `BTN_TOUCH` release
+events delimit taps; movement continues to update the diagnostics without
+triggering navigation. The legacy `ABS_X/Y` compatibility path remains
+displayed for investigation and is normalized from the advertised 800x600
+physical axes to screen x/y before hit testing. The decoder also accepts
+`ABS_MT_TRACKING_ID=-1` as a release for drivers that do not emit
+`BTN_TOUCH=0`. A synthetic legacy-axis sequence successfully navigated into
+details and activated the lower `Back to reading` action.
+
+A controlled physical capture resolved why the first implementation did not
+navigate on touch. The panel reported `ABS_MT_TOUCH_MAJOR=12` on press and
+`ABS_MT_TOUCH_MAJOR=0` on release, with `ABS_MT_POSITION_X/Y` and
+`SYN_MT_REPORT`/`SYN_REPORT` framing, but emitted neither `BTN_TOUCH` nor
+`ABS_MT_TRACKING_ID` in the sample. The decoder now treats the zero touch-major
+frame as a pending release and activates the tap at the following
+`SYN_REPORT`. A synthetic sequence matching this exact physical event shape
+passes the runtime test. The updated ARM binary was deployed and the same
+event sequence was verified in both directions: the status bar opened Details
+and the bottom `Back to reading` target returned Home.
+
+The generated icon sheet was cropped into 20x20, thresholded binary sprites in
+`crates/prs-t1-agent/assets/`; each sprite is embedded directly and rendered
+without a PNG decoder. The renderer uses those monochrome glyphs plus
+`embedded-graphics`'s `FONT_8X13`, `FONT_8X13_BOLD`, and `FONT_10X20` through a
+custom RGB565 `DrawTarget`. This replaces the earlier hand-written 5x7 glyph
+table, adds lowercase and punctuation coverage, and lets status, heading, and
+button labels use measured text bounds for horizontal and vertical centering.
+The details actions now use three stacked full-width touch targets so their
+visual and hit-test geometry share the same rectangles. The dependency remains
+`default-features = false`; the current optimized ARMv5 release binary is
+622,576 bytes. A general-purpose renderer such as `tiny-skia` would bring
+more capability than this shell needs and its default feature set is less
+appropriate for the T1's small ARMv5 runtime.

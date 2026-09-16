@@ -1197,18 +1197,6 @@ impl DisplayCanvas<'_> {
             self.set_pixel(x.saturating_add(width - 1), row, pixel);
         }
     }
-
-    pub fn hline(&mut self, x: usize, y: usize, width: usize, pixel: u16) {
-        for column in x..x.saturating_add(width) {
-            self.set_pixel(column, y, pixel);
-        }
-    }
-
-    pub fn vline(&mut self, x: usize, y: usize, height: usize, pixel: u16) {
-        for row in y..y.saturating_add(height) {
-            self.set_pixel(x, row, pixel);
-        }
-    }
 }
 
 fn packed_frame_len(width: usize, height: usize) -> io::Result<usize> {

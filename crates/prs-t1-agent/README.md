@@ -6,10 +6,10 @@ the PRS-350 agent: the T1 is an Android 2.2.1 reader with a different boot,
 display, input, and service model.
 
 The binary currently implements the hardware-discovery milestone plus an
-explicit opt-in standalone runtime test: framebuffer inspection and capture,
+explicit opt-in standalone runtime: framebuffer inspection and capture,
 Android process/service inspection, evdev capability inspection, a bounded
-reversible render test, and a full-screen native power/input test. Replacing
-Android at boot is not part of this milestone.
+reversible render test, and a full-screen native shell with power/input
+handling. Replacing Android at boot is not part of this milestone.
 
 ## Design goal
 
@@ -20,6 +20,22 @@ Run a small native process on the rooted T1 which can:
 3. discover the touch and hardware-key input path;
 4. receive input without depending on Android's Java UI stack; and
 5. keep ADB and Wi-Fi available for development and recovery.
+
+The first shell increment reserves a single-line, high-contrast status bar for
+battery, Wi-Fi, USB, ADB, sleep/active state, and a short local date/time. The
+bar is solid black with crisp white 20x20 binary sprites cropped from the
+generated icon sheet and fit to their individual glyph bounds; short values sit
+beside the battery and clock sprites. Wi-Fi, USB, and ADB are packed tightly
+after the battery and show only their icons when active; the normal Active mode
+label is hidden, leaving the mode slot for exceptional states such as Sleeping
+or Rebooting. The home content area is intentionally blank for future documents
+and images. Tapping the bar opens a diagnostics page with the existing
+device-state information grouped into Power, Connectivity, System, Storage,
+and Input sections, followed by full-width reboot, power-off, and return
+actions. The bar keeps only the time; the full date is shown in Details. The
+rendering uses the small `embedded-graphics` bitmap-font support with a custom
+RGB565 draw target, keeping the ARMv5 binary easy to deploy while providing
+lowercase glyphs and measured text layout.
 
 The initial control path is root ADB. We should deploy test binaries to a
 temporary location such as `/data/local/tmp` and start them manually. A T1
@@ -166,6 +182,17 @@ Root ADB can reproduce the hardware button path with `sendevent`; Linux key
 codes 106 (`KEY_RIGHT`) and 105 (`KEY_LEFT`) navigated the reader between its
 two home pages. The Android `input keyevent` utility is present but did not
 navigate this vendor UI with the corresponding Android DPAD keycodes.
+
+The native touch decoder accepts both the observed `ABS_MT_POSITION_X/Y`
+coordinates and the T1's legacy `ABS_X/Y` compatibility axes. The latter are
+advertised with an 800x600 range on the 600x800 display, so they are normalized
+as screen y/x respectively before hit testing. Tap release is recognized from
+either `BTN_TOUCH=0`, `ABS_MT_TRACKING_ID=-1`, or
+`ABS_MT_TOUCH_MAJOR=0` committed by `SYN_REPORT`. A physical capture confirmed
+the latter path on this T1: the panel emitted touch-major press/release frames
+without `BTN_TOUCH` or a tracking ID. This keeps full-width details actions,
+including `Back to reading`, usable across the event-reporting styles observed
+on the device.
 
 Stopping `zygote` also stopped `system_server` and removed the framework
 display/input services; the marker then survived a raw button injection. A

@@ -162,6 +162,7 @@ pub fn event_code_name(event_type: u16, code: u16) -> &'static str {
         (1, 106) => "KEY_RIGHT",
         (1, 115) => "KEY_VOLUME_UP",
         (1, 116) => "KEY_POWER",
+        (1, 330) => "BTN_TOUCH",
         (3, 0) => "ABS_X",
         (3, 1) => "ABS_Y",
         (3, 47) => "ABS_MT_SLOT",

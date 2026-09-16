@@ -5,3 +5,6 @@ edition = "2021"
 description = "Experimental native framebuffer and input runtime for Sony PRS-T1"
 license = "MIT OR Apache-2.0"
 publish = false
+
+[dependencies]
+embedded-graphics = { version = "0.8", default-features = false }

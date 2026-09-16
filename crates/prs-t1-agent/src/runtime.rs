@@ -16,8 +16,11 @@ const EVENT_ABS: u16 = 3;
 const SYN_REPORT: u16 = 0;
 const ABS_X: u16 = 0;
 const ABS_Y: u16 = 1;
+const ABS_MT_TOUCH_MAJOR: u16 = 48;
 const ABS_MT_POSITION_X: u16 = 53;
 const ABS_MT_POSITION_Y: u16 = 54;
+const ABS_MT_TRACKING_ID: u16 = 57;
+const BTN_TOUCH: u16 = 330;
 const KEY_POWER: u16 = 116;
 const LONG_PRESS_MICROS: u64 = 2_000_000;
 const WAKE_LOCK_NAME: &str = "prs-t1-native-test";
@@ -133,12 +136,21 @@ pub fn run(path: &Path, suspend_mode: SuspendMode) -> io::Result<()> {
             .map(|()| {
                 adb_restart_pending = true;
             })?,
-            PowerAction::Reboot => {
+            PowerAction::Reboot | PowerAction::PowerOff => {
                 state.mode = "REBOOTING";
-                state.message = "REBOOT REQUESTED".into();
+                state.message = match action {
+                    PowerAction::Reboot => "REBOOT REQUESTED",
+                    PowerAction::PowerOff => "POWER OFF REQUESTED",
+                    PowerAction::None | PowerAction::Sleep => unreachable!(),
+                }
+                .into();
                 redraw(&mut display, &state, wake_lock.is_held(), DirtyArea::Full)
                     .map_err(|error| display_error("reboot redraw", error))?;
-                request_reboot()?;
+                match action {
+                    PowerAction::Reboot => request_reboot()?,
+                    PowerAction::PowerOff => request_poweroff()?,
+                    PowerAction::None | PowerAction::Sleep => unreachable!(),
+                }
                 return Ok(());
             }
             PowerAction::None if let Some(area) = redraw_area => {
@@ -257,15 +269,15 @@ impl DirtyArea {
     fn region(self, display: &NativeDisplay) -> DisplayRegion {
         let region = match self {
             Self::Full => DisplayRegion::full(display.width(), display.height()),
-            // Coordinates cover the three touch diagnostic rows, including
-            // the glyph margins. Keep the update well inside the display.
-            Self::Touch => DisplayRegion::new(20, 350, 560, 94),
+            // The details page keeps the touch diagnostics near the bottom
+            // of the content area. Keep the update well inside the display.
+            Self::Touch => DisplayRegion::new(20, 460, 560, 130),
             // Key and power diagnostics share one region so a power press can
-            // update the key row and the power/message rows together.
-            Self::Key | Self::Power => DisplayRegion::new(20, 434, 560, 210),
-            // Status includes both the battery/connectivity block and the
-            // framebuffer/process rows near the bottom of the diagnostics.
-            Self::Status => DisplayRegion::new(20, 88, 560, 490),
+            // update the key row, power row, and status message together.
+            Self::Key | Self::Power => DisplayRegion::new(20, 535, 560, 105),
+            // Status refreshes also update the clock in the header, so include
+            // the header and the complete diagnostic block above the actions.
+            Self::Status => DisplayRegion::new(0, 0, display.width(), 640),
         };
         region.bounded(display.width(), display.height())
     }
@@ -292,45 +304,47 @@ fn screen_lines(state: &UiState, wake_lock_held: bool) -> Vec<String> {
         .last_touch
         .map(|event| {
             format!(
-                "TOUCH {} C{} V{}",
-                input::event_code_name(event.event_type, event.code),
+                "Touch: {} C{} V{}",
+                pretty_event_name(input::event_code_name(event.event_type, event.code)),
                 event.code,
                 event.value
             )
         })
-        .unwrap_or_else(|| "TOUCH NONE".into());
+        .unwrap_or_else(|| "Touch: none".into());
     let coordinates = if state.touch_seen {
-        format!("TOUCH X {} Y {}", state.touch_x, state.touch_y)
+        format!("Touch: X {}  Y {}", state.touch_x, state.touch_y)
     } else {
-        "TOUCH X --- Y ---".into()
+        "Touch: X ---  Y ---".into()
     };
     let key = state
         .last_key
         .map(|(source, event)| {
             format!(
-                "KEY {} {} C{} V{}",
+                "Key: {} {} C{} V{}",
                 source.label(),
-                input::event_code_name(event.event_type, event.code),
+                pretty_event_name(input::event_code_name(event.event_type, event.code)),
                 event.code,
                 event.value
             )
         })
-        .unwrap_or_else(|| "KEY NONE".into());
-    let power = state
-        .last_power_duration_ms
-        .map(|duration| format!("POWER LAST {}MS", duration))
-        .unwrap_or_else(|| "POWER SHORT SLEEP LONG REBOOT".into());
+        .unwrap_or_else(|| "Key: none".into());
     let battery_level = number_or_unknown(status.battery.capacity_percent);
     let battery_state = uppercase_or_unknown(status.battery.status.as_deref());
     let temperature = number_or_unknown(status.battery.temperature);
     let ac = bool_label(status.power.ac_online);
-    let usb = bool_label(status.power.usb_online);
+    let usb_power = bool_label(status.power.usb_online);
+    let usb_connected = bool_label(status.usb.physical_connected);
     let wifi_state = if status.wifi.interface_present {
         uppercase_or_unknown(status.wifi.operstate.as_deref())
     } else {
         "OFF".into()
     };
     let supplicant = uppercase_or_unknown(status.wifi.supplicant_state.as_deref());
+    let adb = if status.adb.process_running {
+        "ON"
+    } else {
+        "OFF"
+    };
     let framebuffer = match status.screen.framebuffer_state {
         Some(0) => "ACTIVE",
         Some(_) => "OTHER",
@@ -346,49 +360,152 @@ fn screen_lines(state: &UiState, wake_lock_held: bool) -> Vec<String> {
     } else {
         "STOP"
     };
-    vec![
-        "PRS T1 NATIVE UI".into(),
-        format!("STATE {}", state.mode),
-        format!("BAT {} {}", battery_level, battery_state),
-        format!("TEMP {} AC {}", temperature, ac),
+    let battery_label = percent_label(&battery_level);
+    let mode_label = if state.mode == "ACTIVE" {
+        String::new()
+    } else {
+        pretty_value(state.mode)
+    };
+    let header = format!(
+        "{}|{}|{}|{}|{}|{}",
+        battery_label,
+        pretty_value(&wifi_state),
+        pretty_value(usb_connected),
+        pretty_value(adb),
+        mode_label,
+        short_clock()
+    );
+
+    if state.page == UiPage::Home {
+        return vec![
+            header,
+            "PRS-T1 Native Shell".into(),
+            "Tap status for details".into(),
+        ];
+    }
+
+    let mut lines = vec![header, "Details / Settings".into()];
+    lines.extend([
+        "Power".into(),
         format!(
-            "USB {} ADB {}",
-            usb,
-            if status.adb.process_running {
-                "RUN"
-            } else {
-                "STOP"
-            }
+            "Battery {}  {}",
+            percent_label(&battery_level),
+            pretty_value(&battery_state)
         ),
-        format!("WAKE HELD {}", if wake_lock_held { "YES" } else { "NO" }),
         format!(
-            "WIFI {} {}",
-            status.wifi.interface.to_ascii_uppercase(),
-            wifi_state
+            "Health {}  Voltage {}",
+            pretty_value(&uppercase_or_unknown(status.battery.health.as_deref())),
+            voltage_label(status.battery.voltage_uv)
         ),
-        format!("SUPP {}", supplicant),
         format!(
-            "DATA {}K FREE",
+            "Temperature {} C  AC {}  USB {}",
+            temperature,
+            pretty_value(ac),
+            pretty_value(usb_power)
+        ),
+        "Connectivity".into(),
+        format!(
+            "WiFi {} {}",
+            status.wifi.interface.to_ascii_lowercase(),
+            pretty_value(&wifi_state)
+        ),
+        format!("Supplicant {}", pretty_value(&supplicant)),
+        format!(
+            "USB {}  Gadget {}",
+            pretty_value(usb_connected),
+            pretty_value(&uppercase_or_unknown(status.usb.gadget_state.as_deref()))
+        ),
+        format!(
+            "USB functions {}",
+            pretty_value(&uppercase_or_unknown(
+                status.usb.gadget_functions.as_deref()
+            ))
+        ),
+        format!(
+            "ADB process {}  Service {}",
+            pretty_value(adb),
+            pretty_value(&uppercase_or_unknown(status.adb.service_state.as_deref()))
+        ),
+        "System".into(),
+        format!(
+            "Framebuffer {}  Rotate {}",
+            pretty_value(framebuffer),
+            number_or_unknown(status.screen.rotate)
+        ),
+        format!(
+            "Android: zygote {}  dispd {}",
+            pretty_value(zygote),
+            pretty_value(dispd)
+        ),
+        format!(
+            "Wake lock {}",
+            pretty_value(if wake_lock_held { "yes" } else { "no" })
+        ),
+        format!("Date {}", date_time()),
+        "Storage".into(),
+        format!(
+            "Data {} KiB free",
             number_or_unknown(status.storage.data.available_kib)
         ),
         format!(
-            "SD {}K FREE",
+            "SD card {} KiB free",
             number_or_unknown(status.storage.sdcard.available_kib)
         ),
+        "Input".into(),
         coordinates,
         touch,
-        format!("TOUCH EVENTS {}", state.touch_events),
+        format!("Touch events {}", state.touch_events),
         key,
-        format!("KEY EVENTS {}", state.key_events),
+        format!("Key events {}", state.key_events),
         format!(
-            "FB {} ROT {}",
-            framebuffer,
-            number_or_unknown(status.screen.rotate)
+            "Power last {}",
+            state
+                .last_power_duration_ms
+                .map(|duration| format!("{}ms", duration))
+                .unwrap_or_else(|| "none".into())
         ),
-        format!("ZYGOTE {} DISP {}", zygote, dispd),
-        power,
-        state.message.clone(),
-    ]
+    ]);
+    lines
+}
+
+fn short_clock() -> String {
+    Command::new("/system/bin/date")
+        .arg("+%H:%M")
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "--:--".into())
+}
+
+fn date_time() -> String {
+    Command::new("/system/bin/date")
+        .arg("+%d %b %Y %H:%M")
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "Unknown".into())
+}
+
+fn percent_label(value: &str) -> String {
+    if value == "UNKNOWN" {
+        "Unknown".into()
+    } else {
+        format!("{value}%")
+    }
+}
+
+fn voltage_label(value: Option<i64>) -> String {
+    value
+        .map(|microvolts| {
+            let whole = microvolts / 1_000_000;
+            let fractional = (microvolts.abs() % 1_000_000) / 10_000;
+            format!("{whole}.{fractional:02} V")
+        })
+        .unwrap_or_else(|| "Unknown".into())
 }
 
 fn display_error(stage: &str, error: io::Error) -> io::Error {
@@ -404,8 +521,8 @@ fn sleep_cycle(
 ) -> io::Result<()> {
     state.mode = "SLEEPING";
     state.message = match suspend_mode {
-        SuspendMode::EInk => "EINK STANDBY MODE",
-        SuspendMode::Normal => "NORMAL MEM MODE",
+        SuspendMode::EInk => "E-ink standby mode",
+        SuspendMode::Normal => "Normal mem mode",
     }
     .into();
     eprintln!("standalone-test: drawing pre-suspend screen");
@@ -448,7 +565,7 @@ fn sleep_cycle(
 
     state.mode = "ACTIVE";
     state.refresh_status();
-    state.message = format!("WOKE AFTER {suspend_elapsed_ms}MS");
+    state.message = format!("Woke after {suspend_elapsed_ms}ms");
     state.last_power_duration_ms = None;
     state.ignore_power_until = Some(Instant::now() + Duration::from_secs(2));
     redraw(display, state, wake_lock.is_held(), DirtyArea::Full)
@@ -656,6 +773,24 @@ fn number_or_unknown(value: Option<i64>) -> String {
         .unwrap_or_else(|| "UNKNOWN".into())
 }
 
+fn pretty_value(value: &str) -> String {
+    let mut characters = value.chars();
+    let Some(first) = characters.next() else {
+        return String::new();
+    };
+    std::iter::once(first.to_ascii_uppercase())
+        .chain(characters.flat_map(|character| character.to_lowercase()))
+        .collect()
+}
+
+fn pretty_event_name(value: &str) -> String {
+    value
+        .split('_')
+        .map(pretty_value)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn run_power_state_helper(state: &str) -> io::Result<()> {
     let status = Command::new(POWER_STATE_HELPER).arg(state).status()?;
     if status.success() {
@@ -676,6 +811,18 @@ fn request_reboot() -> io::Result<()> {
         Err(io::Error::new(
             io::ErrorKind::Other,
             format!("reboot command exited with {status}"),
+        ))
+    }
+}
+
+fn request_poweroff() -> io::Result<()> {
+    let status = Command::new("/system/bin/reboot").arg("-p").status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!("power-off command exited with {status}"),
         ))
     }
 }
@@ -788,14 +935,24 @@ enum PowerAction {
     None,
     Sleep,
     Reboot,
+    PowerOff,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum UiPage {
+    Home,
+    Details,
 }
 
 struct UiState {
+    page: UiPage,
     mode: &'static str,
     message: String,
     touch_seen: bool,
     touch_x: i32,
     touch_y: i32,
+    touch_down: bool,
+    touch_release_pending: bool,
     last_touch: Option<RawEvent>,
     last_key: Option<(InputSourceKind, RawEvent)>,
     touch_events: u64,
@@ -810,11 +967,14 @@ struct UiState {
 impl UiState {
     fn new() -> Self {
         Self {
+            page: UiPage::Home,
             mode: "ACTIVE",
-            message: "INPUT READY".into(),
+            message: "Input ready".into(),
             touch_seen: false,
             touch_x: 0,
             touch_y: 0,
+            touch_down: false,
+            touch_release_pending: false,
             last_touch: None,
             last_key: None,
             touch_events: 0,
@@ -847,16 +1007,63 @@ impl UiState {
     ) -> (Option<DirtyArea>, PowerAction) {
         if source == InputSourceKind::Touch {
             self.last_touch = Some(event);
-            if event.event_type == EVENT_ABS && matches!(event.code, ABS_X | ABS_MT_POSITION_X) {
-                self.touch_x = event.value;
-                self.touch_seen = true;
+            if event.event_type == EVENT_ABS {
+                match event.code {
+                    ABS_MT_POSITION_X => {
+                        self.touch_x = event.value;
+                        self.touch_seen = true;
+                    }
+                    ABS_MT_POSITION_Y => {
+                        self.touch_y = event.value;
+                        self.touch_seen = true;
+                    }
+                    // The T1's legacy compatibility axes are physically
+                    // oriented 800x600 while the framebuffer is 600x800.
+                    // Normalize them to screen x/y before hit testing.
+                    ABS_X => {
+                        self.touch_y = event.value;
+                        self.touch_seen = true;
+                    }
+                    ABS_Y => {
+                        self.touch_x = event.value;
+                        self.touch_seen = true;
+                    }
+                    _ => {}
+                }
             }
-            if event.event_type == EVENT_ABS && matches!(event.code, ABS_Y | ABS_MT_POSITION_Y) {
-                self.touch_y = event.value;
-                self.touch_seen = true;
+            if event.event_type == EVENT_KEY && event.code == BTN_TOUCH {
+                if event.value != 0 {
+                    self.touch_down = true;
+                } else if self.touch_down {
+                    self.touch_down = false;
+                    let action = self.activate_tap();
+                    return (Some(DirtyArea::Full), action);
+                }
+            }
+            if event.event_type == EVENT_ABS && event.code == ABS_MT_TOUCH_MAJOR {
+                if event.value > 0 {
+                    self.touch_down = true;
+                    self.touch_release_pending = false;
+                } else if self.touch_down {
+                    self.touch_release_pending = true;
+                }
+            }
+            if event.event_type == EVENT_ABS && event.code == ABS_MT_TRACKING_ID {
+                if event.value >= 0 {
+                    self.touch_down = true;
+                    self.touch_release_pending = false;
+                } else if self.touch_down {
+                    self.touch_release_pending = true;
+                }
             }
             if event.event_type == EVENT_SYN && event.code == SYN_REPORT {
                 self.touch_events += 1;
+                if self.touch_release_pending {
+                    self.touch_down = false;
+                    self.touch_release_pending = false;
+                    let action = self.activate_tap();
+                    return (Some(DirtyArea::Full), action);
+                }
                 return (Some(DirtyArea::Touch), PowerAction::None);
             }
             return (None, PowerAction::None);
@@ -886,6 +1093,52 @@ impl UiState {
         (None, PowerAction::None)
     }
 
+    fn activate_tap(&mut self) -> PowerAction {
+        let y = self.touch_y;
+        if y < display::STATUS_BAR_HEIGHT as i32 {
+            self.page = match self.page {
+                UiPage::Home => UiPage::Details,
+                UiPage::Details => UiPage::Home,
+            };
+            self.message = match self.page {
+                UiPage::Home => "Returned to reading".into(),
+                UiPage::Details => "Details open".into(),
+            };
+            return PowerAction::None;
+        }
+        if self.page != UiPage::Details {
+            return PowerAction::None;
+        }
+        let within_action_x = self.touch_x >= display::DETAILS_ACTION_MARGIN as i32
+            && self.touch_x
+                < (display::SCREEN_WIDTH.saturating_sub(display::DETAILS_ACTION_MARGIN)) as i32;
+        if !within_action_x {
+            return PowerAction::None;
+        }
+
+        let within_reboot_row = y >= display::DETAILS_REBOOT_TOP as i32
+            && y < (display::DETAILS_REBOOT_TOP + display::DETAILS_ACTION_HEIGHT) as i32;
+        if within_reboot_row {
+            self.message = "Reboot requested".into();
+            return PowerAction::Reboot;
+        }
+
+        let within_power_off_row = y >= display::DETAILS_POWER_OFF_TOP as i32
+            && y < (display::DETAILS_POWER_OFF_TOP + display::DETAILS_ACTION_HEIGHT) as i32;
+        if within_power_off_row {
+            self.message = "Power off requested".into();
+            return PowerAction::PowerOff;
+        }
+
+        let within_back_row = y >= display::DETAILS_BACK_TOP as i32
+            && y < (display::DETAILS_BACK_TOP + display::DETAILS_ACTION_HEIGHT) as i32;
+        if within_back_row {
+            self.page = UiPage::Home;
+            self.message = "Returned to reading".into();
+        }
+        PowerAction::None
+    }
+
     fn observe_power(
         &mut self,
         source: InputSourceKind,
@@ -896,7 +1149,7 @@ impl UiState {
                 if event.value == 0 {
                     self.ignore_power_until = None;
                 }
-                self.message = "WAKE POWER IGNORED".into();
+                self.message = "Wake power ignored".into();
                 return (Some(DirtyArea::Power), PowerAction::None);
             }
             self.ignore_power_until = None;
@@ -906,7 +1159,7 @@ impl UiState {
                 if self.power_press_us.is_none() {
                     self.power_press_us = Some(event.timestamp_micros());
                 }
-                self.message = "POWER HELD".into();
+                self.message = "Power held".into();
                 (Some(DirtyArea::Power), PowerAction::None)
             }
             0 => {
@@ -917,7 +1170,7 @@ impl UiState {
                     .unwrap_or_default();
                 self.last_power_duration_ms = Some(duration / 1_000);
                 if duration >= LONG_PRESS_MICROS {
-                    self.message = "LONG POWER - REBOOT".into();
+                    self.message = "Long power - reboot".into();
                     eprintln!(
                         "standalone-test: power release source={} duration_ms={} action=REBOOT",
                         source.label(),
@@ -925,7 +1178,7 @@ impl UiState {
                     );
                     (Some(DirtyArea::Power), PowerAction::Reboot)
                 } else {
-                    self.message = "SHORT POWER - SLEEP".into();
+                    self.message = "Short power - sleep".into();
                     eprintln!(
                         "standalone-test: power release source={} duration_ms={} action=SLEEP",
                         source.label(),
@@ -935,7 +1188,7 @@ impl UiState {
                 }
             }
             2 => {
-                self.message = "POWER REPEAT".into();
+                self.message = "Power repeat".into();
                 (Some(DirtyArea::Power), PowerAction::None)
             }
             _ => (Some(DirtyArea::Power), PowerAction::None),
@@ -945,7 +1198,22 @@ impl UiState {
 
 #[cfg(test)]
 mod tests {
-    use super::SuspendMode;
+    use super::{
+        InputSourceKind, SuspendMode, UiPage, UiState, ABS_MT_POSITION_X, ABS_MT_POSITION_Y,
+        ABS_MT_TOUCH_MAJOR, ABS_MT_TRACKING_ID, ABS_X, ABS_Y, BTN_TOUCH, EVENT_ABS, EVENT_KEY,
+        EVENT_SYN, SYN_REPORT,
+    };
+    use crate::input::RawEvent;
+
+    fn event(code: u16, value: i32, timestamp_micros: u64) -> RawEvent {
+        RawEvent {
+            sec: (timestamp_micros / 1_000_000) as u32,
+            usec: (timestamp_micros % 1_000_000) as u32,
+            event_type: EVENT_KEY,
+            code,
+            value,
+        }
+    }
 
     #[test]
     fn parses_supported_suspend_modes() {
@@ -956,5 +1224,113 @@ mod tests {
     #[test]
     fn rejects_unknown_suspend_mode() {
         assert!(SuspendMode::parse("on").is_err());
+    }
+
+    #[test]
+    fn top_bar_tap_opens_and_closes_details() {
+        let mut state = UiState::new();
+        state.touch_x = 100;
+        state.touch_y = 20;
+        state.touch_down = true;
+
+        let (_, action) = state.observe(InputSourceKind::Touch, event(BTN_TOUCH, 0, 1_000_000));
+        assert_eq!(action, super::PowerAction::None);
+        assert_eq!(state.page, UiPage::Details);
+
+        state.touch_down = true;
+        let _ = state.observe(InputSourceKind::Touch, event(BTN_TOUCH, 0, 2_000_000));
+        assert_eq!(state.page, UiPage::Home);
+    }
+
+    #[test]
+    fn active_mode_is_hidden_from_status_bar() {
+        let state = UiState::new();
+        let lines = super::screen_lines(&state, true);
+        assert_eq!(lines[0].split('|').nth(4), Some(""));
+    }
+
+    #[test]
+    fn details_action_taps_return_power_actions() {
+        let mut state = UiState::new();
+        state.page = UiPage::Details;
+        state.touch_down = true;
+        state.touch_x = 100;
+        state.touch_y = super::display::DETAILS_REBOOT_TOP as i32 + 10;
+        let (_, action) = state.observe(InputSourceKind::Touch, event(BTN_TOUCH, 0, 1_000_000));
+        assert_eq!(action, super::PowerAction::Reboot);
+
+        state.touch_down = true;
+        state.touch_x = 400;
+        state.touch_y = super::display::DETAILS_POWER_OFF_TOP as i32 + 10;
+        let (_, action) = state.observe(InputSourceKind::Touch, event(BTN_TOUCH, 0, 2_000_000));
+        assert_eq!(action, super::PowerAction::PowerOff);
+
+        state.touch_down = true;
+        state.touch_y = super::display::DETAILS_BACK_TOP as i32 + 10;
+        let (_, action) = state.observe(InputSourceKind::Touch, event(BTN_TOUCH, 0, 3_000_000));
+        assert_eq!(action, super::PowerAction::None);
+        assert_eq!(state.page, UiPage::Home);
+
+        state.page = UiPage::Details;
+        state.touch_down = true;
+        state.touch_x = 10;
+        state.touch_y = super::display::DETAILS_BACK_TOP as i32 + 10;
+        let (_, action) = state.observe(InputSourceKind::Touch, event(BTN_TOUCH, 0, 4_000_000));
+        assert_eq!(action, super::PowerAction::None);
+        assert_eq!(state.page, UiPage::Details);
+    }
+
+    #[test]
+    fn legacy_touch_axes_are_normalized_and_tracking_release_activates_tap() {
+        let mut state = UiState::new();
+        state.page = UiPage::Details;
+
+        let mut axis_x = event(ABS_X, 770, 1_000_000);
+        axis_x.event_type = EVENT_ABS;
+        let mut axis_y = event(ABS_Y, 300, 1_000_001);
+        axis_y.event_type = EVENT_ABS;
+        let mut tracking_down = event(ABS_MT_TRACKING_ID, 7, 1_000_002);
+        tracking_down.event_type = EVENT_ABS;
+        let mut tracking_up = event(ABS_MT_TRACKING_ID, -1, 1_000_003);
+        tracking_up.event_type = EVENT_ABS;
+        let mut syn = event(SYN_REPORT, 0, 1_000_004);
+        syn.event_type = EVENT_SYN;
+
+        state.observe(InputSourceKind::Touch, axis_x);
+        state.observe(InputSourceKind::Touch, axis_y);
+        state.observe(InputSourceKind::Touch, tracking_down);
+        state.observe(InputSourceKind::Touch, tracking_up);
+        let (_, action) = state.observe(InputSourceKind::Touch, syn);
+
+        assert_eq!(state.touch_x, 300);
+        assert_eq!(state.touch_y, 770);
+        assert_eq!(action, super::PowerAction::None);
+        assert_eq!(state.page, UiPage::Home);
+    }
+
+    #[test]
+    fn touch_major_release_activates_tap_on_syn_report() {
+        let mut state = UiState::new();
+        state.page = UiPage::Details;
+
+        let mut position_y = event(ABS_MT_POSITION_Y, 770, 1_000_000);
+        position_y.event_type = EVENT_ABS;
+        let mut position_x = event(ABS_MT_POSITION_X, 300, 1_000_001);
+        position_x.event_type = EVENT_ABS;
+        let mut press = event(ABS_MT_TOUCH_MAJOR, 12, 1_000_002);
+        press.event_type = EVENT_ABS;
+        let mut release = event(ABS_MT_TOUCH_MAJOR, 0, 1_000_003);
+        release.event_type = EVENT_ABS;
+        let mut syn = event(SYN_REPORT, 0, 1_000_004);
+        syn.event_type = EVENT_SYN;
+
+        state.observe(InputSourceKind::Touch, position_y);
+        state.observe(InputSourceKind::Touch, position_x);
+        state.observe(InputSourceKind::Touch, press);
+        state.observe(InputSourceKind::Touch, release);
+        let (_, action) = state.observe(InputSourceKind::Touch, syn);
+
+        assert_eq!(action, super::PowerAction::None);
+        assert_eq!(state.page, UiPage::Home);
     }
 }

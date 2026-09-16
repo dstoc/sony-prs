@@ -1,9 +1,36 @@
 use crate::framebuffer::{DisplayCanvas, DisplayRegion, NativeDisplay, WaveformMode};
+use embedded_graphics::mono_font::{
+    ascii::{FONT_10X20, FONT_8X13, FONT_8X13_BOLD},
+    MonoTextStyle,
+};
+use embedded_graphics::pixelcolor::{Rgb565, RgbColor};
+use embedded_graphics::prelude::*;
+use embedded_graphics::text::{Baseline, Text};
+use std::convert::Infallible;
 
 const BLACK: u16 = 0x0000;
 const WHITE: u16 = 0xffff;
-const SCALE: usize = 3;
-const CELL_WIDTH: usize = 6 * SCALE;
+
+pub const STATUS_BAR_HEIGHT: usize = 48;
+pub const CONTENT_TOP: usize = 76;
+pub const CONTENT_LINE_STEP: usize = 25;
+pub const DETAILS_LINE_STEP: usize = 21;
+pub const DETAILS_ACTION_MARGIN: usize = 24;
+pub const DETAILS_REBOOT_TOP: usize = 616;
+pub const DETAILS_POWER_OFF_TOP: usize = 674;
+pub const DETAILS_BACK_TOP: usize = 732;
+pub const DETAILS_ACTION_HEIGHT: usize = 48;
+pub const SCREEN_WIDTH: usize = 600;
+
+const STATUS_BAR_SIDE_MARGIN: usize = 16;
+const STATUS_BAR_CLOCK_WIDTH: usize = 96;
+const STATUS_ICON_GAP: usize = 4;
+const STATUS_MODE_WIDTH: usize = 96;
+const BATTERY_ICON: &[u8] = include_bytes!("../assets/battery-20x20.bin");
+const WIFI_ICON: &[u8] = include_bytes!("../assets/wifi-20x20.bin");
+const USB_ICON: &[u8] = include_bytes!("../assets/usb-20x20.bin");
+const ADB_ICON: &[u8] = include_bytes!("../assets/adb-20x20.bin");
+const CLOCK_ICON: &[u8] = include_bytes!("../assets/clock-20x20.bin");
 
 pub fn draw_screen(
     display: &mut NativeDisplay,
@@ -24,30 +51,38 @@ pub fn draw_screen(
 }
 
 fn draw_screen_contents(canvas: &mut DisplayCanvas<'_>, lines: &[String]) {
-    draw_pattern(canvas);
-    let positions = [
-        (24, 20),
-        (24, 50),
-        (28, 93),
-        (28, 121),
-        (28, 149),
-        (28, 177),
-        (28, 211),
-        (28, 239),
-        (28, 267),
-        (28, 295),
-        (28, 359),
-        (28, 387),
-        (28, 415),
-        (28, 443),
-        (28, 471),
-        (28, 527),
-        (28, 555),
-        (28, 583),
-        (28, 611),
-    ];
-    for (line, &(x, y)) in lines.iter().zip(positions.iter()) {
-        draw_text(canvas, x, y, line);
+    canvas.fill(WHITE);
+    draw_status_bar(canvas, lines);
+
+    let details = lines
+        .get(1)
+        .is_some_and(|line| line == "Details / Settings");
+    let line_step = if details {
+        DETAILS_LINE_STEP
+    } else {
+        CONTENT_LINE_STEP
+    };
+    for (index, line) in lines.iter().skip(1).enumerate() {
+        let y = CONTENT_TOP.saturating_add(index.saturating_mul(line_step));
+        if details {
+            if index == 0 {
+                draw_text_font(canvas, 24, y, line, &FONT_10X20, Rgb565::BLACK);
+            } else if is_section_heading(line) {
+                draw_section_heading(canvas, y, line);
+            } else {
+                draw_text(canvas, 24, y, line);
+            }
+        } else {
+            if index == 0 {
+                draw_text_centered_font(canvas, y, line, &FONT_10X20, Rgb565::BLACK);
+            } else {
+                draw_text_centered(canvas, y, line, Rgb565::BLACK);
+            }
+        }
+    }
+
+    if details {
+        draw_details_actions(canvas);
     }
 }
 
@@ -67,177 +102,232 @@ fn render_screen(lines: &[String], width: usize, height: usize) -> Vec<u8> {
     image
 }
 
-fn draw_pattern(canvas: &mut DisplayCanvas<'_>) {
-    canvas.fill(WHITE);
+fn draw_status_bar(canvas: &mut DisplayCanvas<'_>, lines: &[String]) {
     let width = canvas.width();
-    let height = canvas.height();
-    canvas.stroke_rect(
-        4,
-        4,
-        width.saturating_sub(8),
-        height.saturating_sub(8),
-        BLACK,
-    );
-    canvas.stroke_rect(16, 80, width.saturating_sub(32), 124, BLACK);
-    canvas.stroke_rect(16, 208, width.saturating_sub(32), 122, BLACK);
-    canvas.stroke_rect(16, 346, width.saturating_sub(32), 152, BLACK);
-    canvas.stroke_rect(16, 514, width.saturating_sub(32), 124, BLACK);
+    canvas.fill_rect(0, 0, width, STATUS_BAR_HEIGHT, BLACK);
 
-    for (index, x) in (20..width.saturating_sub(20)).step_by(40).enumerate() {
-        if index % 2 == 0 {
-            canvas.fill_rect(x, height.saturating_sub(42), 20, 24, BLACK);
+    let Some(line) = lines.first() else {
+        return;
+    };
+    let fields = line.split('|').collect::<Vec<_>>();
+    let side_margin = STATUS_BAR_SIDE_MARGIN.min(width / 2);
+    let clock_width = STATUS_BAR_CLOCK_WIDTH.min(width.saturating_sub(side_margin * 2));
+    let clock_left = width.saturating_sub(side_margin + clock_width);
+    let mut left = side_margin;
+
+    if let Some(value) = fields.first().copied() {
+        left = left.saturating_add(draw_status_value(canvas, left, value, BATTERY_ICON));
+        left = left.saturating_add(8);
+    }
+    for (index, sprite) in [(1, WIFI_ICON), (2, USB_ICON), (3, ADB_ICON)] {
+        if let Some(value) = fields.get(index).copied() {
+            if status_icon_is_on(value) {
+                draw_icon_sprite(canvas, left, 14, sprite);
+                left = left.saturating_add(20 + STATUS_ICON_GAP);
+            }
         }
     }
-    canvas.hline(
-        20,
-        height.saturating_sub(12),
-        width.saturating_sub(40),
-        BLACK,
-    );
-    draw_target(canvas, width.saturating_sub(44), 92);
-    draw_target(canvas, 28, height.saturating_sub(60));
-    draw_target(canvas, width.saturating_sub(44), height.saturating_sub(60));
-}
 
-fn draw_target(canvas: &mut DisplayCanvas<'_>, x: usize, y: usize) {
-    canvas.stroke_rect(x, y, 16, 16, BLACK);
-    canvas.hline(x.saturating_sub(6), y + 8, 28, BLACK);
-    canvas.vline(x + 8, y.saturating_sub(6), 28, BLACK);
-}
-
-fn draw_text(canvas: &mut DisplayCanvas<'_>, x: usize, y: usize, text: &str) {
-    for (index, character) in text.chars().enumerate() {
-        draw_glyph(canvas, x + index * CELL_WIDTH, y, character);
+    if let Some(value) = fields.get(4).copied() {
+        if !value.is_empty() {
+            let mode_left = clock_left.saturating_sub(STATUS_MODE_WIDTH + 16);
+            draw_text_centered_in_rect_font(
+                canvas,
+                mode_left,
+                0,
+                STATUS_MODE_WIDTH,
+                STATUS_BAR_HEIGHT,
+                value,
+                &FONT_8X13_BOLD,
+                Rgb565::WHITE,
+            );
+        }
+    }
+    if let Some(value) = fields.get(5).copied() {
+        draw_status_value(canvas, clock_left, value, CLOCK_ICON);
     }
 }
 
-fn draw_glyph(canvas: &mut DisplayCanvas<'_>, x: usize, y: usize, character: char) {
-    let glyph = glyph(character);
-    for (row, bits) in glyph.iter().enumerate() {
-        for column in 0..5 {
-            if bits & (1 << (4 - column)) != 0 {
-                canvas.fill_rect(x + column * SCALE, y + row * SCALE, SCALE, SCALE, BLACK);
+fn draw_status_value(
+    canvas: &mut DisplayCanvas<'_>,
+    left: usize,
+    value: &str,
+    sprite: &[u8],
+) -> usize {
+    let icon_width = 20;
+    let gap = 6;
+    let style = MonoTextStyle::new(&FONT_8X13_BOLD, Rgb565::WHITE);
+    let measured = Text::with_baseline(value, Point::zero(), style, Baseline::Top);
+    let text_width = measured.bounding_box().size.width as usize;
+    let text_y = (STATUS_BAR_HEIGHT.saturating_sub(13)) / 2;
+    draw_icon_sprite(canvas, left, 14, sprite);
+    draw_text_font(
+        canvas,
+        left.saturating_add(icon_width + gap),
+        text_y,
+        value,
+        &FONT_8X13_BOLD,
+        Rgb565::WHITE,
+    );
+    icon_width + gap + text_width
+}
+
+fn draw_icon_sprite(canvas: &mut DisplayCanvas<'_>, left: usize, top: usize, sprite: &[u8]) {
+    for y in 0..20 {
+        for x in 0..20 {
+            let byte = sprite[y * 3 + x / 8];
+            if byte & (0x80 >> (x % 8)) != 0 {
+                canvas.set_pixel(left.saturating_add(x), top.saturating_add(y), WHITE);
             }
         }
     }
 }
 
-fn glyph(character: char) -> [u8; 7] {
-    match character {
-        'A' => [
-            0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001,
-        ],
-        'B' => [
-            0b11110, 0b10001, 0b10001, 0b11110, 0b10001, 0b10001, 0b11110,
-        ],
-        'C' => [
-            0b01111, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b01111,
-        ],
-        'D' => [
-            0b11110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b11110,
-        ],
-        'E' => [
-            0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111,
-        ],
-        'F' => [
-            0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000,
-        ],
-        'G' => [
-            0b01111, 0b10000, 0b10000, 0b10111, 0b10001, 0b10001, 0b01111,
-        ],
-        'H' => [
-            0b10001, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001,
-        ],
-        'I' => [
-            0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b11111,
-        ],
-        'J' => [
-            0b00111, 0b00010, 0b00010, 0b00010, 0b10010, 0b10010, 0b01100,
-        ],
-        'K' => [
-            0b10001, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010, 0b10001,
-        ],
-        'L' => [
-            0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111,
-        ],
-        'M' => [
-            0b10001, 0b11011, 0b10101, 0b10101, 0b10001, 0b10001, 0b10001,
-        ],
-        'N' => [
-            0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001, 0b10001,
-        ],
-        'O' => [
-            0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110,
-        ],
-        'P' => [
-            0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000,
-        ],
-        'Q' => [
-            0b01110, 0b10001, 0b10001, 0b10001, 0b10101, 0b10010, 0b01101,
-        ],
-        'R' => [
-            0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001,
-        ],
-        'S' => [
-            0b01111, 0b10000, 0b10000, 0b01110, 0b00001, 0b00001, 0b11110,
-        ],
-        'T' => [
-            0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100,
-        ],
-        'U' => [
-            0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110,
-        ],
-        'V' => [
-            0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01010, 0b00100,
-        ],
-        'W' => [
-            0b10001, 0b10001, 0b10001, 0b10101, 0b10101, 0b11011, 0b10001,
-        ],
-        'X' => [
-            0b10001, 0b10001, 0b01010, 0b00100, 0b01010, 0b10001, 0b10001,
-        ],
-        'Y' => [
-            0b10001, 0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b00100,
-        ],
-        'Z' => [
-            0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b11111,
-        ],
-        '0' => [
-            0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110,
-        ],
-        '1' => [
-            0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110,
-        ],
-        '2' => [
-            0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b01000, 0b11111,
-        ],
-        '3' => [
-            0b11110, 0b00001, 0b00001, 0b01110, 0b00001, 0b00001, 0b11110,
-        ],
-        '4' => [
-            0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010,
-        ],
-        '5' => [
-            0b11111, 0b10000, 0b10000, 0b11110, 0b00001, 0b00001, 0b11110,
-        ],
-        '6' => [
-            0b01110, 0b10000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110,
-        ],
-        '7' => [
-            0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000,
-        ],
-        '8' => [
-            0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110,
-        ],
-        '9' => [
-            0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00001, 0b01110,
-        ],
-        ':' => [0, 0b00100, 0, 0, 0b00100, 0, 0],
-        '-' => [0, 0, 0, 0b11111, 0, 0, 0],
-        '/' => [0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0, 0],
-        '.' => [0, 0, 0, 0, 0, 0b00110, 0b00110],
-        '_' => [0, 0, 0, 0, 0, 0, 0b11111],
-        _ => [0; 7],
+fn status_icon_is_on(value: &str) -> bool {
+    matches!(value.to_ascii_lowercase().as_str(), "on" | "up" | "running")
+}
+
+fn is_section_heading(line: &str) -> bool {
+    matches!(
+        line,
+        "Power" | "Connectivity" | "System" | "Storage" | "Input"
+    )
+}
+
+fn draw_section_heading(canvas: &mut DisplayCanvas<'_>, y: usize, text: &str) {
+    draw_text_font(canvas, 24, y, text, &FONT_8X13_BOLD, Rgb565::BLACK);
+    canvas.fill_rect(
+        24,
+        y.saturating_add(15),
+        canvas.width().saturating_sub(48),
+        1,
+        BLACK,
+    );
+}
+
+fn draw_details_actions(canvas: &mut DisplayCanvas<'_>) {
+    let margin = DETAILS_ACTION_MARGIN;
+    let width = canvas.width();
+    let button_width = width.saturating_sub(margin * 2);
+    for (top, label) in [
+        (DETAILS_REBOOT_TOP, "Reboot"),
+        (DETAILS_POWER_OFF_TOP, "Power off"),
+        (DETAILS_BACK_TOP, "Back to reading"),
+    ] {
+        canvas.stroke_rect(margin, top, button_width, DETAILS_ACTION_HEIGHT, BLACK);
+        draw_text_centered_in_rect(
+            canvas,
+            margin,
+            top,
+            button_width,
+            DETAILS_ACTION_HEIGHT,
+            label,
+            Rgb565::BLACK,
+        );
+    }
+}
+
+fn draw_text(canvas: &mut DisplayCanvas<'_>, x: usize, y: usize, text: &str) {
+    draw_text_font(canvas, x, y, text, &FONT_8X13, Rgb565::BLACK);
+}
+
+fn draw_text_font(
+    canvas: &mut DisplayCanvas<'_>,
+    x: usize,
+    y: usize,
+    text: &str,
+    font: &'static embedded_graphics::mono_font::MonoFont<'static>,
+    color: Rgb565,
+) {
+    let style = MonoTextStyle::new(font, color);
+    Text::with_baseline(text, Point::new(x as i32, y as i32), style, Baseline::Top)
+        .draw(canvas)
+        .expect("RGB565 framebuffer drawing is infallible");
+}
+
+fn draw_text_centered(canvas: &mut DisplayCanvas<'_>, y: usize, text: &str, color: Rgb565) {
+    draw_text_centered_font(canvas, y, text, &FONT_8X13, color);
+}
+
+fn draw_text_centered_font(
+    canvas: &mut DisplayCanvas<'_>,
+    y: usize,
+    text: &str,
+    font: &'static embedded_graphics::mono_font::MonoFont<'static>,
+    color: Rgb565,
+) {
+    let style = MonoTextStyle::new(font, color);
+    let measured = Text::with_baseline(text, Point::zero(), style, Baseline::Top);
+    let text_width = measured.bounding_box().size.width as usize;
+    let x = canvas.width().saturating_sub(text_width) / 2;
+    measured
+        .translate(Point::new(x as i32, y as i32))
+        .draw(canvas)
+        .expect("RGB565 framebuffer drawing is infallible");
+}
+
+fn draw_text_centered_in_rect(
+    canvas: &mut DisplayCanvas<'_>,
+    left: usize,
+    top: usize,
+    width: usize,
+    height: usize,
+    text: &str,
+    color: Rgb565,
+) {
+    draw_text_centered_in_rect_font(
+        canvas,
+        left,
+        top,
+        width,
+        height,
+        text,
+        &FONT_8X13_BOLD,
+        color,
+    );
+}
+
+fn draw_text_centered_in_rect_font(
+    canvas: &mut DisplayCanvas<'_>,
+    left: usize,
+    top: usize,
+    width: usize,
+    height: usize,
+    text: &str,
+    font: &'static embedded_graphics::mono_font::MonoFont<'static>,
+    color: Rgb565,
+) {
+    let style = MonoTextStyle::new(font, color);
+    let measured = Text::with_baseline(text, Point::zero(), style, Baseline::Top);
+    let bounds = measured.bounding_box();
+    let x = left.saturating_add(width.saturating_sub(bounds.size.width as usize) / 2);
+    let y = top.saturating_add(height.saturating_sub(bounds.size.height as usize) / 2);
+    measured
+        .translate(Point::new(x as i32, y as i32))
+        .draw(canvas)
+        .expect("RGB565 framebuffer drawing is infallible");
+}
+
+impl OriginDimensions for DisplayCanvas<'_> {
+    fn size(&self) -> Size {
+        Size::new(self.width() as u32, self.height() as u32)
+    }
+}
+
+impl DrawTarget for DisplayCanvas<'_> {
+    type Color = Rgb565;
+    type Error = Infallible;
+
+    fn draw_iter<I>(&mut self, pixels: I) -> Result<(), Self::Error>
+    where
+        I: IntoIterator<Item = Pixel<Self::Color>>,
+    {
+        for Pixel(point, color) in pixels {
+            if point.x >= 0 && point.y >= 0 {
+                self.set_pixel(point.x as usize, point.y as usize, color.into_storage());
+            }
+        }
+        Ok(())
     }
 }
 
@@ -247,17 +337,17 @@ mod tests {
 
     #[test]
     fn standby_screen_is_unpadded_rgb565() {
-        let image = standby_screen(&[], 40, 40);
+        let image = standby_screen(&[], 100, 100);
 
-        assert_eq!(image.len(), 40 * 40 * 2);
-        let interior_offset = (1 * 40 + 1) * 2;
+        assert_eq!(image.len(), 100 * 100 * 2);
+        let body_offset = (70 * 100 + 1) * 2;
         assert_eq!(
-            &image[interior_offset..interior_offset + 2],
+            &image[body_offset..body_offset + 2],
             &0xffffu16.to_ne_bytes()
         );
-        let border_offset = (4 * 40 + 4) * 2;
+        let header_offset = (1 * 100 + 1) * 2;
         assert_eq!(
-            &image[border_offset..border_offset + 2],
+            &image[header_offset..header_offset + 2],
             &0u16.to_ne_bytes()
         );
     }
