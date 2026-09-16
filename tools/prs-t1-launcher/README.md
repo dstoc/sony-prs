@@ -8,6 +8,9 @@ detaches from the Activity's streams and invokes the native agent's privileged
 handoff mode. The agent creates a new session before stopping the Android
 framework, then enters the native runtime.
 
+For complete host toolchain, APK build, and installation instructions, see
+[build.md](build.md).
+
 The handoff script and ARM binary both live in `/data/local/tmp`; the `nosuid`
 mount option on `/data` does not prevent an already-root `su` process from
 executing them. The agent must create a new session before stopping zygote:

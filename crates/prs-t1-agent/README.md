@@ -11,6 +11,9 @@ Android process/service inspection, evdev capability inspection, a bounded
 reversible render test, and a full-screen native shell with power/input
 handling. Replacing Android at boot is not part of this milestone.
 
+For host toolchain, cross-build, and deployment instructions, see
+[build.md](build.md).
+
 ## Design goal
 
 Run a small native process on the rooted T1 which can:
