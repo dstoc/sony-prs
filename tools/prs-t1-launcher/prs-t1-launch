@@ -1,0 +1,33 @@
+#!/system/bin/sh
+
+AGENT=/data/local/tmp/prs-t1-agent
+LOG=/data/local/tmp/prs-t1-native-launch.log
+
+if [ ! -x "$AGENT" ]; then
+    echo "native agent is missing or not executable" > "$LOG"
+    exit 1
+fi
+
+# The child is detached from the Activity's standard streams before the
+# Android framework is stopped. It waits for zygote/system_server to disappear
+# and then execs the native runtime, which performs its own ownership checks.
+(
+    trap "" HUP
+    /system/bin/stop zygote
+    attempts=0
+    while [ "$attempts" -lt 15 ]; do
+        processes=`/system/bin/ps 2>/dev/null`
+        case "$processes" in
+            *zygote*|*system_server*)
+                /system/bin/sleep 1
+                attempts=$((attempts + 1))
+                ;;
+            *)
+                exec "$AGENT" standalone-test /dev/graphics/fb0 standby
+                ;;
+        esac
+    done
+    echo "zygote/system_server did not stop" > "$LOG"
+) </dev/null > "$LOG" 2>&1 &
+
+exit 0
