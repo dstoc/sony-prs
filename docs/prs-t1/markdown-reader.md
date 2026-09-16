@@ -102,7 +102,8 @@ the framebuffer origin later; no status-bar offset is stored in a page.
 `pagination::PageLayout` is the renderer input. Its ordered `DisplayList`
 contains positioned, non-semantic primitives:
 
-- `Text` carries a text run, its bounds, and common `TextStyle` metrics.
+- `Text` carries a text run, its bounds, common `TextStyle` metrics, and an
+  e-ink grayscale ink value.
 - `Fill` and `Border` express backgrounds and framed regions.
 - `Rule` expresses horizontal or vertical rules as a stroked rectangle.
 - `ImagePlaceholder` carries bounds, alternative text, and an optional source
@@ -129,6 +130,15 @@ Layout may therefore produce any combination of text, fills, borders, rules,
 and image placeholders for tables, quotes, or code blocks without teaching the
 renderer about Markdown blocks. Conversely, renderer code depends only on
 `PageLayout` and these generic styles and geometry types.
+
+Fenced code is highlighted before layout by `highlighting::SyntectHighlighter`.
+The build script serializes 16 selected language grammars plus plain text into
+a 7,551-byte packdump in the current build; the runtime does not parse grammar
+source files or load Syntect's unrestricted defaults. One Syntect state is kept
+through all source lines in a block, including lines that later land on
+different pages. `LayoutLine::wrapped` marks display continuations, and the
+paginator uses a separate light-gray continuation fill while retaining normal
+monospace text bounds and line-level page breaks.
 
 ## Deterministic pagination rules
 

@@ -5,11 +5,18 @@ edition = "2021"
 description = "Hardware-independent Markdown reading primitives for Sony PRS readers"
 license = "MIT OR Apache-2.0"
 publish = false
+build = "build.rs"
 
 [dependencies]
 comrak = { version = "0.55.0", default-features = false }
 embedded-graphics = { version = "0.8.2", default-features = false }
 fontdue = "0.9.4"
+syntect = { version = "5.3.0", default-features = false, features = ["parsing", "regex-fancy", "dump-load"] }
+
+[build-dependencies]
+# Build-time YAML loading creates the small selected grammar packdump. The
+# unrestricted default syntax package is never linked or embedded.
+syntect = { version = "5.3.0", default-features = false, features = ["parsing", "regex-fancy", "yaml-load", "dump-create"] }
 
 [dev-dependencies]
 notosans = "0.1.0"

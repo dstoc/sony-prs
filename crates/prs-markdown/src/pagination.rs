@@ -564,7 +564,11 @@ fn add_line(
     if kind == LayoutBlockKind::Code {
         page.push_command(DisplayCommand::Fill {
             bounds: translate(line.bounds, page_offset),
-            style: style.code_background,
+            style: if line.wrapped {
+                style.code_continuation_background
+            } else {
+                style.code_background
+            },
         });
     }
     for fragment in &line.fragments {
@@ -788,6 +792,7 @@ mod tests {
                             style: style.body,
                             link: None,
                         }],
+                        wrapped: false,
                     }],
                     anchor: None,
                 },
@@ -802,6 +807,7 @@ mod tests {
                             style: style.body,
                             link: None,
                         }],
+                        wrapped: false,
                     }],
                     anchor: None,
                 },
