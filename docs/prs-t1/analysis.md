@@ -1015,3 +1015,27 @@ After reboot, all 15 minimal-root package names were absent from
 `pm list packages -f`. `/system` was read-only again, ADB still provided a
 root shell, `/system/bin/su` remained setuid-root, and
 `/system/xbin/su` remained a symlink to it. Neither `su` path was modified.
+
+## Native long-press reboot test
+
+On 2026-09-16, the native runtime was launched after a clean reboot with the
+vendor display state explicitly forced to `on`; this avoids the normal Android
+idle timer entering standby before the native wake lock is acquired. The
+runtime reached its active loop with zygote and `system_server` stopped. An
+initial attempt to hold the power button while USB remained connected produced
+no input event. After USB was physically disconnected, the same test succeeded.
+
+The reader recorded the power transition from the sub-CPU source (`event4`):
+
+```text
+power event source=E4 value=1 timestamp_us=132553018 mode=ACTIVE
+power event source=E4 value=0 timestamp_us=136554709 mode=ACTIVE
+power release source=E4 duration_ms=4001 action=REBOOT
+```
+
+The reader rebooted normally. ADB returned and the post-reboot status showed
+`zygote`, `system_server`, `dispd`, and `adbd` running again. This validates the
+native long-press reboot escape route, and confirms that USB should be
+disconnected for physical power-button tests. Native short-press sleep/wake
+remains a separate unresolved test; a failed wake still requires the hardware
+reset button or a reboot performed while ADB is available.
