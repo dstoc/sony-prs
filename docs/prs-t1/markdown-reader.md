@@ -84,9 +84,9 @@ Each stage has a stable handoff:
    to a caller-selected origin, clips to the translated viewport, and submits
    fills, borders, rules, and antialiased glyph coverage. `Rgb888` is the
    renderer's intermediate color type; `embedded-graphics` converts it to the
-   target's pixel type, such as the T1 canvas's `Rgb565`. Image fragments are
-   currently rendered as deterministic placeholders until an image decoder
-   supplies image pixels.
+   target's pixel type, such as the T1 canvas's `Rgb565`. Loaded image
+   fragments carry bounded 8-bit grayscale rasters; the renderer maps those
+   pixels through the same generic draw-target boundary.
 5. The T1 agent compares or refreshes pixels using its existing framebuffer
    and EPDC policy. That final step is outside `prs-markdown`.
 
@@ -106,8 +106,9 @@ contains positioned, non-semantic primitives:
   e-ink grayscale ink value.
 - `Fill` and `Border` express backgrounds and framed regions.
 - `Rule` expresses horizontal or vertical rules as a stroked rectangle.
-- `ImagePlaceholder` carries bounds, alternative text, and an optional source
-  identifier until an image renderer is supplied.
+- `Image` carries a bounded grayscale raster, bounds, alternative text, and
+  its source identifier. `ImagePlaceholder` remains the visible fallback for
+  callers that construct a display list directly without decoded image data.
 
 `FillStyle`, `BorderStyle`, and `Color` are document presentation values, not
 device UI styling. The display list is ordered back-to-front, so a later
@@ -127,9 +128,9 @@ order, making the topmost overlapping region win deterministically. Regions
 are clipped when added through `PageLayout::add_hit_region`.
 
 Layout may therefore produce any combination of text, fills, borders, rules,
-and image placeholders for tables, quotes, or code blocks without teaching the
+and loaded images or alt-text fallbacks for Markdown blocks without teaching the
 renderer about Markdown blocks. Conversely, renderer code depends only on
-`PageLayout` and these generic styles and geometry types.
+`PageLayout` and these generic styles, geometry, and raster types.
 
 Fenced code is highlighted before layout by `highlighting::SyntectHighlighter`.
 The build script serializes 16 selected language grammars plus plain text into
@@ -166,10 +167,10 @@ The split policy is:
 - lists and block quotes may continue on another page at any line boundary.
   This permits an item or nested child to split when its lines cannot fit,
   while ordinary item boundaries remain natural layout-line boundaries;
-- thematic rules are atomic and are moved to the next page when they do not
-  fit. The current image placeholder is also kept atomic when it fits a fresh
-  page. An atomic block taller than a viewport uses a deterministic clipped
-  single-page fallback until a size-aware image layout is available;
+- thematic rules and standalone images are atomic and are moved to the next
+  page when they do not fit. Images are fitted to the content width and the
+  available page height before pagination, so an oversized source has a
+  deterministic, display-sized fallback rather than a retry/page-break loop;
 - code splits at layout-line boundaries. Tables split only before a complete
   row when the row fits a fresh page; every continuation page synthesizes the
   current group's header above the row without adding a second logical cursor
@@ -191,6 +192,7 @@ The crate exposes the module boundaries for the pipeline:
 | `document` | Owned semantic document IR. |
 | `parse` | Replaceable Markdown parser trait and parse errors. |
 | `resources` | Host-provided image/include/resource loading. |
+| `image` | Bounded PNG/JPEG/WebP decoding, grayscale conversion, and display-sized image retention. |
 | `style` | Caller-supplied style and font-independent metrics. |
 | `geometry` | Viewport-relative rectangles, translation, and clipping. |
 | `typography` | Fontdue-backed font loading, proportional measurement, styled wrapping, glyph positions, line metrics, and bounded raster caching. |
@@ -273,15 +275,27 @@ target does not open it or update history. The high-level reader chooses what
 to do with a document, anchor, asset, or external URL after resolution.
 
 The resource boundary remains intentionally extensible for future storage and
-image-decoding implementations. Its integration points should extend these
-boundaries instead of moving T1 hardware policy into the library.
+image-decoding implementations. `ImageResources` resolves Markdown image
+references from the containing document through `ResourceProvider`, supports
+PNG, JPEG, and WebP, reads dimensions before decoding, and converts the result
+to opaque 8-bit grayscale. The decoder enforces a transient source allocation
+limit and retained display rasters have a bounded byte budget; the decoded
+source is not retained. Alpha is composited against white. A device or archive
+provider can use the same interface without introducing T1 framebuffer policy
+into parsing or layout.
 
-Resource decoding, syntax highlighting, and pixel rasterization remain
-follow-up work. The layout stage now handles the core reader structures: it
+Missing, unsupported, corrupt, external, or over-budget images do not abort a
+document. Their alt text is laid out as visible `[image: …]` fallback text (or
+`[image unavailable]` when no alt text exists). Standalone images are atomic
+pagination units; inline images participate in their containing line, and all
+loaded imagery is scaled proportionally to the content width and available
+page area.
+
+The layout stage now handles the core reader structures: it
 recursively lays out paragraphs, headings, inline emphasis/strong/
 strikethrough/code, soft and hard breaks, ordered and unordered (including
 task) lists, nested lists, block quotes, rules, links, and readable
-placeholders for images and fully styled table cells. All line widths come from the configured
+images and fully styled table cells. All line widths come from the configured
 `TextMeasurer`; a `FontdueTextEngine` therefore supplies real font metrics.
 
 Layout returns the complete document in document coordinates. It exposes each
@@ -292,7 +306,8 @@ region per visible line portion.
 The deliberate visual deviations from browser/GitHub rendering are compact
 reader choices: soft breaks collapse to ordinary whitespace, long unbreakable
 words and URLs split at character boundaries, headings use one configured
-style with a compact level-size reduction, images are alt-text placeholders,
+style with a compact level-size reduction, images use decoded grayscale rasters
+when available and alt-text fallbacks otherwise,
 and block quotes use a configured vertical rule with e-reader indentation.
 Tables use a deterministic sizing pass: minimum widths come from unbreakable
 cell tokens and preferred widths come from normally wrapped cell content. The
@@ -325,7 +340,7 @@ coding and AI agents:
 
 | Construct | Reader behaviour |
 | --- | --- |
-| Headings, paragraphs, emphasis, strong, code spans, links, images, lists, quotes, and thematic breaks | First-class owned IR and layout. Images remain deterministic alt-text placeholders until an image decoder is supplied. |
+| Headings, paragraphs, emphasis, strong, code spans, links, images, lists, quotes, and thematic breaks | First-class owned IR and layout. Images use bounded grayscale rasters when supported and visible alt-text fallbacks otherwise. |
 | GFM task lists | Checked and unchecked markers render as readable `[x]` and `[ ]` list prefixes. There is no toggle action. |
 | GFM strikethrough | Content remains visible with its style bit and a one-pixel strike decoration in the display list. |
 | GFM autolinks | URL, `www`, and email autolinks become ordinary semantic links; external targets are returned to the host as actions. |
@@ -335,16 +350,16 @@ coding and AI agents:
 | TeX/MathML-style math when a Comrak math extension is enabled | The raw expression and delimiters are rendered as text. There is no TeX, MathML, or browser layout engine. |
 | Raw inline or block HTML | Never executed, interpreted, or styled. The original HTML source is rendered as ordinary readable text, so tags do not hide following Markdown. |
 | Comrak block directives when enabled | A labelled `[unsupported block directive: ...]` marker and converted child content are rendered inside the existing quote primitive. |
-| Tables | Rows remain readable pipe-separated lines until column layout exists. |
+| Tables | Rows use deterministic sized columns, alignment, borders, and readable continuation groups. |
 
 The matrix is deliberately explicit about fallback behaviour: unsupported
 specialist content is not silently discarded, and every fallback uses existing
 owned blocks, lines, and pagination boundaries. No second HTML/CSS/browser
 layout engine is part of this crate.
 
-The production typography/font backend, syntax highlighting, image decoding,
-and pixel rasterization remain follow-up work. Their integration points should
-extend these boundaries instead of moving T1 hardware policy into the library.
+The production typography/font backend and pixel rasterization remain
+independent concerns. Their integration points should extend these boundaries
+instead of moving T1 hardware policy into the library.
 
 ## Typography boundary
 

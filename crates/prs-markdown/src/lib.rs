@@ -16,6 +16,7 @@ pub mod document;
 pub mod geometry;
 pub mod harness;
 pub mod highlighting;
+pub mod image;
 pub mod layout;
 pub mod navigation;
 pub mod pagination;
@@ -36,10 +37,11 @@ pub use highlighting::{
     CodeHighlighter, HighlightSpan, HighlightedCode, HighlightedLine, SyntectHighlighter,
     SUPPORTED_LANGUAGES,
 };
+pub use image::{ImageResources, RasterImage, DEFAULT_RETAINED_BYTES, MAX_SOURCE_ALLOCATION};
 pub use layout::{
     ApproximateTextMeasurer, DocumentLayout, LayoutBlock, LayoutBlockKind, LayoutEngine,
-    LayoutFragment, LayoutLine, TableColumnGroup, TableColumnLayout, TableLayout, TableLayoutMode,
-    TableRowLayout, TextMeasurer,
+    LayoutFragment, LayoutImage, LayoutLine, TableColumnGroup, TableColumnLayout, TableLayout,
+    TableLayoutMode, TableRowLayout, TextMeasurer,
 };
 pub use navigation::{DocumentId, DocumentLocation, NavigationTarget, ReaderHistory};
 pub use pagination::{

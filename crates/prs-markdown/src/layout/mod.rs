@@ -10,6 +10,7 @@
 use crate::document::{Block, Inline, ListItem, Table, TaskState};
 pub use crate::geometry::Viewport;
 use crate::highlighting::{CodeHighlighter, SyntectHighlighter};
+use crate::image::{ImageResources, RasterImage};
 use crate::navigation::NavigationTarget;
 use crate::style::{ReaderStyle, TextStyle};
 use embedded_graphics::geometry::{Point, Size};
@@ -69,9 +70,30 @@ pub struct LayoutFragment {
     pub text: String,
     pub bounds: Rectangle,
     pub style: TextStyle,
+    /// A loaded raster image occupies this fragment's bounds. `text` is
+    /// empty for a loaded image; unavailable images are ordinary text
+    /// fragments containing their alt-text fallback.
+    pub image: Option<LayoutImage>,
     /// A linked span is repeated on every line containing its visible text.
     /// Pagination turns each fragment into a separate hit region.
     pub link: Option<NavigationTarget>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LayoutImage {
+    pub image: RasterImage,
+    pub source: String,
+    pub alt: String,
+}
+
+impl LayoutImage {
+    pub fn new(image: RasterImage, source: impl Into<String>, alt: impl Into<String>) -> Self {
+        Self {
+            image,
+            source: source.into(),
+            alt: alt.into(),
+        }
+    }
 }
 
 /// The sizing pass selected for a table. Grouped tables are continued
@@ -197,6 +219,18 @@ impl<M: TextMeasurer> LayoutEngine<M> {
         document: &crate::document::Document,
         viewport: Viewport,
     ) -> DocumentLayout {
+        self.layout_with_images(document, viewport, &ImageResources::default())
+    }
+
+    /// Lay out a document with display-sized images resolved by the caller's
+    /// resource layer. Image resolution remains outside Markdown parsing and
+    /// this engine still owns only generic page geometry.
+    pub fn layout_with_images(
+        &self,
+        document: &crate::document::Document,
+        viewport: Viewport,
+        images: &ImageResources,
+    ) -> DocumentLayout {
         let mut blocks = Vec::new();
         let mut cursor_y = self.style.page_padding.top as i32;
         let content_width = viewport.width.saturating_sub(
@@ -206,11 +240,23 @@ impl<M: TextMeasurer> LayoutEngine<M> {
                 .saturating_add(self.style.page_padding.right),
         );
         let content_x = self.style.page_padding.left as i32;
+        let image_height = viewport.height.saturating_sub(
+            self.style
+                .page_padding
+                .top
+                .saturating_add(self.style.page_padding.bottom),
+        );
 
         for block in document.blocks() {
             cursor_y = cursor_y.saturating_add(self.spacing_before(block));
-            let (layout_block, block_bottom) =
-                self.layout_block(block, cursor_y, content_x, content_width);
+            let (layout_block, block_bottom) = self.layout_block(
+                block,
+                cursor_y,
+                content_x,
+                content_width,
+                image_height,
+                images,
+            );
             cursor_y = block_bottom.saturating_add(self.spacing_after(block));
             blocks.push(layout_block);
         }
@@ -218,8 +264,17 @@ impl<M: TextMeasurer> LayoutEngine<M> {
         DocumentLayout { viewport, blocks }
     }
 
-    fn layout_block(&self, block: &Block, start_y: i32, x: i32, width: u32) -> (LayoutBlock, i32) {
-        let (kind, anchor, lines, table) = self.layout_content(block, start_y, x, width);
+    fn layout_block(
+        &self,
+        block: &Block,
+        start_y: i32,
+        x: i32,
+        width: u32,
+        image_height: u32,
+        images: &ImageResources,
+    ) -> (LayoutBlock, i32) {
+        let (kind, anchor, lines, table) =
+            self.layout_content(block, start_y, x, width, image_height, images);
         let bounds = block_bounds(&lines, x, start_y);
         let bottom = rect_bottom(&bounds);
         (
@@ -240,6 +295,8 @@ impl<M: TextMeasurer> LayoutEngine<M> {
         start_y: i32,
         x: i32,
         width: u32,
+        image_height: u32,
+        images: &ImageResources,
     ) -> (
         LayoutBlockKind,
         Option<String>,
@@ -254,41 +311,75 @@ impl<M: TextMeasurer> LayoutEngine<M> {
             } => (
                 LayoutBlockKind::Heading,
                 anchor.clone(),
-                self.inline_lines(content, self.heading_style(*level), start_y, x, width),
+                self.inline_lines_with_images(
+                    content,
+                    self.heading_style(*level),
+                    start_y,
+                    x,
+                    width,
+                    image_height,
+                    images,
+                ),
                 None,
             ),
-            Block::Paragraph(content) => (
-                LayoutBlockKind::Paragraph,
-                None,
-                self.inline_lines(content, self.style.body, start_y, x, width),
-                None,
-            ),
+            Block::Paragraph(content) => {
+                let lines = self.inline_lines_with_images(
+                    content,
+                    self.style.body,
+                    start_y,
+                    x,
+                    width,
+                    image_height,
+                    images,
+                );
+                let standalone_image = content.len() == 1
+                    && matches!(&content[0], Inline::Image { source, .. } if images.image(source).is_some());
+                (
+                    if standalone_image {
+                        LayoutBlockKind::Image
+                    } else {
+                        LayoutBlockKind::Paragraph
+                    },
+                    None,
+                    lines,
+                    None,
+                )
+            }
             Block::List { ordered, items } => (
                 LayoutBlockKind::List,
                 None,
-                self.list_lines(*ordered, items, start_y, x, width),
+                self.list_lines_with_images(
+                    *ordered,
+                    items,
+                    start_y,
+                    x,
+                    width,
+                    image_height,
+                    images,
+                ),
                 None,
             ),
             Block::Quote(blocks) => (
                 LayoutBlockKind::Quote,
                 None,
-                self.quote_lines(blocks, start_y, x, width),
+                self.quote_lines(blocks, start_y, x, width, image_height, images),
                 None,
             ),
             Block::Alert { title, blocks, .. } => (
                 LayoutBlockKind::Alert,
                 None,
-                self.alert_lines(title, blocks, start_y, x, width),
+                self.alert_lines(title, blocks, start_y, x, width, image_height, images),
                 None,
             ),
             Block::FootnoteDefinition { name, blocks } => (
                 LayoutBlockKind::Footnote,
                 None,
-                self.footnote_lines(name, blocks, start_y, x, width),
+                self.footnote_lines(name, blocks, start_y, x, width, image_height, images),
                 None,
             ),
             Block::Table(table) => {
-                let (lines, table_layout) = self.table_lines(table, start_y, x, width);
+                let (lines, table_layout) =
+                    self.table_lines(table, start_y, x, width, image_height, images);
                 (LayoutBlockKind::Table, None, lines, Some(table_layout))
             }
             // Syntax highlighting is a separate concern. Preserve code text,
@@ -299,20 +390,37 @@ impl<M: TextMeasurer> LayoutEngine<M> {
                 self.code_lines(language.as_deref(), code, start_y, x, width),
                 None,
             ),
-            // Image decoding is separate; an alt-text placeholder is still
-            // useful and deterministic for the first reader.
-            Block::Image { alt, .. } => (
-                LayoutBlockKind::Image,
-                None,
-                self.inline_lines(
-                    &[Inline::Text(format!("[image: {alt}]"))],
-                    self.style.body,
-                    start_y,
-                    x,
-                    width,
-                ),
-                None,
-            ),
+            Block::Image { source, alt, .. } => {
+                let lines = if let Some(image) = images.image(source) {
+                    let image = image.fitted(width, image_height);
+                    let bounds = Rectangle::new(
+                        Point::new(x, start_y),
+                        Size::new(image.width(), image.height()),
+                    );
+                    vec![LayoutLine {
+                        bounds,
+                        fragments: vec![LayoutFragment {
+                            text: String::new(),
+                            bounds,
+                            style: self.style.body,
+                            image: Some(LayoutImage::new(image, source, alt)),
+                            link: None,
+                        }],
+                        wrapped: false,
+                    }]
+                } else {
+                    self.inline_lines_with_images(
+                        &[Inline::Text(image_fallback(alt))],
+                        self.style.body,
+                        start_y,
+                        x,
+                        width,
+                        image_height,
+                        images,
+                    )
+                };
+                (LayoutBlockKind::Image, None, lines, None)
+            }
             Block::Rule => (
                 LayoutBlockKind::Rule,
                 None,
@@ -366,17 +474,20 @@ impl<M: TextMeasurer> LayoutEngine<M> {
         }
     }
 
-    fn inline_lines(
+    #[allow(clippy::too_many_arguments)]
+    fn inline_lines_with_images(
         &self,
         inlines: &[Inline],
         base_style: TextStyle,
         start_y: i32,
         x: i32,
         width: u32,
+        image_height: u32,
+        images: &ImageResources,
     ) -> Vec<LayoutLine> {
         let mut spans = Vec::new();
         for inline in inlines {
-            collect_spans(inline, base_style, None, &mut spans);
+            collect_spans(inline, base_style, None, image_height, images, &mut spans);
         }
         wrap_spans(
             &self.measurer,
@@ -388,29 +499,44 @@ impl<M: TextMeasurer> LayoutEngine<M> {
         )
     }
 
-    fn list_lines(
+    #[allow(clippy::too_many_arguments)]
+    fn list_lines_with_images(
         &self,
         ordered: bool,
         items: &[ListItem],
         start_y: i32,
         x: i32,
         width: u32,
+        image_height: u32,
+        images: &ImageResources,
     ) -> Vec<LayoutLine> {
         let mut result = Vec::new();
-        self.append_list_lines(ordered, items, start_y, x, width, &mut result);
+        self.append_list_lines_with_images(
+            ordered,
+            items,
+            start_y,
+            x,
+            width,
+            image_height,
+            images,
+            &mut result,
+        );
         if result.is_empty() {
             result.push(empty_line(x, start_y, self.style.body.line_height));
         }
         result
     }
 
-    fn append_list_lines(
+    #[allow(clippy::too_many_arguments)]
+    fn append_list_lines_with_images(
         &self,
         ordered: bool,
         items: &[ListItem],
         start_y: i32,
         x: i32,
         width: u32,
+        image_height: u32,
+        images: &ImageResources,
         output: &mut Vec<LayoutLine>,
     ) -> i32 {
         let indent = self.style.list_indent.min(width);
@@ -422,7 +548,14 @@ impl<M: TextMeasurer> LayoutEngine<M> {
             let marker = list_marker(ordered, index, item.task);
             let mut spans = vec![Span::new(marker, self.style.body, None, false)];
             for inline in &item.content {
-                collect_spans(inline, self.style.body, None, &mut spans);
+                collect_spans(
+                    inline,
+                    self.style.body,
+                    None,
+                    image_height,
+                    images,
+                    &mut spans,
+                );
             }
             let lines = wrap_spans(
                 &self.measurer,
@@ -439,7 +572,8 @@ impl<M: TextMeasurer> LayoutEngine<M> {
             // per nesting level, and each child line remains a legal split.
             for child in &item.children {
                 y = y.saturating_add(self.spacing_before(child));
-                let (_, _, lines, _) = self.layout_content(child, y, item_x, item_width);
+                let (_, _, lines, _) =
+                    self.layout_content(child, y, item_x, item_width, image_height, images);
                 y = append_lines(output, lines, y);
                 y = y.saturating_add(self.spacing_after(child));
             }
@@ -449,7 +583,15 @@ impl<M: TextMeasurer> LayoutEngine<M> {
         y
     }
 
-    fn quote_lines(&self, blocks: &[Block], start_y: i32, x: i32, width: u32) -> Vec<LayoutLine> {
+    fn quote_lines(
+        &self,
+        blocks: &[Block],
+        start_y: i32,
+        x: i32,
+        width: u32,
+        image_height: u32,
+        images: &ImageResources,
+    ) -> Vec<LayoutLine> {
         let indent = self
             .style
             .block_quote_indent
@@ -462,7 +604,8 @@ impl<M: TextMeasurer> LayoutEngine<M> {
 
         for block in blocks {
             y = y.saturating_add(self.spacing_before(block));
-            let (_, _, lines, _) = self.layout_content(block, y, inner_x, inner_width);
+            let (_, _, lines, _) =
+                self.layout_content(block, y, inner_x, inner_width, image_height, images);
             y = append_lines(&mut result, lines, y);
             y = y.saturating_add(self.spacing_after(block));
         }
@@ -473,6 +616,7 @@ impl<M: TextMeasurer> LayoutEngine<M> {
         result
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn alert_lines(
         &self,
         title: &str,
@@ -480,6 +624,8 @@ impl<M: TextMeasurer> LayoutEngine<M> {
         start_y: i32,
         x: i32,
         width: u32,
+        image_height: u32,
+        images: &ImageResources,
     ) -> Vec<LayoutLine> {
         let indent = self
             .style
@@ -507,13 +653,15 @@ impl<M: TextMeasurer> LayoutEngine<M> {
 
         for block in blocks {
             y = y.saturating_add(self.spacing_before(block));
-            let (_, _, lines, _) = self.layout_content(block, y, inner_x, inner_width);
+            let (_, _, lines, _) =
+                self.layout_content(block, y, inner_x, inner_width, image_height, images);
             y = append_lines(&mut result, lines, y);
             y = y.saturating_add(self.spacing_after(block));
         }
         result
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn footnote_lines(
         &self,
         name: &str,
@@ -521,6 +669,8 @@ impl<M: TextMeasurer> LayoutEngine<M> {
         start_y: i32,
         x: i32,
         width: u32,
+        image_height: u32,
+        images: &ImageResources,
     ) -> Vec<LayoutLine> {
         let prefix = Inline::Text(format!("[^{name}]: "));
         let (first, rest) = match blocks.split_first() {
@@ -532,15 +682,35 @@ impl<M: TextMeasurer> LayoutEngine<M> {
             _ => (None, blocks),
         };
         let mut result = first
-            .map(|content| self.inline_lines(&content, self.style.body, start_y, x, width))
-            .unwrap_or_else(|| self.inline_lines(&[prefix], self.style.body, start_y, x, width));
+            .map(|content| {
+                self.inline_lines_with_images(
+                    &content,
+                    self.style.body,
+                    start_y,
+                    x,
+                    width,
+                    image_height,
+                    images,
+                )
+            })
+            .unwrap_or_else(|| {
+                self.inline_lines_with_images(
+                    &[prefix],
+                    self.style.body,
+                    start_y,
+                    x,
+                    width,
+                    image_height,
+                    images,
+                )
+            });
         let mut y = result
             .last()
             .map(|line| rect_bottom(&line.bounds))
             .unwrap_or(start_y);
         for block in rest {
             y = y.saturating_add(self.spacing_before(block));
-            let (_, _, lines, _) = self.layout_content(block, y, x, width);
+            let (_, _, lines, _) = self.layout_content(block, y, x, width, image_height, images);
             y = append_lines(&mut result, lines, y);
             y = y.saturating_add(self.spacing_after(block));
         }
@@ -553,6 +723,8 @@ impl<M: TextMeasurer> LayoutEngine<M> {
         start_y: i32,
         x: i32,
         width: u32,
+        image_height: u32,
+        images: &ImageResources,
     ) -> (Vec<LayoutLine>, TableLayout) {
         let column_count = table
             .headers
@@ -581,7 +753,7 @@ impl<M: TextMeasurer> LayoutEngine<M> {
         ];
 
         for (mode, text_style) in stages {
-            let columns = self.table_columns(table, column_count, text_style);
+            let columns = self.table_columns(table, column_count, text_style, image_height, images);
             if let Some(widths) = self
                 .allocate_table_widths(
                     &all_columns,
@@ -611,7 +783,16 @@ impl<M: TextMeasurer> LayoutEngine<M> {
                     x,
                     widths,
                 }];
-                return self.render_table(table, start_y, text_style, mode, columns, groups);
+                return self.render_table(
+                    table,
+                    start_y,
+                    text_style,
+                    mode,
+                    columns,
+                    groups,
+                    image_height,
+                    images,
+                );
             }
         }
 
@@ -621,7 +802,7 @@ impl<M: TextMeasurer> LayoutEngine<M> {
         // every group where the viewport can hold it; this keeps row identity
         // visible while reading a continuation group.
         let text_style = self.table_text_style(true, true);
-        let columns = self.table_columns(table, column_count, text_style);
+        let columns = self.table_columns(table, column_count, text_style, image_height, images);
         let mut groups = Vec::new();
         let mut pending = vec![0];
         for index in 1..column_count {
@@ -659,6 +840,8 @@ impl<M: TextMeasurer> LayoutEngine<M> {
             TableLayoutMode::Grouped,
             columns,
             groups,
+            image_height,
+            images,
         )
     }
 
@@ -692,13 +875,16 @@ impl<M: TextMeasurer> LayoutEngine<M> {
         table: &Table,
         column_count: usize,
         text_style: TextStyle,
+        image_height: u32,
+        images: &ImageResources,
     ) -> Vec<TableColumnLayout> {
         (0..column_count)
             .map(|index| {
                 let mut minimum_width = 0;
                 let mut preferred_width = 0;
                 let mut inspect = |cell: &[Inline]| {
-                    let (minimum, preferred) = self.table_cell_metrics(cell, text_style);
+                    let (minimum, preferred) =
+                        self.table_cell_metrics(cell, text_style, image_height, images);
                     minimum_width = minimum_width.max(minimum);
                     preferred_width = preferred_width.max(preferred);
                 };
@@ -720,10 +906,16 @@ impl<M: TextMeasurer> LayoutEngine<M> {
             .collect()
     }
 
-    fn table_cell_metrics(&self, inlines: &[Inline], style: TextStyle) -> (u32, u32) {
+    fn table_cell_metrics(
+        &self,
+        inlines: &[Inline],
+        style: TextStyle,
+        image_height: u32,
+        images: &ImageResources,
+    ) -> (u32, u32) {
         let mut spans = Vec::new();
         for inline in inlines {
-            collect_spans(inline, style, None, &mut spans);
+            collect_spans(inline, style, None, image_height, images, &mut spans);
         }
         let lines = wrap_spans(
             &self.measurer,
@@ -848,6 +1040,7 @@ impl<M: TextMeasurer> LayoutEngine<M> {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn render_table(
         &self,
         table: &Table,
@@ -856,6 +1049,8 @@ impl<M: TextMeasurer> LayoutEngine<M> {
         mode: TableLayoutMode,
         columns: Vec<TableColumnLayout>,
         groups: Vec<TableColumnGroup>,
+        image_height: u32,
+        images: &ImageResources,
     ) -> (Vec<LayoutLine>, TableLayout) {
         let mut lines = Vec::new();
         let mut rows = Vec::new();
@@ -876,6 +1071,8 @@ impl<M: TextMeasurer> LayoutEngine<M> {
                     y,
                     &mut lines,
                     &mut rows,
+                    image_height,
+                    images,
                 );
             }
             for source_row in &table.rows {
@@ -888,6 +1085,8 @@ impl<M: TextMeasurer> LayoutEngine<M> {
                     y,
                     &mut lines,
                     &mut rows,
+                    image_height,
+                    images,
                 );
             }
         }
@@ -920,6 +1119,8 @@ impl<M: TextMeasurer> LayoutEngine<M> {
         start_y: i32,
         output: &mut Vec<LayoutLine>,
         rows: &mut Vec<TableRowLayout>,
+        image_height: u32,
+        images: &ImageResources,
     ) -> i32 {
         let cell_padding = self.style.table_cell_padding;
         let cell_lines = group
@@ -934,12 +1135,14 @@ impl<M: TextMeasurer> LayoutEngine<M> {
                         bold: header,
                         ..text_style
                     };
-                    let mut lines = self.inline_lines(
+                    let mut lines = self.inline_lines_with_images(
                         inlines,
                         cell_style,
                         start_y,
                         cell_x.saturating_add(cell_padding as i32),
                         (*column_width).max(1),
+                        image_height,
+                        images,
                     );
                     align_cell_lines(
                         &mut lines,
@@ -1095,6 +1298,7 @@ struct Span {
     style: TextStyle,
     link: Option<NavigationTarget>,
     preserve_whitespace: bool,
+    image: Option<LayoutImage>,
 }
 
 impl Span {
@@ -1109,14 +1313,34 @@ impl Span {
             style,
             link,
             preserve_whitespace,
+            image: None,
+        }
+    }
+
+    fn image(
+        image: RasterImage,
+        source: impl Into<String>,
+        alt: impl Into<String>,
+        style: TextStyle,
+        link: Option<NavigationTarget>,
+    ) -> Self {
+        Self {
+            text: String::new(),
+            style,
+            link,
+            preserve_whitespace: false,
+            image: Some(LayoutImage::new(image, source, alt)),
         }
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn collect_spans(
     inline: &Inline,
     style: TextStyle,
     inherited_link: Option<NavigationTarget>,
+    image_height: u32,
+    images: &ImageResources,
     spans: &mut Vec<Span>,
 ) {
     match inline {
@@ -1139,6 +1363,8 @@ fn collect_spans(
                         ..style
                     },
                     inherited_link.clone(),
+                    image_height,
+                    images,
                     spans,
                 );
             }
@@ -1152,6 +1378,8 @@ fn collect_spans(
                         ..style
                     },
                     inherited_link.clone(),
+                    image_height,
+                    images,
                     spans,
                 );
             }
@@ -1165,6 +1393,8 @@ fn collect_spans(
                         ..style
                     },
                     inherited_link.clone(),
+                    image_height,
+                    images,
                     spans,
                 );
             }
@@ -1174,7 +1404,27 @@ fn collect_spans(
         } => {
             let target = NavigationTarget::from_destination(destination);
             for child in label {
-                collect_spans(child, style, Some(target.clone()), spans);
+                collect_spans(
+                    child,
+                    style,
+                    Some(target.clone()),
+                    image_height,
+                    images,
+                    spans,
+                );
+            }
+        }
+        Inline::Image { alt, source, .. } => {
+            if let Some(image) = images.image(source) {
+                spans.push(Span::image(
+                    image.fitted(u32::MAX, image_height),
+                    source,
+                    alt,
+                    style,
+                    inherited_link,
+                ));
+            } else {
+                spans.push(Span::new(image_fallback(alt), style, inherited_link, false));
             }
         }
         Inline::FootnoteReference { name, number } => spans.push(Span::new(
@@ -1183,12 +1433,6 @@ fn collect_spans(
             } else {
                 format!("[{number}]")
             },
-            style,
-            inherited_link,
-            false,
-        )),
-        Inline::Image { alt, .. } => spans.push(Span::new(
-            format!("[image: {alt}]"),
             style,
             inherited_link,
             false,
@@ -1266,10 +1510,31 @@ impl LineBuilder {
                 Size::new(actual_width, style.line_height.max(1)),
             ),
             style,
+            image: None,
             link,
         });
         self.used = self.used.saturating_add(actual_width);
         self.height = self.height.max(style.line_height.max(1));
+    }
+
+    fn add_image(&mut self, image: LayoutImage, style: TextStyle, link: Option<NavigationTarget>) {
+        let width = image
+            .image
+            .width()
+            .min(self.width.saturating_sub(self.used));
+        let bounds = Rectangle::new(
+            Point::new(self.x.saturating_add(self.used as i32), self.y),
+            Size::new(width, image.image.height()),
+        );
+        self.fragments.push(LayoutFragment {
+            text: String::new(),
+            bounds,
+            style,
+            image: Some(image),
+            link,
+        });
+        self.used = self.used.saturating_add(width);
+        self.height = self.height.max(bounds.size.height.max(style.line_height));
     }
 
     fn finish(self) -> LayoutLine {
@@ -1300,6 +1565,17 @@ fn wrap_spans<M: TextMeasurer>(
     let mut pending_space: Option<(TextStyle, Option<NavigationTarget>)> = None;
 
     for span in spans {
+        if let Some(image) = span.image {
+            append_image(
+                &mut line,
+                &mut lines,
+                &mut pending_space,
+                image,
+                span.style,
+                span.link,
+            );
+            continue;
+        }
         let mut word = String::new();
         for character in span.text.chars() {
             if character == '\n' {
@@ -1366,6 +1642,36 @@ fn wrap_spans<M: TextMeasurer>(
         lines.push(line.finish());
     }
     lines
+}
+
+fn append_image(
+    line: &mut LineBuilder,
+    lines: &mut Vec<LayoutLine>,
+    pending_space: &mut Option<(TextStyle, Option<NavigationTarget>)>,
+    image: LayoutImage,
+    style: TextStyle,
+    link: Option<NavigationTarget>,
+) {
+    pending_space.take();
+    let image = LayoutImage::new(
+        image.image.fitted(line.width, u32::MAX),
+        image.source,
+        image.alt,
+    );
+    let width = image.image.width();
+    if line.has_content() && line.used.saturating_add(width) > line.width {
+        let old = std::mem::replace(
+            line,
+            LineBuilder::new(
+                line.x,
+                line.y + line.height as i32,
+                line.width,
+                image.image.height().max(style.line_height),
+            ),
+        );
+        lines.push(old.finish());
+    }
+    line.add_image(image, style, link);
 }
 
 fn append_word<M: TextMeasurer>(
@@ -1471,6 +1777,14 @@ fn empty_line(x: i32, y: i32, line_height: u32) -> LayoutLine {
         bounds: Rectangle::new(Point::new(x, y), Size::new(0, line_height.max(1))),
         fragments: Vec::new(),
         wrapped: false,
+    }
+}
+
+fn image_fallback(alt: &str) -> String {
+    if alt.is_empty() {
+        "[image unavailable]".to_owned()
+    } else {
+        format!("[image: {alt}]")
     }
 }
 

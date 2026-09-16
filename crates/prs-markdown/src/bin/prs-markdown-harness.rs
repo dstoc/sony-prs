@@ -2,6 +2,7 @@
 
 use prs_markdown::harness::{render_page, HostReader};
 use prs_markdown::layout::Viewport;
+use prs_markdown::resources::FileSystemResourceProvider;
 use prs_markdown::style::{Insets, ReaderStyle, TextStyle};
 use prs_markdown::typography::{FontConfig, FontdueTextEngine};
 use std::env;
@@ -52,6 +53,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     };
 
     let (source_path, source) = read_input(&cli.input)?;
+    let resource_provider = resource_provider_for(&source_path)?;
     let font_path = cli
         .font
         .clone()
@@ -65,8 +67,14 @@ fn run() -> Result<(), Box<dyn Error>> {
     let viewport = Viewport::new(cli.width, cli.height);
     // Clone the configured engine so layout metrics and rasterization use the
     // same Fontdue faces and settings. The renderer retains its own cache.
-    let reader =
-        HostReader::from_source_with_measurer(&source, style, viewport, font_engine.clone())?;
+    let reader = HostReader::from_source_with_provider(
+        &source,
+        &resource_provider,
+        resource_provider.document_path(),
+        style,
+        viewport,
+        font_engine.clone(),
+    )?;
     let mut renderer = prs_markdown::EmbeddedGraphicsRenderer::new(font_engine);
 
     let page_indices = selected_pages(&cli.pages, reader.page_count())?;
@@ -230,6 +238,14 @@ fn read_input(input: &Input) -> Result<(PathBuf, String), Box<dyn Error>> {
     let source = fs::read_to_string(&path)
         .map_err(|error| format!("read Markdown {}: {error}", path.display()))?;
     Ok((path, source))
+}
+
+fn resource_provider_for(path: &Path) -> Result<FileSystemResourceProvider, Box<dyn Error>> {
+    let root = path.parent().unwrap_or_else(|| Path::new("."));
+    let document = path
+        .file_name()
+        .ok_or_else(|| format!("Markdown path has no file name: {}", path.display()))?;
+    Ok(FileSystemResourceProvider::new(root, document)?)
 }
 
 fn fixture_path(name: &str) -> Result<PathBuf, String> {

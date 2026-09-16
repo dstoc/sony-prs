@@ -8,11 +8,13 @@
 
 use crate::document::Document;
 use crate::geometry::Viewport;
+use crate::image::ImageResources;
 use crate::layout::{DocumentLayout, LayoutEngine, TextMeasurer};
 use crate::navigation::NavigationTarget;
 use crate::pagination::{DisplayCommand, PageLayout, Pagination, Paginator};
 use crate::parse::{ComrakParser, ParseError};
 use crate::render::EmbeddedGraphicsRenderer;
+use crate::resources::ResourceProvider;
 use crate::style::ReaderStyle;
 use crate::typography::TextEngine;
 use embedded_graphics::draw_target::DrawTarget;
@@ -60,7 +62,58 @@ impl HostReader {
         measurer: M,
     ) -> Result<Self, ParseError> {
         let document = ComrakParser::new().parse(source)?;
-        let layout = LayoutEngine::with_measurer(style, measurer).layout(&document, viewport);
+        Self::from_document(
+            document,
+            style,
+            viewport,
+            measurer,
+            ImageResources::default(),
+        )
+    }
+
+    /// Run the production parser and resolve local image references through a
+    /// caller-supplied resource provider. Failures to resolve or decode an
+    /// image remain in the document as alt-text fallbacks.
+    pub fn from_source_with_provider<P: ResourceProvider, M: TextMeasurer>(
+        source: &str,
+        provider: &P,
+        containing_document: &Path,
+        style: ReaderStyle,
+        viewport: Viewport,
+        measurer: M,
+    ) -> Result<Self, ParseError> {
+        let document = ComrakParser::new().parse(source)?;
+        let image_width = viewport.width.saturating_sub(
+            style
+                .page_padding
+                .left
+                .saturating_add(style.page_padding.right),
+        );
+        let image_height = viewport.height.saturating_sub(
+            style
+                .page_padding
+                .top
+                .saturating_add(style.page_padding.bottom),
+        );
+        let images = ImageResources::from_document(
+            provider,
+            containing_document,
+            &document,
+            image_width,
+            image_height,
+        );
+        Self::from_document(document, style, viewport, measurer, images)
+    }
+
+    fn from_document<M: TextMeasurer>(
+        document: Document,
+        style: ReaderStyle,
+        viewport: Viewport,
+        measurer: M,
+        images: ImageResources,
+    ) -> Result<Self, ParseError> {
+        let layout = LayoutEngine::with_measurer(style, measurer)
+            .layout_with_images(&document, viewport, &images);
         let pagination = Paginator::new(style).paginate(&layout);
         Ok(Self {
             document,

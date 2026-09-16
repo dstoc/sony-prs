@@ -2,6 +2,7 @@
 
 use crate::document::Document;
 use crate::geometry::Viewport;
+use crate::image::ImageResources;
 use crate::layout::{ApproximateTextMeasurer, DocumentLayout, LayoutEngine, TextMeasurer};
 use crate::navigation::{DocumentId, DocumentLocation, NavigationTarget, ReaderHistory};
 use crate::pagination::{DocumentCursor, HitRegion, PageLayout, Pagination, Paginator};
@@ -597,8 +598,27 @@ where
         let path = PathBuf::from(location.document.as_ref());
         let source = self.provider.read_markdown(&path)?;
         let document = self.parser.parse(&source)?;
+        let image_width = self.viewport.width.saturating_sub(
+            self.style
+                .page_padding
+                .left
+                .saturating_add(self.style.page_padding.right),
+        );
+        let image_height = self.viewport.height.saturating_sub(
+            self.style
+                .page_padding
+                .top
+                .saturating_add(self.style.page_padding.bottom),
+        );
+        let images = ImageResources::from_document(
+            &self.provider,
+            &path,
+            &document,
+            image_width,
+            image_height,
+        );
         let layout = LayoutEngine::with_measurer(self.style, self.measurer.clone())
-            .layout(&document, self.viewport);
+            .layout_with_images(&document, self.viewport, &images);
         let pagination = Paginator::new(self.style).paginate(&layout);
         let cursor = match location.anchor.as_deref() {
             Some(anchor) => anchor_cursor(&layout, &pagination, &location, anchor)?,

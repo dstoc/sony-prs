@@ -53,6 +53,17 @@ rasterization.
 The CLI writes both formats from the same rendered grayscale pixels, so PNGs
 can be opened directly while PGM remains convenient for simple tooling.
 
+## Embedded raster images
+
+When the input is a file, the harness configures a filesystem resource provider
+for its containing directory. Markdown image references are resolved relative
+to that file. PNG, JPEG, and WebP images are fitted proportionally to the
+content width and available page area, converted to bounded grayscale rasters,
+and rendered through the normal display list. Standalone images are atomic
+pagination units. Missing, unsupported, corrupt, external, or over-budget
+images remain visible through their alt text (or an unavailable-image label)
+and do not abort the run.
+
 The complete Markdown decision record, including deterministic fallbacks for raw
 HTML, Mermaid/diagram source, and optional math/directive extensions, is in the
 [Markdown support matrix](../../docs/prs-t1/markdown-reader.md#markdown-support-matrix).

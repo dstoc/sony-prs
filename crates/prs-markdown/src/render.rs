@@ -7,6 +7,7 @@
 //! pixels are submitted.
 
 use crate::geometry::{translate, Rect};
+use crate::image::RasterImage;
 use crate::pagination::{DisplayCommand, PageLayout};
 use crate::style::{BorderStyle, Color, TextStyle as ReaderTextStyle};
 use crate::typography::{FontFace, GlyphBitmap, TextEngine, TextRun, TextStyle};
@@ -130,6 +131,9 @@ where
         } => draw_text(target, translate(*bounds, origin), text, style, text_engine),
         DisplayCommand::ImagePlaceholder { bounds, .. } => {
             draw_image_placeholder(target, translate(*bounds, origin))
+        }
+        DisplayCommand::Image { bounds, image, .. } => {
+            draw_image(target, translate(*bounds, origin), image)
         }
     }
 }
@@ -317,6 +321,33 @@ where
     // deterministic without consulting the resource provider or device APIs.
     fill_rect(target, rectangle, Color::rgb(232, 232, 232))?;
     draw_border(target, rectangle, BorderStyle::new(Color::BLACK, 1))
+}
+
+fn draw_image<T>(target: &mut T, rectangle: Rect, image: &RasterImage) -> Result<(), T::Error>
+where
+    T: DrawTarget<Color = Rgb888>,
+{
+    if rectangle.size.width == 0 || rectangle.size.height == 0 {
+        return Ok(());
+    }
+    let mut image_target = target.clipped(&rectangle);
+    let width = rectangle.size.width;
+    let height = rectangle.size.height;
+    let pixels = (0..height).flat_map(|y| {
+        (0..width).map(move |x| {
+            let source_x = (u64::from(x) * u64::from(image.width()) / u64::from(width)) as u32;
+            let source_y = (u64::from(y) * u64::from(image.height()) / u64::from(height)) as u32;
+            let gray = image.pixel(source_x, source_y).unwrap_or(u8::MAX);
+            Pixel(
+                Point::new(
+                    rectangle.top_left.x.saturating_add(x as i32),
+                    rectangle.top_left.y.saturating_add(y as i32),
+                ),
+                Rgb888::new(gray, gray, gray),
+            )
+        })
+    });
+    image_target.draw_iter(pixels)
 }
 
 fn coverage_color(ink: u8, alpha: u8) -> Rgb888 {

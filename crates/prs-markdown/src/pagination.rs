@@ -6,6 +6,7 @@
 //! by a framebuffer adapter, a host test target, or another renderer.
 
 use crate::geometry::{translate, Rect, Viewport};
+use crate::image::RasterImage;
 use crate::layout::{DocumentLayout, LayoutBlockKind, LayoutLine, TableLayout, TableRowLayout};
 use crate::navigation::NavigationTarget;
 use crate::style::{BorderStyle, Color, FillStyle, ReaderStyle, TextStyle};
@@ -274,11 +275,17 @@ pub enum DisplayCommand {
     Border { bounds: Rect, style: BorderStyle },
     /// A horizontal or vertical rule represented as a stroked rectangle.
     Rule { bounds: Rect, style: BorderStyle },
-    /// A future image renderer can resolve `source`; until then the bounds and
-    /// alt text are enough for a deterministic placeholder renderer.
+    /// A deterministic fallback for unavailable image data.
     ImagePlaceholder {
         bounds: Rect,
         source: Option<String>,
+        alt: String,
+    },
+    /// A bounded grayscale image ready for the generic renderer.
+    Image {
+        bounds: Rect,
+        image: RasterImage,
+        source: String,
         alt: String,
     },
 }
@@ -290,7 +297,8 @@ impl DisplayCommand {
             | Self::Fill { bounds, .. }
             | Self::Border { bounds, .. }
             | Self::Rule { bounds, .. }
-            | Self::ImagePlaceholder { bounds, .. } => *bounds,
+            | Self::ImagePlaceholder { bounds, .. }
+            | Self::Image { bounds, .. } => *bounds,
         }
     }
 
@@ -306,6 +314,14 @@ impl DisplayCommand {
             Self::Rule { style, .. } => Self::Rule { bounds, style },
             Self::ImagePlaceholder { source, alt, .. } => Self::ImagePlaceholder {
                 bounds,
+                source,
+                alt,
+            },
+            Self::Image {
+                image, source, alt, ..
+            } => Self::Image {
+                bounds,
+                image,
                 source,
                 alt,
             },
@@ -634,6 +650,18 @@ fn add_line(
     }
     for fragment in &line.fragments {
         let bounds = translate(fragment.bounds, page_offset);
+        if let Some(image) = &fragment.image {
+            page.push_command(DisplayCommand::Image {
+                bounds,
+                image: image.image.clone(),
+                source: image.source.clone(),
+                alt: image.alt.clone(),
+            });
+            if let Some(target) = &fragment.link {
+                page.add_hit_region(HitRegion::new(bounds, target.clone()));
+            }
+            continue;
+        }
         if fragment.style.code && kind != LayoutBlockKind::Code {
             page.push_command(DisplayCommand::Fill {
                 bounds,
@@ -965,6 +993,7 @@ mod tests {
                             text: "first".into(),
                             bounds: Rect::new(Point::new(4, 4), Size::new(25, 10)),
                             style: style.body,
+                            image: None,
                             link: None,
                         }],
                         wrapped: false,
@@ -981,6 +1010,7 @@ mod tests {
                             text: "second".into(),
                             bounds: Rect::new(Point::new(4, 34), Size::new(30, 10)),
                             style: style.body,
+                            image: None,
                             link: None,
                         }],
                         wrapped: false,
