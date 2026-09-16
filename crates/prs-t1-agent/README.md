@@ -1,277 +1,102 @@
-# PRS-T1 native agent
+# PRS-T1 native UI agent
 
-This crate is the experimental home for a native PRS-T1 binary that can own a
-display loop and receive touch/button input. It is intentionally separate from
-the PRS-350 agent: the T1 is an Android 2.2.1 reader with a different boot,
-display, input, and service model.
+`prs-t1-agent` is the active native UI prototype for a rooted Sony PRS-T1.
+It is a Rust ARM binary that talks directly to the T1 framebuffer, EPDC
+refresh interface, Linux evdev devices, and legacy Android power interfaces.
+The Android framework is not a runtime dependency of the native UI.
 
-The binary currently implements the hardware-discovery milestone plus an
-explicit opt-in standalone runtime: framebuffer inspection and capture,
-Android process/service inspection, evdev capability inspection, a bounded
-reversible render test, and a full-screen native shell with power/input
-handling. Replacing Android at boot is not part of this milestone.
+This crate has moved beyond hardware discovery: it can render and interact
+with a small document-oriented shell after Android relinquishes display
+ownership. It remains a development build that is manually launched through
+ADB or the optional Android Home entry point. It does not install a boot hook
+or replace the stock Android UI permanently.
 
-For host toolchain, cross-build, and deployment instructions, see
-[build.md](build.md).
+## Current status
 
-## Design goal
+The current tested T1 path is:
 
-Run a small native process on the rooted T1 which can:
+| Area | State |
+| --- | --- |
+| Framebuffer discovery and capture | Implemented; `/dev/graphics/fb0` is queried using its visible geometry, stride, offsets, and RGB565 format. |
+| EPDC refresh | Implemented for the recovered T1 ioctl ABI, including `DU`, `GC4`, `GC16`, and `A2` waveform probes. |
+| Status and diagnostics | Implemented; battery, power, USB, Wi-Fi, ADB, Android processes, framebuffer, storage, and input state are displayed. |
+| Native shell | Implemented as an opt-in standalone runtime with a status bar, details page, touch navigation, menu full refresh, and power actions. |
+| Pixel damage | Implemented; complete logical frames are diffed and only the smallest changed rectangle is submitted. |
+| Sleep and wake | Native EINK standby and wake-side power handoff have been exercised; USB/ADB rebind is deferred until the cable is detected after wake. |
+| Android handoff | Implemented for manual ADB use and the tap-to-launch APK; no automatic startup integration. |
+| Product-ready ownership | Not complete; the long-term display ownership boundary and recovery UX still need a deliberate design. |
 
-1. discover and open the real framebuffer device;
-2. render a known test pattern and restore or redraw a known screen;
-3. discover the touch and hardware-key input path;
-4. receive input without depending on Android's Java UI stack; and
-5. keep ADB and Wi-Fi available for development and recovery.
+The detailed device observations, command output, timings, and test history
+are kept in [`docs/prs-t1/analysis.md`](../../docs/prs-t1/analysis.md). They
+describe one rooted PRS-T1 and should not be generalized to every firmware
+revision.
 
-The first shell increment reserves a single-line, high-contrast status bar for
-battery, Wi-Fi, USB, ADB, sleep/active state, and a short local date/time. The
-bar is solid black with crisp white 20x20 binary sprites cropped from the
-generated icon sheet and fit to their individual glyph bounds; short values sit
-beside the battery and clock sprites. Wi-Fi, USB, and ADB are packed tightly
-after the battery and show only their icons when active; the normal Active mode
-label is hidden, leaving the mode slot for exceptional states such as Sleeping
-or Rebooting. The home content area is intentionally blank for future documents
-and images. Tapping the bar opens a diagnostics page with the existing
-device-state information grouped into Power, Connectivity, System, Storage,
-and Input sections, followed by full-width reboot, power-off, and return
-actions. The bar keeps only the time; the full date is shown in Details. The
-rendering uses the small `embedded-graphics` bitmap-font support with a custom
-RGB565 draw target, keeping the ARMv5 binary easy to deploy while providing
-lowercase glyphs and measured text layout.
+## Design goal and boundary
 
-The initial control path is root ADB. We should deploy test binaries to a
-temporary location such as `/data/local/tmp` and start them manually. A T1
-host-control CLI or persistent startup hook can be added after the device-side
-ownership model is understood.
+The near-term goal is a small native process that can own the visible T1 UI
+for development and eventually provide a document-reading surface without
+depending on Android Java services. The current shell deliberately leaves the
+home content area blank for future documents and images while making device
+state and recovery actions visible.
 
-## Early screenshot method
+The current control path is root ADB. Deploy test binaries to
+`/data/local/tmp`, use read-only commands while Android is active, and use the
+standalone path only as an explicit ownership experiment. The agent does not
+modify boot or partition images.
 
-Screenshot capture should come before any native drawing. It gives us a
-low-risk way to prove that the framebuffer node, geometry, stride, pixel
-format, and mmap path are correct while Android remains fully active.
+## Commands
 
-The first device-side interface will be a read-only `capture` mode. It will
-open the framebuffer read-only, query `fb_var_screeninfo` and
-`fb_fix_screeninfo`, mmap only with `PROT_READ`, convert the visible pixels to
-an 8-bit grayscale PGM stream, and write that stream to stdout. It must never
-write the mapped framebuffer or issue a display-refresh ioctl.
+The binary accepts these commands. The default framebuffer is
+`/dev/graphics/fb0`; pass another path as the first argument when inspecting a
+different device.
 
-The preferred host workflow is binary-safe `adb exec-out` when the device's
-ADB daemon supports it:
+| Command | Access | Description |
+| --- | --- | --- |
+| `probe [FRAMEBUFFER]` | Read-only | Prints framebuffer, Android-process, evdev, and status inventories. |
+| `status` | Read-only | Prints battery, power, USB, Wi-Fi, ADB, uptime, screen, storage, and process state. Missing values are `unknown`. |
+| `input` | Read-only | Queries evdev capabilities without opening an event stream, grabbing a device, or injecting events. |
+| `events [EVENT_DEVICE] [SECONDS]` | Read-only | Logs a finite raw evdev stream. It defaults to `/dev/input/event1` for 10 seconds and never calls `EVIOCGRAB`. |
+| `capture [FRAMEBUFFER]` | Read-only | Maps the visible RGB565 framebuffer with read access and emits an 8-bit grayscale PGM to stdout. |
+| `render-test [FRAMEBUFFER] [SECONDS] [WAVEFORM] [WAIT\|NOWAIT]` | Writes framebuffer | Draws a centered 200x120 RGB565 marker, requests a bounded EPDC update, captures the mapping, waits, and restores the original rectangle. Defaults to 3 seconds, `GC16`, and `WAIT`. |
+| `standalone-test [FRAMEBUFFER] [standby\|mem]` | Owns framebuffer/input | Runs the long-lived native shell after `zygote` and `system_server` have stopped. The default suspend mode is T1 EINK `standby`. |
+| `launch-standalone [FRAMEBUFFER] [standby\|mem]` | Stops Android framework | Root `su` entry point. It detaches into a new session, stops zygote, waits for the framework to exit, and enters `standalone-test`. |
+
+Only `render-test`, `standalone-test`, and `launch-standalone` mutate device
+state. `render-test` is bounded and restores the bytes it changes, but it still
+requires a reader-side recovery route and physical observation of the panel.
+
+## Build and deploy
+
+The T1 expects an ARMv5TE soft-float executable. The release build is statically
+linked against musl so it does not depend on Android's old dynamic linker.
+Follow [`build.md`](build.md) for the host toolchain, cross-build, artifact
+checks, ADB copy, and detached test helper.
+
+After building, the basic deployment is:
 
 ```sh
-adb push ./prs-t1-agent /data/local/tmp/prs-t1-agent
+adb wait-for-device
+adb push target/armv5te-unknown-linux-musleabi/release/prs-t1-agent \
+  /data/local/tmp/prs-t1-agent
 adb shell chmod 755 /data/local/tmp/prs-t1-agent
-adb exec-out /data/local/tmp/prs-t1-agent capture > t1-screen.pgm
 ```
 
-If the installed ADB client does not support `exec-out`, the agent can write a
-capture to `/data/local/tmp/t1-screen.pgm` and the host can retrieve it with
-`adb pull`. The capture should be repeated before and after an Android screen
-transition; matching metadata and changing pixels will distinguish a usable
-buffer from a stale or shadow display surface. A screenshot is also the first
-artifact to preserve before any process-ownership experiment.
-
-This T1's old ADB daemon closes the `exec-out` channel, and direct binary output
-through `adb shell` is PTY-translated to CRLF. The tested workflow is therefore
-to redirect on the reader and pull the file:
+Exercise the read-only path while Android remains active:
 
 ```sh
-adb shell '/data/local/tmp/prs-t1-agent capture > /data/local/tmp/t1-screen.pgm'
+adb shell /data/local/tmp/prs-t1-agent probe
+adb shell /data/local/tmp/prs-t1-agent status
+adb shell /data/local/tmp/prs-t1-agent capture > /data/local/tmp/t1-screen.pgm
 adb pull /data/local/tmp/t1-screen.pgm ./t1-screen.pgm
 ```
 
-## T1 refresh ABI and bounded render test
+The old T1 ADB daemon closes the `exec-out` channel and `adb shell` can
+translate binary output through a PTY. Redirect the PGM on the reader and pull
+it as shown above.
 
-The installed `/system/lib/hw/gralloc.imx5x.so` contains the T1's vendor
-framebuffer update path. Its ioctl constants and payload size are:
-
-```text
-MXCFB_SET_AUTO_UPDATE_MODE       0x4004462d
-MXCFB_SEND_UPDATE                0x4044462e  (0x44-byte payload)
-MXCFB_WAIT_FOR_UPDATE_COMPLETE   0x4004462f
-```
-
-The `render-test` waveform argument can probe the standard T1 waveform table:
-`DU` (1-bit direct update), `GC16` (16-level grayscale), `GC4` (4-level
-grayscale), or `A2` (fast 2-level update). It defaults to `GC16`; each probe
-waits for the EPDC marker and reports the device-side elapsed time. The
-waveform changes refresh quality and latency, while the rectangle controls
-which part of the panel is updated.
-
-The `render-test` command is the first write-capable device operation. It
-requires the known T1 RGB565 format, opens `/dev/graphics/fb0` read/write,
-backs up a centered 200x120 rectangle, draws a black-and-white marker, asks
-the EPDC driver to update that region with the GC16 waveform, captures the
-current framebuffer mapping, waits for a bounded interval, and restores and
-refreshes the original rectangle. It does not stop or signal Android
-processes. The PGM proves the native marker was written to the framebuffer;
-only observation of the reader can confirm the physical e-ink panel result.
-
-The old T1 framebuffer mapping rejects `msync()` with `EINVAL`; the agent now
-follows the vendor gralloc behavior and relies on the shared mapping followed
-by the update ioctl. The tested deployment route is:
-
-```sh
-adb push ./prs-t1-agent /data/local/tmp/prs-t1-agent
-adb shell chmod 755 /data/local/tmp/prs-t1-agent
-adb shell '/data/local/tmp/prs-t1-agent render-test /dev/graphics/fb0 5 GC16 > /data/local/tmp/t1-render-test.pgm'
-adb pull /data/local/tmp/t1-render-test.pgm ./native-custom-render-test.pgm
-```
-
-The first successful run kept the marker in framebuffer memory for the full
-five-second wait, returned successfully from both update requests, and
-restored the original rectangle. `adbd`, `zygote`, and `dispd` remained
-running. This does not yet prove that Android will not redraw the region in a
-long-running native UI.
-
-## Read-only device status
-
-The `status` command collects state that a native UI can poll without asking
-Android's Java services: battery capacity/status/voltage/temperature from
-`/sys/class/power_supply/sub_cpu_battery`, AC and USB power presence, USB
-gadget properties, Wi-Fi interface/link/supplicant state, ADB enablement and
-daemon state, Android process presence, uptime, framebuffer power state, and
-free space on the writable data and user-storage filesystems.
-
-```sh
-adb shell /data/local/tmp/prs-t1-agent status
-```
-
-Kernel/sysfs values are preferred because the Android battery and connectivity
-services disappear when zygote is stopped. On this firmware, the USB power
-node reports cable presence, while the vendor USB gadget's `adb` function is
-not always exposed through sysfs or properties; `adb.process_running` means
-that the device-side daemon is alive, not that the host currently has a
-usable transport. Wi-Fi signal is reported only when `wlan0` appears in
-`/proc/net/wireless`. Missing or unsupported fields are printed as
-`unknown`.
-
-`standalone-test` renders a compact version of this snapshot on the native
-framebuffer. It refreshes the status block every five seconds while retaining
-the live touch, key, and power diagnostics, so the same screen remains useful
-when zygote and `system_server` are stopped.
-
-The native test uses the fast `DU` waveform for touch, key, and power-detail
-updates, and keeps `GC16` for the initial, status, and suspend/resume redraws.
-The diagnostic screen is black and white, so it does not need grayscale during
-these small updates. A real UI should periodically use a grayscale/full refresh
-to control ghosting, and should validate the visual quality of repeated `DU`
-updates on the target panel. Transient updates are submitted asynchronously;
-the next framebuffer write waits for the pending marker before touching the
-shared mapping.
-
-The runtime now renders each complete logical screen into an owned packed
-RGB565 frame. A completion-tracked shadow frame is compared pixel-for-pixel,
-and only the smallest enclosing changed rectangle is copied into the mapped
-framebuffer and submitted to the EPDC. Identical frames are skipped. The
-semantic touch/key/power/status rectangles still select the normal waveform and
-provide the fallback before the first full synchronization; an unexpected
-change outside the requested region is promoted to GC16. The current planner
-uses exact one-pixel alignment because the T1's EPDC alignment requirement has
-not yet been measured. It is intentionally limited to one rectangle; merging
-multiple disjoint rectangles and a display worker for latest-frame coalescing
-remain follow-up work.
-
-A follow-up 60-second run recorded a physical touch and `KEY_LEFT` button
-press while the marker was active. The exact marker was not preserved after
-input: Android navigated from page 2 back to page 1 and redrew the framebuffer
-over the marker. No Android process was stopped. Persistent native rendering
-therefore needs a display-ownership boundary before touch/button mapping is
-useful.
-
-Root ADB can reproduce the hardware button path with `sendevent`; Linux key
-codes 106 (`KEY_RIGHT`) and 105 (`KEY_LEFT`) navigated the reader between its
-two home pages. The Android `input keyevent` utility is present but did not
-navigate this vendor UI with the corresponding Android DPAD keycodes.
-
-The physical menu button is reported by `/dev/input/event0` as `KEY` code 357
-(`Unknown`, shown by the diagnostics as `E0 Unknown C357`). Holding it for at
-least one second requests a full-screen GC16 redraw using the EPDC's explicit
-`UPDATE_MODE_FULL` flag, not just a full-sized rectangle. The runtime detects
-the threshold from its timer even if the device emits no key-repeat event, and
-also handles a repeat or release event as a fallback. A short menu press only
-updates the key diagnostics; the hold action is fired once per press.
-
-The native touch decoder accepts both the observed `ABS_MT_POSITION_X/Y`
-coordinates and the T1's legacy `ABS_X/Y` compatibility axes. The latter are
-advertised with an 800x600 range on the 600x800 display, so they are normalized
-as screen y/x respectively before hit testing. Tap release is recognized from
-either `BTN_TOUCH=0`, `ABS_MT_TRACKING_ID=-1`, or
-`ABS_MT_TOUCH_MAJOR=0` committed by `SYN_REPORT`. A physical capture confirmed
-the latter path on this T1: the panel emitted touch-major press/release frames
-without `BTN_TOUCH` or a tracking ID. This keeps full-width details actions,
-including `Back to reading`, usable across the event-reporting styles observed
-on the device.
-
-Stopping `zygote` also stopped `system_server` and removed the framework
-display/input services; the marker then survived a raw button injection. A
-manual `start zygote` entered a `PackageManager` crash loop, so normal reboot
-is currently the safe recovery path after this ownership experiment.
-
-A 90-second no-input render test with Android running preserved the exact
-marker, so no timer/status redraw was observed during that interval. This is
-not a guarantee against every future status update. The kernel exposes
-`/sys/power/wake_lock` and `wake_unlock`, providing a possible native keep-awake
-mechanism if zygote is stopped; Android's framework sleep/wake and power-key
-policy would still be unavailable.
-
-The T1 exposes `wm831x_on` and `sub_cpu_pwrbutton` as separate `KEY_POWER`
-evdev sources. Android normally handles short/long power presses in
-`system_server`; that handler disappears when zygote is stopped. No separate
-reset node has been identified, so the verified escape route remains root ADB
-plus normal reboot. A native UI should hold a kernel wake lock while testing
-zygote isolation.
-
-User-mode sleep/wake needs a native state machine: hold
-`/sys/power/wake_lock` while active, release it before requesting `standby`,
-wait on the T1's `/sys/power/wait_for_fb_wake` barrier, reacquire the lock
-after a real wake, refresh the framebuffer metadata while retaining its
-mapping, and redraw the complete screen. The EINK `standby` request is
-preferred for native mode because the normal `mem` early-suspend path disables
-the sub-CPU power-button wake IRQ. Power-key duration is handled from
-`event2`/`event4`.
-
-## Standalone native runtime test
-
-`standalone-test` is intended for manual development tests after zygote has
-been stopped. It opens all relevant input nodes, holds the legacy kernel wake
-lock, renders a full-screen diagnostic pattern, and redraws the pattern with
-the most recent touch/key values. It does not depend on Android Java services.
-At startup it opens and validates the writable framebuffer mapping, then uses
-`/system/bin/ps` to verify that both `zygote` and `system_server` are stopped
-before drawing or acquiring the wake lock. If Android still owns the framework
-UI, it exits without rendering. On this T1, Android's existing framebuffer
-mapping may cause the open step itself to return `EINVAL`, which is also a safe
-refusal path.
-
-The development procedure is:
-
-```sh
-adb push ./prs-t1-agent /data/local/tmp/prs-t1-agent
-adb shell chmod 755 /data/local/tmp/prs-t1-agent
-adb shell stop zygote
-adb shell 'trap "" HUP; /data/local/tmp/prs-t1-agent standalone-test /dev/graphics/fb0 </dev/null >/data/local/tmp/prs-t1-agent.log 2>&1 &'
-```
-
-The optional final argument selects the suspend request: `standby` (the
-default) uses the T1 EINK early-suspend mode, while `mem` uses Android's
-normal early-suspend path. For example, the stock-style wake test is:
-
-```sh
-adb shell 'trap "" HUP; /data/local/tmp/prs-t1-agent standalone-test /dev/graphics/fb0 mem </dev/null >/data/local/tmp/prs-t1-agent-mem.log 2>&1 &'
-```
-
-The `HUP` trap and redirected standard streams are important on this old T1:
-the ADB USB link disappears during suspend, and a process left attached to the
-interactive ADB shell is otherwise lost before it can handle resume. The
-diagnostic process can be checked with `adb shell ps` and its startup errors
-with `adb shell cat /data/local/tmp/prs-t1-agent.log` while the reader is
-awake.
-
-The host-side helper packages the push, detached launch, framework-stop wait,
-status, and reboot recovery steps:
+For a manual native ownership test, the helper pushes the binary, stops the
+framework, launches a detached process, reports status, and provides the
+reboot recovery command:
 
 ```sh
 crates/prs-t1-agent/tools/native-test.sh start
@@ -279,294 +104,130 @@ crates/prs-t1-agent/tools/native-test.sh status
 crates/prs-t1-agent/tools/native-test.sh reboot
 ```
 
-It defaults to the release binary at
-`target/armv5te-unknown-linux-musleabi/release/prs-t1-agent`; override it with
-`PRS_T1_AGENT_BINARY` for another build. `start` refuses to launch a second
-native process and waits for both zygote and `system_server` to exit.
+`start` defaults to the release artifact above. Set `PRS_T1_AGENT_BINARY` for
+another binary, `PRS_T1_FRAMEBUFFER` for another framebuffer path, or
+`PRS_T1_SUSPEND_MODE=mem` to compare Android's normal early-suspend path. The
+script is intentionally not an automatic startup mechanism.
 
-While the test is running:
+## Native shell
 
-1. Touch the screen and press hardware keys; the diagnostic display should
-   show the raw source, event type, code, value, coordinates, and event counts.
-2. Press and release a power key briefly. The test displays a sleep status,
-   supplies the native standby image, releases its wake lock, requests the
-   selected suspend mode, and waits for `/sys/power/wait_for_fb_wake`. During
-   that wait it continues monitoring the power evdev nodes; a wake-side power
-   event causes it to request `on`, matching the framework's early-resume
-   handoff, before it reacquires the lock and redraws.
-   If persistent ADB is enabled, the test defers restarting `adbd` until the
-   USB power-supply node reports that the cable has been reconnected. This is
-   necessary on the T1: restarting `adbd` while USB is physically disconnected
-   does not reliably cause the legacy USB gadget to re-enumerate later.
-3. Hold a power key for at least two seconds. The test requests `/system/bin/reboot`.
+The shell renders a 48-pixel black status bar with white 20x20 binary sprites
+and compact text. It reports battery level, active USB/Wi-Fi/ADB indicators,
+exceptional mode such as sleeping or rebooting, and the local time. The home
+content area is otherwise quiet for future reading content.
 
-The smoke test has verified the full-screen pattern, wake-lock acquisition,
-and on-screen key data while zygote is stopped. A synthetic `KEY_POWER` pair
-also reached the native state machine and entered the kernel suspend path. The
-first attempt was attached to the ADB shell, so the process disappeared when
-USB went away and Android restarted zygote/system_server on resume. A detached
-launch survived that shell lifecycle. The normal `mem` path was then shown to
-return immediately because `/sys/power/state` is asynchronous, and it did not
-leave the sub-CPU power-button wake path usable. The current test uses EINK
-`standby` plus the display-wake barrier. If the reader does not wake, use the
-hardware reset or `adb reboot` recovery route. After any zygote stop, a normal
-reboot is the supported way to restore Android. If ADB does not return after a
-successful native wake, reconnect the USB cable while the reader is awake and
-leave it connected for a few seconds so the deferred `adbd` restart can run.
+Tap the status bar to open **Details / Settings**. The details page groups the
+live snapshot under:
 
-### Vendor power-state bridge
+- **Power** — battery state, temperature, voltage, AC, USB, and supported power states.
+- **Connectivity** — Wi-Fi interface/link/supplicant state, USB gadget state, and ADB.
+- **System** — uptime, framebuffer state/rotation, Android process state, and wake lock.
+- **Storage** — available space on `/data` and `/mnt/sdcard`.
+- **Input** — the latest touch, key, and power events and their coordinates/counts.
 
-The T1's `/system/lib/libhardware_legacy.so` exports Sony's
-`set_screen_state(int)` function. Its state values are `1=on`, `0=mem`, and
-`2=standby`. The native runtime uses a helper for this API when
-`/data/local/tmp/prs-t1-power-state` is present and falls back to writing
-`/sys/power/state` directly when it is absent.
+The page also provides full-width **Reboot**, **Power off**, and **Back to
+reading** targets. Touch release is accepted from the event shapes observed on
+the T1: `BTN_TOUCH=0`, `ABS_MT_TRACKING_ID=-1`, or
+`ABS_MT_TOUCH_MAJOR=0`, committed by `SYN_REPORT`. The legacy `ABS_X/Y` path is
+normalized from the panel's advertised 800x600 axes before hit testing.
 
-Android 2.2's dynamic linker does not support the modern PIE executable form.
-The compatibility helper is therefore built as an old-style ARM `ET_EXEC`
-with `/system/bin/linker` as its interpreter. Pull the device's `libdl` stub
-once, build the helper, and deploy it beside the native agent:
+The physical menu button is event0 code 357 (`Unknown` in the old kernel). A
+hold of at least one second requests a full GC16 redraw with the EPDC's
+`UPDATE_MODE_FULL` flag. Short menu presses only update diagnostics. A short
+power press sleeps; a press of at least two seconds requests reboot.
+
+## Display and refresh model
+
+The T1 exposes a 600x800 visible RGB565 framebuffer with a 1216-byte stride
+and a larger virtual buffer. The runtime therefore never assumes that the
+visible image is tightly packed in the mapped framebuffer.
+
+Each logical screen is first rendered into an owned, tightly packed RGB565
+frame. After a completed full-screen update, the runtime keeps a shadow frame,
+compares both bytes of every visible pixel, and submits the smallest enclosing
+changed rectangle. Identical frames are skipped. A semantic region remains a
+waveform hint and a fallback; a change outside that hint is promoted to GC16
+rather than being silently omitted. One update marker is tracked so an
+asynchronous transient update completes before the next mapped-frame write.
+
+Transient touch, key, and power updates use the fast `DU` waveform and are
+submitted asynchronously. Initial, status, and full redraws use `GC16` and
+wait for completion. The T1's EPDC alignment quantum has not been measured, so
+damage defaults to exact one-pixel alignment. Repeated DU ghosting and the
+right cadence for GC16 cleanup still need physical visual characterization.
+
+## Power and Android ownership
+
+`standalone-test` fails closed if either `zygote` or `system_server` is still
+running. This is important because the current framebuffer and all five input
+devices were observed under `system_server`; stopping zygote is a broad
+framework shutdown, not a precise display-owner switch. The native loop then:
+
+1. acquires the legacy kernel wake lock;
+2. renders the native screen and reads event0/event1/event2/event4;
+3. on a short power press, renders a standby screen and requests sleep;
+4. waits for `/sys/power/wait_for_fb_wake`, handles the wake-side power event,
+   reacquires the lock, refreshes framebuffer metadata, and redraws; and
+5. on a long power press, calls `/system/bin/reboot`.
+
+The default `standby` mode uses the T1 EINK path. `mem` is retained as a
+comparison mode for Android's normal early-suspend behavior. The native EINK
+sleep/wake sequence has been exercised with USB disconnected; the old USB ADB
+transport can require a reconnect after wake. When persistent ADB is enabled,
+the runtime defers `adbd` restart until the USB power node reports the cable is
+back.
+
+The T1 vendor library exports Sony's `set_screen_state(int)` function. When
+`/data/local/tmp/prs-t1-power-state` is present, the runtime uses it for
+`standby`, `mem`, and the wake-side `on` handoff; otherwise it falls back to
+`/sys/power/state`. The Android 2.2 compatibility helper is built and staged
+with:
 
 ```sh
 adb pull /system/lib/libdl.so /tmp/prs-t1-libdl.so
 ./crates/prs-t1-agent/tools/build-power-state-helper.sh \
-    /tmp/prs-t1-libdl.so target/prs-t1-power-state
+  /tmp/prs-t1-libdl.so target/prs-t1-power-state
 adb push target/prs-t1-power-state /data/local/tmp/prs-t1-power-state
 adb shell chmod 755 /data/local/tmp/prs-t1-power-state
 ```
 
-The helper only bridges into the installed vendor library; it does not
-replace the native runtime. The stock-framework test confirmed that the
-vendor transition can enter and leave the T1 sleep screen. The zygote-stopped
-native test still needs to verify the complete bridge-assisted wake handoff.
+The optional [T1 launcher](../../tools/prs-t1-launcher/README.md) adds a
+small Android 2.2/API 8 Home activity labelled **Native UI**. It invokes the
+root handoff when selected from the Home resolver; it does not contain the
+native renderer and does not make the native UI persistent.
 
-## What we know about this T1
+## Safety and recovery
 
-- Sony firmware reports `1.0.00.09270`.
-- The system image identifies itself as Android `2.2.1` / `FRG83`.
-- Root ADB is available through `/sbin/adbd` after the enable-ADB package.
-- The device is a rooted Android system, not the PRS-350's small Linux
-  userspace, so its framebuffer and input ownership must be measured on the
-  running device.
+Run `probe`, `status`, `input`, `events`, and `capture` first. Keep the stock
+Android recovery path available before using a write-capable command. Do not
+stop zygote casually: Android services, input dispatch, Wi-Fi management, and
+the normal settings UI can disappear. Do not make **Native UI** the permanent
+Home choice until the handoff has been tested.
 
-These are observations from the current reader, not assumptions about every
-PRS-T1 firmware revision.
-
-## Important Android boundary
-
-Do not stop zygote as the first step. Zygote is the parent for the Dalvik/Java
-side of Android and stopping it will normally take down `system_server` and
-most framework services, including ActivityManager, WindowManager,
-PackageManager, and Android input dispatch. It may leave a root `adbd` process
-running if init owns it, but that must be verified rather than assumed. Wi-Fi
-drivers and `wpa_supplicant` may also remain alive, while framework-mediated
-network management and the visible settings UI may not.
-
-A native process that opens the kernel framebuffer and input device directly
-does not inherently need zygote, `system_server`, or the launcher to be
-stopped. The likely first problem is ownership and redraw races: Android's
-`surfaceflinger`, the Sony reader application, or an e-ink display service may
-continue to write the same device after our process renders.
-
-The preferred progression is therefore:
-
-```text
-observe Android
-    -> run native probe beside Android
-    -> identify the display/input owner
-    -> stop or suspend only the owner/UI layer
-    -> retain system_server, adbd, and Wi-Fi
-    -> consider surfaceflinger or zygote only as measured experiments
-```
-
-## Hardware checks before writing device code
-
-All checks in this section should be read-only. Capture the output in the T1
-analysis log and keep a stock reboot route available.
-
-### 1. Identify the framebuffer node and driver
-
-Check both common Android paths and inspect the kernel's registration:
+After a zygote-isolated test, use:
 
 ```sh
-adb shell 'ls -l /dev/fb0 /dev/graphics/fb0 2>/dev/null'
-adb shell 'cat /proc/fb 2>/dev/null; cat /proc/devices 2>/dev/null'
-adb shell 'for f in name bits_per_pixel virtual_size stride mode modes state blank rotate; do echo --- $f; cat /sys/class/graphics/fb0/$f 2>/dev/null; done'
-adb shell 'getprop | grep -i -E "fb|display|eink|screen"'
+crates/prs-t1-agent/tools/native-test.sh reboot
 ```
 
-The probe must record:
+If ADB or the native process does not return, use the reader's hardware reset
+button. A normal reboot is the supported way to restore zygote,
+`system_server`, `dispd`, and Android's normal UI.
 
-- the exact path (`/dev/fb0`, `/dev/graphics/fb0`, or another node);
-- permissions, owner, and group;
-- `FBIOGET_VSCREENINFO` and `FBIOGET_FSCREENINFO` values;
-- width, height, virtual dimensions, stride, bits per pixel, and pixel format;
-- whether `mmap` succeeds and whether the visible buffer is 8-bit grayscale;
-- any Sony/e-ink-specific update ioctl or helper library used by the stock UI.
+## Next goals
 
-The first native test is the `capture` method above: mmap and capture the
-buffer without changing it. The bounded `render-test` now provides the next
-controlled step: draw a reversible marker, request the vendor EPDC update,
-capture the mapped result, wait several seconds, and check whether another
-process redraws it before restoring the original bytes.
+The next work should stay focused on making the custom UI useful while keeping
+the recovery path explicit:
 
-### 2. Find who owns or writes the framebuffer
+1. Decide how the native UI should obtain durable display ownership without
+   depending on a broad zygote shutdown.
+2. Characterize repeated DU updates on the physical panel and choose a GC16
+   cleanup policy.
+3. Improve the standby image and USB/ADB recovery behavior across suspend.
+4. Add document/image content to the quiet home canvas after the ownership and
+   refresh policy are reliable.
+5. Only then evaluate a persistent startup integration.
 
-Record the Android process inventory and look for display-related processes:
-
-```sh
-adb shell 'ps'
-adb shell 'service list'
-adb shell 'dumpsys SurfaceFlinger 2>/dev/null'
-adb shell 'dumpsys input 2>/dev/null'
-adb shell 'cat /proc/mounts'
-```
-
-For each candidate process (`surfaceflinger`, `system_server`, the Sony reader
-application, launcher, or an e-ink service), inspect open descriptors and the
-command line. The exact toolbox on this old image may not include `lsof` or a
-full `fuser`, so `/proc` inspection is the fallback:
-
-```sh
-adb shell 'for p in /proc/[0-9]*; do n=$(cat "$p/cmdline" 2>/dev/null | tr "\\000" " "); for f in "$p"/fd/*; do t=$(readlink "$f" 2>/dev/null); case "$t" in /dev/fb*|/dev/graphics/fb*) echo "$p $n $f -> $t";; esac; done; done'
-```
-
-An open descriptor is evidence of interest, not proof that the process is
-actively rendering. We should also compare framebuffer bytes before and after
-an Android screen transition and collect `logcat` messages during a native
-test.
-
-### 3. Identify input without injecting events
-
-Check the standard Linux input devices and any Sony-specific controller:
-
-```sh
-adb shell 'ls -l /dev/input /dev/subcpu 2>/dev/null'
-adb shell 'cat /proc/bus/input/devices 2>/dev/null'
-adb shell 'getevent -pl 2>/dev/null'
-```
-
-Then implement a native read-only event probe which opens candidate nodes
-non-blocking and prints raw event records. We need to determine:
-
-- whether touch arrives through `/dev/input/event*`, `/dev/subcpu`, or an
-  Android/vendor daemon;
-- the event device name, ABS ranges, coordinate orientation, and pressure/tool
-  fields;
-- hardware key codes and press/release semantics; and
-- whether Android continues consuming the same events while our process reads
-  them. Reading an evdev device may distribute or compete for events depending
-  on the driver, so this must be tested with a physical touch and a recovery
-  path.
-
-No event injection, `EVIOCGRAB`, or input-device writes belong in the first
-probe.
-
-### 4. Establish process and service dependencies
-
-Before stopping anything, capture the process tree, init service definitions,
-and network/ADB state:
-
-```sh
-adb shell 'ps -p 1; cat /init.rc 2>/dev/null; cat /init*.rc 2>/dev/null'
-adb shell 'ps | grep -E "adbd|zygote|system_server|surfaceflinger|wpa_supplicant|netd|dhcpcd"'
-adb shell 'getprop sys.usb.config; getprop init.svc.adbd; getprop init.svc.wpa_supplicant'
-adb shell 'ip addr 2>/dev/null; iwconfig 2>/dev/null'
-```
-
-The exact Android 2.2 service names and init files are device-specific. We
-need to distinguish:
-
-- processes started directly by init, which may survive a Java framework stop;
-- processes supervised or recreated by `system_server`; and
-- the Sony UI process which can be stopped independently.
-
-After every process experiment, verify both `adb shell id` and the Wi-Fi
-connection before proceeding. Keep one ADB shell open while experimenting and
-have the physical power/recovery route ready.
-
-## Staged implementation plan
-
-### Phase A — read-only inventory
-
-Add `framebuffer` and `input` modules which only enumerate paths, query ioctl
-metadata, inspect input capabilities, and report process ownership. Add host
-tests for parsing and coordinate conversion using captured output.
-
-### Phase B — native probe beside Android
-
-Cross-compile a static ARM binary, copy it with ADB, and run it while the stock
-launcher is visible. Implement framebuffer capture first, then a no-injection
-input logger. Confirm whether direct framebuffer writes are visible and whether
-Android redraws them.
-
-### Phase C — controlled UI ownership
-
-Identify the smallest Sony UI process or service responsible for redraws. Stop
-only that component, if possible, while leaving init, `adbd`, Wi-Fi,
-`surfaceflinger`, and the Java framework running. Add a watchdog or manual ADB
-restart command before making the native loop persistent.
-
-### Phase D — replace the visible UI temporarily
-
-Run a native test screen for a bounded period, exercise touch and buttons, then
-restore the stock UI and reboot. The reversible render test is the initial
-display step; it has not yet demonstrated long-running ownership. Do not
-modify boot images or init scripts for this phase. A `/data/local/tmp` binary
-and an ADB-started process are the preferred deployment route.
-
-### Phase E — investigate deeper Android shutdown only if necessary
-
-If the display remains owned after the UI layer is stopped, test the relevant
-display service in isolation. Only after measuring the effects should we
-consider stopping `surfaceflinger`, `system_server`, or zygote. Each experiment
-must have a documented command, expected ADB/Wi-Fi impact, observation, and
-reboot recovery.
-
-## Proposed crate layout
-
-```text
-crates/prs-t1-agent/
-├── Cargo.toml
-├── README.md
-└── src/
-    ├── main.rs         # CLI and lifecycle policy
-    ├── android.rs      # read-only process/service inspection
-    ├── framebuffer.rs  # fb discovery, mmap, format, and e-ink updates
-    ├── input.rs        # evdev/vendor input discovery and decoding
-    └── runtime.rs      # controlled render/input loop
-```
-
-The crate should not initially depend on Android Java APIs or a graphical
-toolkit. Keep the native surface small, use direct Linux syscalls/ioctls where
-needed, and make every device-mutating operation an explicit opt-in mode.
-
-## Current implementation
-
-The current `probe` command runs read-only framebuffer, Android, and input
-inventory. The `input` command performs evdev ioctl capability queries without
-opening an event stream, grabbing a device, or injecting events. The `capture`
-command opens `/dev/graphics/fb0` read-only, maps the framebuffer with
-`PROT_READ`, converts the visible RGB565 pixels to an 8-bit grayscale PGM, and
-writes only the PGM stream to stdout. The `render-test` command is explicitly
-write-capable and is limited to the centered, reversible test described above.
-The `standalone-test` command is a separate long-running write-capable runtime
-for manual zygote-isolated power, display, and input testing.
-
-The `events` command opens one evdev node read-only and logs a finite raw event
-stream. For example, `prs-t1-agent events /dev/input/event1 10` captures ten
-seconds of touch input. It uses non-blocking reads and never calls
-`EVIOCGRAB`; each numeric event type and code is accompanied by a readable
-Linux name. The native screen uses the same names while retaining the raw code
-and value. It should be run while Android is active and only with a recovery
-route available.
-
-The ARMv5 musl build has been deployed and tested on this T1's ARMv7
-userspace. It successfully captured a 600x800 screen and identified the
-touchpanel's absolute axes. The bounded raw evdev logger now runs against
-`event1` without grabbing the device or injecting events. Its first three-second
-idle sample contained no events. The native render test also completed with
-the stock Android services still active; input now confirms that Android
-redraws over the native framebuffer. The standalone runtime smoke test now
-draws the full-screen pattern, holds the wake lock, and displays synthetic key
-data with zygote stopped. Manual suspend/resume and long-power reboot remain.
+The older discovery procedure and full evidence ledger remain available in
+[`docs/prs-t1/analysis.md`](../../docs/prs-t1/analysis.md); this README is the
+operational description of the current crate rather than a staged plan.
