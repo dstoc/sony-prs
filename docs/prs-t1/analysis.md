@@ -660,6 +660,15 @@ may instead make the initial writable mmap return `EINVAL`; that is also a
 safe refusal path. The stopped-framework path must therefore be launched only
 after zygote has been stopped.
 
+The repeatable host helper `crates/prs-t1-agent/tools/native-test.sh` now
+encapsulates this sequence. Its `start` action pushes the release binary,
+stops zygote, waits for zygote and `system_server` to disappear, and launches
+the test detached from the ADB shell. Its `status` action prints the process
+and read-only device snapshot, and its `reboot` action restores normal Android
+and waits for ADB. The complete `start`/`status`/`reboot` path was exercised on
+2026-09-16 without physical interaction; the reader returned with zygote,
+`system_server`, `dispd`, and `adbd` running.
+
 ### Vendor power-state bridge
 
 The installed `/system/lib/libhardware_legacy.so` was pulled from the reader

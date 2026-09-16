@@ -204,6 +204,20 @@ diagnostic process can be checked with `adb shell ps` and its startup errors
 with `adb shell cat /data/local/tmp/prs-t1-agent.log` while the reader is
 awake.
 
+The host-side helper packages the push, detached launch, framework-stop wait,
+status, and reboot recovery steps:
+
+```sh
+crates/prs-t1-agent/tools/native-test.sh start
+crates/prs-t1-agent/tools/native-test.sh status
+crates/prs-t1-agent/tools/native-test.sh reboot
+```
+
+It defaults to the release binary at
+`target/armv5te-unknown-linux-musleabi/release/prs-t1-agent`; override it with
+`PRS_T1_AGENT_BINARY` for another build. `start` refuses to launch a second
+native process and waits for both zygote and `system_server` to exit.
+
 While the test is running:
 
 1. Touch the screen and press hardware keys; the diagnostic display should
