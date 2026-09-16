@@ -705,6 +705,47 @@ mod tests {
     }
 
     #[test]
+    fn distinct_faces_change_metrics_and_rasterized_glyphs() {
+        let regular = std::fs::read("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
+            .expect("distinct-face test needs DejaVu Sans");
+        let bold = std::fs::read("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf")
+            .expect("distinct-face test needs DejaVu Sans Bold");
+        let italic = std::fs::read("/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Oblique.ttf")
+            .expect("distinct-face test needs DejaVu Sans Mono Oblique");
+        let bold_italic =
+            std::fs::read("/usr/share/fonts/truetype/dejavu/DejaVuSansMono-BoldOblique.ttf")
+                .expect("distinct-face test needs DejaVu Sans Mono Bold Oblique");
+        let monospace = std::fs::read("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf")
+            .expect("distinct-face test needs DejaVu Sans Mono");
+        let mut engine = FontdueTextEngine::new(
+            FontConfig::from_faces(&regular, &bold, &italic, &bold_italic, &monospace),
+            0,
+        )
+        .expect("distinct test fonts should parse");
+
+        let proportional = engine.measure_text("Wi", TextStyle::regular(20));
+        let fixed = engine.measure_text("Wi", TextStyle::monospace(20));
+        assert_ne!(proportional.advance_width, fixed.advance_width);
+
+        let regular_glyph = engine.layout(&[TextRun::new("a", TextStyle::regular(20))], 200);
+        let bold_glyph = engine.layout(&[TextRun::new("a", TextStyle::bold(20))], 200);
+        let italic_glyph = engine.layout(&[TextRun::new("a", TextStyle::italic(20))], 200);
+        let bold_italic_glyph =
+            engine.layout(&[TextRun::new("a", TextStyle::bold_italic(20))], 200);
+        let monospace_glyph = engine.layout(&[TextRun::new("a", TextStyle::monospace(20))], 200);
+        let regular_bitmap = engine.rasterize_glyph(&regular_glyph.glyphs[0]);
+        let bold_bitmap = engine.rasterize_glyph(&bold_glyph.glyphs[0]);
+        let italic_bitmap = engine.rasterize_glyph(&italic_glyph.glyphs[0]);
+        let bold_italic_bitmap = engine.rasterize_glyph(&bold_italic_glyph.glyphs[0]);
+        let monospace_bitmap = engine.rasterize_glyph(&monospace_glyph.glyphs[0]);
+
+        assert_ne!(regular_bitmap, bold_bitmap);
+        assert_ne!(regular_bitmap, italic_bitmap);
+        assert_ne!(regular_bitmap, bold_italic_bitmap);
+        assert_ne!(regular_bitmap, monospace_bitmap);
+    }
+
+    #[test]
     fn line_height_and_baseline_are_consistent() {
         let engine = engine(8);
         let layout = engine.wrap(&[TextRun::new("Hello", TextStyle::regular(20))], 200);

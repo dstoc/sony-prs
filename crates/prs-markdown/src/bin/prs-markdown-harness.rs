@@ -16,7 +16,11 @@ struct Cli {
     input: Input,
     output: PathBuf,
     pages: Vec<usize>,
-    font: Option<PathBuf>,
+    font_regular: Option<PathBuf>,
+    font_bold: Option<PathBuf>,
+    font_italic: Option<PathBuf>,
+    font_bold_italic: Option<PathBuf>,
+    font_monospace: Option<PathBuf>,
     width: u32,
     height: u32,
     padding: u32,
@@ -33,6 +37,15 @@ struct Cli {
 enum Input {
     File(PathBuf),
     Fixture(String),
+}
+
+#[derive(Debug)]
+struct FontPaths {
+    regular: PathBuf,
+    bold: PathBuf,
+    italic: PathBuf,
+    bold_italic: PathBuf,
+    monospace: PathBuf,
 }
 
 fn main() {
@@ -52,14 +65,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     };
 
     let (source_path, source) = read_input(&cli.input)?;
-    let font_path = cli
-        .font
-        .clone()
-        .or_else(default_font_path)
-        .ok_or_else(|| "no host font found; pass --font PATH".to_owned())?;
-    let font_bytes = fs::read(&font_path)
-        .map_err(|error| format!("read font {}: {error}", font_path.display()))?;
-    let font_config = FontConfig::from_regular(font_bytes);
+    let (font_paths, font_config) = load_font_config(&cli)?;
     let font_engine = FontdueTextEngine::new(font_config, cli.cache_capacity)?;
     let style = reader_style(&cli);
     let viewport = Viewport::new(cli.width, cli.height);
@@ -74,7 +80,11 @@ fn run() -> Result<(), Box<dyn Error>> {
         .map_err(|error| format!("create output directory {}: {error}", cli.output.display()))?;
 
     println!("input: {}", source_path.display());
-    println!("font: {}", font_path.display());
+    println!("font regular: {}", font_paths.regular.display());
+    println!("font bold: {}", font_paths.bold.display());
+    println!("font italic: {}", font_paths.italic.display());
+    println!("font bold-italic: {}", font_paths.bold_italic.display());
+    println!("font monospace: {}", font_paths.monospace.display());
     println!("viewport: {}x{}", viewport.width, viewport.height);
     println!("pages: {}", reader.page_count());
     println!("output: {}", cli.output.display());
@@ -107,7 +117,11 @@ impl Cli {
         let mut input = None;
         let mut output = PathBuf::from(DEFAULT_OUTPUT);
         let mut pages = Vec::new();
-        let mut font = None;
+        let mut font_regular = None;
+        let mut font_bold = None;
+        let mut font_italic = None;
+        let mut font_bold_italic = None;
+        let mut font_monospace = None;
         let mut width = 600;
         let mut height = 800;
         let mut padding = 16;
@@ -131,7 +145,27 @@ impl Cli {
                 }
                 "--output" | "-o" => output = PathBuf::from(required_value(&mut args, "--output")?),
                 "--page" => pages.push(parse_page(&required_value(&mut args, "--page")?)?),
-                "--font" => font = Some(PathBuf::from(required_value(&mut args, "--font")?)),
+                "--font" | "--font-regular" => {
+                    font_regular = Some(PathBuf::from(required_value(&mut args, "--font")?))
+                }
+                "--font-bold" => {
+                    font_bold = Some(PathBuf::from(required_value(&mut args, "--font-bold")?))
+                }
+                "--font-italic" => {
+                    font_italic = Some(PathBuf::from(required_value(&mut args, "--font-italic")?))
+                }
+                "--font-bold-italic" => {
+                    font_bold_italic = Some(PathBuf::from(required_value(
+                        &mut args,
+                        "--font-bold-italic",
+                    )?))
+                }
+                "--font-monospace" => {
+                    font_monospace = Some(PathBuf::from(required_value(
+                        &mut args,
+                        "--font-monospace",
+                    )?))
+                }
                 "--width" => width = parse_u32(&required_value(&mut args, "--width")?, "--width")?,
                 "--height" => {
                     height = parse_u32(&required_value(&mut args, "--height")?, "--height")?
@@ -191,7 +225,11 @@ impl Cli {
             input,
             output,
             pages,
-            font,
+            font_regular,
+            font_bold,
+            font_italic,
+            font_bold_italic,
+            font_monospace,
             width,
             height,
             padding,
@@ -204,6 +242,44 @@ impl Cli {
             cache_capacity,
         }))
     }
+}
+
+fn load_font_config(cli: &Cli) -> Result<(FontPaths, FontConfig), Box<dyn Error>> {
+    let regular = cli
+        .font_regular
+        .clone()
+        .or_else(default_font_path)
+        .ok_or_else(|| "no host font found; pass --font PATH".to_owned())?;
+    let paths = FontPaths {
+        regular: regular.clone(),
+        bold: cli.font_bold.clone().unwrap_or_else(|| regular.clone()),
+        italic: cli.font_italic.clone().unwrap_or_else(|| regular.clone()),
+        bold_italic: cli
+            .font_bold_italic
+            .clone()
+            .unwrap_or_else(|| regular.clone()),
+        monospace: cli
+            .font_monospace
+            .clone()
+            .unwrap_or_else(|| regular.clone()),
+    };
+    let regular_bytes = read_font(&paths.regular, "regular")?;
+    let bold_bytes = read_font(&paths.bold, "bold")?;
+    let italic_bytes = read_font(&paths.italic, "italic")?;
+    let bold_italic_bytes = read_font(&paths.bold_italic, "bold-italic")?;
+    let monospace_bytes = read_font(&paths.monospace, "monospace")?;
+    let config = FontConfig::from_faces(
+        regular_bytes,
+        bold_bytes,
+        italic_bytes,
+        bold_italic_bytes,
+        monospace_bytes,
+    );
+    Ok((paths, config))
+}
+
+fn read_font(path: &Path, face: &str) -> Result<Vec<u8>, Box<dyn Error>> {
+    fs::read(path).map_err(|error| format!("read {face} font {}: {error}", path.display()).into())
 }
 
 fn reader_style(cli: &Cli) -> ReaderStyle {
@@ -312,7 +388,12 @@ fn print_usage() {
            -o, --output DIR             output directory (default: {DEFAULT_OUTPUT})\n\
            --page N                     render 1-based page N; repeat for selected pages\n\n\
          Configuration:\n\
-           --font PATH                  TrueType/OpenType font (or PRS_MARKDOWN_FONT)\n\
+           --font PATH                  regular face; unspecified faces use it (or PRS_MARKDOWN_FONT)\n\
+           --font-regular PATH          alias for --font\n\
+           --font-bold PATH             bold face\n\
+           --font-italic PATH           italic face\n\
+           --font-bold-italic PATH      bold-italic face\n\
+           --font-monospace PATH        monospace/code face\n\
            --width N                    viewport width (default: 600)\n\
            --height N                   viewport height (default: 800)\n\
            --padding N                  page padding on all sides (default: 16)\n\
@@ -325,4 +406,39 @@ fn print_usage() {
            --cache-capacity N           bounded glyph cache entries (default: 512)\n\
            -h, --help                   show this help"
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_independent_font_face_options() {
+        let cli = Cli::parse(
+            [
+                "--fixture",
+                "regression",
+                "--font-regular",
+                "regular.ttf",
+                "--font-bold",
+                "bold.ttf",
+                "--font-italic",
+                "italic.ttf",
+                "--font-bold-italic",
+                "bold-italic.ttf",
+                "--font-monospace",
+                "mono.ttf",
+            ]
+            .into_iter()
+            .map(String::from),
+        )
+        .expect("font options should parse")
+        .expect("arguments should produce a CLI");
+
+        assert_eq!(cli.font_regular, Some(PathBuf::from("regular.ttf")));
+        assert_eq!(cli.font_bold, Some(PathBuf::from("bold.ttf")));
+        assert_eq!(cli.font_italic, Some(PathBuf::from("italic.ttf")));
+        assert_eq!(cli.font_bold_italic, Some(PathBuf::from("bold-italic.ttf")));
+        assert_eq!(cli.font_monospace, Some(PathBuf::from("mono.ttf")));
+    }
 }
