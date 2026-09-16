@@ -1076,3 +1076,40 @@ button was used to recover. After reset, ADB returned with zygote,
 `system_server`, `dispd`, and `adbd` running. This validates the native
 sleep-to-wake control path with USB disconnected, while leaving the displayed
 standby image and post-wake USB/ADB re-enumeration for further investigation.
+
+## Native EINK standby sleep/wake test
+
+The EINK `standby` mode was tested on 2026-09-16 after the successful `mem`
+comparison. USB was physically disconnected before the short power press. The
+reader displayed a stable `STATE SLEEPING` / `EINK STANDBY MODE` screen, and
+the user then woke it with one brief power press. The native UI returned to
+`STATE ACTIVE`; its `wake power ignored` message confirms that the wake-side
+release was suppressed by the two-second post-wake guard rather than being
+misinterpreted as a second sleep request.
+
+The preserved log recorded:
+
+```text
+power release source=E4 duration_ms=263 action=SLEEP
+drawing pre-suspend screen
+standby screen supplied
+requesting suspend mode=EINK_STANDBY
+requesting vendor suspend helper state=standby
+suspend request queued: Ok(())
+wake-side power event source=E4 value=1
+requesting early resume
+requesting vendor resume helper state=on
+display wake barrier released bytes=4
+suspend/wake wait returned: Ok(()) elapsed_ms=823
+wake lock reacquire returned: Ok()
+post-resume framebuffer 600x800 virtual=608x1792 smem_len=2179072 stride=1216 offsets=(0, 0)
+framebuffer mapping retained across resume
+framebuffer remap returned: Ok(())
+```
+
+This validates the complete native EINK suspend/wake control path, including
+the wake-event handoff and retained framebuffer mapping. As with the `mem`
+test, reconnecting USB did not restore ADB; a hardware reset was required to
+recover normal Android and retrieve the preserved log. The EINK standby image
+was stable in this run, unlike the transient corruption observed during the
+earlier `mem` test.
