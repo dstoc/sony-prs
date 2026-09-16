@@ -68,6 +68,20 @@ fn reader_style() -> ReaderStyle {
     }
 }
 
+fn golden_font_engine() -> FontdueTextEngine {
+    FontdueTextEngine::new(
+        FontConfig::from_faces(
+            notosans::REGULAR_TTF,
+            notosans::BOLD_TTF,
+            notosans::ITALIC_TTF,
+            notosans::BOLD_ITALIC_TTF,
+            notosans::REGULAR_TTF,
+        ),
+        512,
+    )
+    .expect("checked-in golden fonts should parse")
+}
+
 fn fixture_root() -> (TestRoot, FileSystemResourceProvider) {
     let root = TestRoot::new();
     fs::create_dir_all(root.path().join("book/chapters")).expect("create document directory");
@@ -229,6 +243,73 @@ fn loaded_images_render_as_grayscale_pixels_through_the_normal_renderer() {
         .pixels()
         .iter()
         .any(|pixel| *pixel > 0 && *pixel < 255));
+}
+
+#[test]
+fn provider_backed_image_fixture_matches_png_goldens() {
+    let (_root, provider) = fixture_root();
+    let source = provider
+        .read_markdown(provider.document_path())
+        .expect("read Markdown fixture");
+    let font_engine = golden_font_engine();
+    let reader = HostReader::from_source_with_provider(
+        &source,
+        &provider,
+        provider.document_path(),
+        reader_style(),
+        Viewport::new(96, 64),
+        font_engine.clone(),
+    )
+    .expect("fixture should parse");
+    let mut renderer = prs_markdown::EmbeddedGraphicsRenderer::new(font_engine);
+
+    for (page_index, page) in reader.pagination().pages().iter().enumerate() {
+        let image = render_page(page, &mut renderer);
+        assert_png_golden(page_index + 1, &image);
+    }
+}
+
+fn assert_png_golden(page_number: usize, image: &HostImage) {
+    let golden = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join(format!("tests/goldens/images-page-{page_number:03}.png"));
+    let failure = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!(
+        "../../target/prs-markdown-golden-failures/images-page-{page_number:03}.png"
+    ));
+    let actual = image.png_bytes();
+
+    if std::env::var_os("PRS_MARKDOWN_UPDATE_GOLDENS").is_some() {
+        fs::write(&golden, &actual)
+            .unwrap_or_else(|error| panic!("write golden {}: {error}", golden.display()));
+        return;
+    }
+
+    let expected = match fs::read(&golden) {
+        Ok(expected) => expected,
+        Err(error) => {
+            write_golden_failure(&failure, &actual);
+            panic!(
+                "missing golden {} ({error}); rendered output was written to {}",
+                golden.display(),
+                failure.display()
+            );
+        }
+    };
+    if expected != actual {
+        write_golden_failure(&failure, &actual);
+        panic!(
+            "PNG golden mismatch for images page {page_number}; rendered output was written to {}",
+            failure.display()
+        );
+    }
+}
+
+fn write_golden_failure(path: &Path, bytes: &[u8]) {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .unwrap_or_else(|error| panic!("create golden failure directory: {error}"));
+    }
+    fs::write(path, bytes)
+        .unwrap_or_else(|error| panic!("write golden failure {}: {error}", path.display()));
 }
 
 #[test]

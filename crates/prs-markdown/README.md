@@ -38,7 +38,11 @@ The fixture corpus in `tests/fixtures/` covers prose, headings, inline styles,
 nested lists, task lists, quotes, alerts, footnotes, autolinks, strikethrough,
 long paragraphs, links and anchors, cross-file links, exact page boundaries,
 agent responses, readable GFM tables, fenced specialist source, raw HTML
-fallbacks, image references, and explicit font-face selection. `tests/harness.rs`
+fallbacks, image references, and explicit font-face selection. The provider-backed
+`tests/fixtures/images.md` fixture also covers nested relative paths, all three
+supported raster formats, scaling, pagination, and graceful fallbacks; its
+rendered pages are checked in as `tests/goldens/images-page-*.png`.
+`tests/harness.rs`
 asserts structural outputs such as page count, logical cursor ranges, visible
 fragments, hit regions, navigation, and PGM encoding. Those structural tests use the
 deterministic approximate measurer and remain independent of font files. The
