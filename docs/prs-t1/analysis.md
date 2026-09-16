@@ -622,10 +622,16 @@ an 8-bit PNG. The captured screen showed `BAT 100 FULL`, `TEMP 25 AC OFF`,
 `USB ON ADB RUN`, `WIFI WLAN0 OFF`, `SUPP STOPPED`, `DATA 22067K FREE`,
 `SD 1396884K FREE`, `FB ACTIVE ROT 3`, and `ZYGOTE STOP DISP RUN`. This is the
 first screenshot of the custom status rendering itself, rather than only a
-local preview. No touch or physical button interaction was needed for this
-test. The native process was terminated by rebooting; ADB returned after about
-11 seconds and zygote, `system_server`, `dispd`, and `adbd` were all present
-again after normal boot completed.
+local preview. The first capture also exposed a decorative target overlapping
+the first label; that target was removed and the clean recapture showed the
+same values with `DATA 21602K FREE`.
+
+The five-second refresh was then verified without physical interaction. A
+temporary 2 MiB file under `/data` changed the displayed free-space value to
+`DATA 19529K FREE` after the polling interval; the file was removed afterward.
+The native process was terminated by rebooting; ADB returned after about 15
+seconds and zygote, `system_server`, `dispd`, and `adbd` were all present again
+after normal boot completed.
 
 ### Vendor power-state bridge
 
