@@ -633,6 +633,13 @@ The native process was terminated by rebooting; ADB returned after about 15
 seconds and zygote, `system_server`, `dispd`, and `adbd` were all present again
 after normal boot completed.
 
+A second zygote-stopped run injected a safe legacy touch sequence through
+`event1`: `ABS_X=73`, `ABS_Y=771`, followed by `SYN_REPORT`. The native panel
+displayed `TOUCH X 73 Y 771` and incremented its touch-event counter. The
+runtime now accepts both the T1's legacy `ABS_X/ABS_Y` axes and the multitouch
+position codes, leaving coordinate-format handling ready for the next physical
+sample.
+
 ### Vendor power-state bridge
 
 The installed `/system/lib/libhardware_legacy.so` was pulled from the reader

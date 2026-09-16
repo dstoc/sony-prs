@@ -13,6 +13,8 @@ const EVENT_KEY: u16 = 1;
 const EVENT_SYN: u16 = 0;
 const EVENT_ABS: u16 = 3;
 const SYN_REPORT: u16 = 0;
+const ABS_X: u16 = 0;
+const ABS_Y: u16 = 1;
 const ABS_MT_POSITION_X: u16 = 53;
 const ABS_MT_POSITION_Y: u16 = 54;
 const KEY_POWER: u16 = 116;
@@ -579,11 +581,15 @@ impl UiState {
     fn observe(&mut self, source: InputSourceKind, event: RawEvent) -> (bool, PowerAction) {
         if source == InputSourceKind::Touch {
             self.last_touch = Some(event);
-            if event.event_type == EVENT_ABS && event.code == ABS_MT_POSITION_X {
+            if event.event_type == EVENT_ABS
+                && matches!(event.code, ABS_X | ABS_MT_POSITION_X)
+            {
                 self.touch_x = event.value;
                 self.touch_seen = true;
             }
-            if event.event_type == EVENT_ABS && event.code == ABS_MT_POSITION_Y {
+            if event.event_type == EVENT_ABS
+                && matches!(event.code, ABS_Y | ABS_MT_POSITION_Y)
+            {
                 self.touch_y = event.value;
                 self.touch_seen = true;
             }
