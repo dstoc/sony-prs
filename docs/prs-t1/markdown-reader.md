@@ -185,8 +185,48 @@ The crate exposes the module boundaries for the pipeline:
 | `layout` | Viewport-relative blocks, lines, fragments, and link semantics. |
 | `pagination` | Logical page ranges, pages, display-list commands, and semantic hit regions. |
 | `navigation` | Document paths, anchors, link targets, and history. |
-| `reader` | Page position and navigation state. |
+| `reader` | High-level reading session, page position, document loading, rendering, and navigation state. |
 | `render` | Generic `DrawTarget` adapter with origin/viewport clipping, decoration primitives, and caller-supplied glyph rasterization. |
+
+## High-level reader API
+
+`reader::Reader` coordinates the complete host-side pipeline. It is generic over
+the `ResourceProvider`, Markdown parser, and layout `TextMeasurer`, so a T1
+application can use the filesystem provider today and replace it with a device
+or archive-backed provider later:
+
+```rust
+let mut reader = Reader::new(provider, style, Viewport::new(600, 760));
+reader.open_document("book/index.md")?;
+
+let page = reader.current_page();
+let page_count = reader.page_count();
+reader.next_page()?;
+reader.previous_page()?;
+reader.render_current_page(&mut renderer, &mut draw_target)?;
+
+match reader.activate_at(point)? {
+    ReaderEvent::ExternalUrl(url) => hand_to_application(url),
+    ReaderEvent::Navigated { .. } => refresh_page(),
+    ReaderEvent::NoAction => {},
+    _ => {}
+}
+```
+
+`open_document` starts a new session and clears history. `follow_document`,
+`follow_document_anchor`, `follow_reference`, and `navigate_to_anchor` resolve
+through the provider and add an internal navigation entry. `back()` restores
+the document, page, and canonical `DocumentCursor` saved when the link was
+followed; `forward()` restores the corresponding forward entry. The public
+`history()` slice exposes those cursor-aware `ReadingLocation` entries when an
+application needs to persist or inspect them.
+
+Page indices returned by `Reader` are zero-based. `PageLayout::number` remains
+the one-based display number. `hit_test` and `activate_at` use page-space
+coordinates, so the application can translate a physical input coordinate
+before calling them. External URLs produce `ReaderEvent::ExternalUrl` and are
+never opened by `prs-markdown`; the application chooses whether to hand them
+to Android, a browser, a QR-code view, or another UI.
 
 ## Resource and path model
 

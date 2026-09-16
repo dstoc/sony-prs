@@ -29,13 +29,16 @@ pub use document::{
     TableAlignment, TaskState,
 };
 pub use geometry::{intersection, translate, Rect, Viewport};
-pub use layout::{DocumentLayout, LayoutEngine};
+pub use layout::{ApproximateTextMeasurer, DocumentLayout, LayoutEngine, TextMeasurer};
 pub use navigation::{DocumentId, DocumentLocation, NavigationTarget, ReaderHistory};
 pub use pagination::{
     DisplayCommand, DisplayList, DocumentCursor, DocumentRange, HitRegion, LogicalPosition,
     LogicalRange, PageLayout, Pagination, Paginator,
 };
-pub use reader::ReaderSession;
+pub use reader::{
+    Reader, ReaderAction, ReaderError, ReaderEvent, ReaderRenderError, ReaderSession,
+    ReadingLocation,
+};
 pub use render::EmbeddedGraphicsRenderer;
 pub use resources::{
     FileSystemResourceProvider, FileSystemResources, ResourceProvider, ResourceTarget,
