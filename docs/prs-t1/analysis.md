@@ -640,6 +640,12 @@ runtime now accepts both the T1's legacy `ABS_X/ABS_Y` axes and the multitouch
 position codes, leaving coordinate-format handling ready for the next physical
 sample.
 
+The event diagnostics now label known Linux event types and codes while still
+displaying their numeric values. This covers the observed `KEY_LEFT` (105),
+`KEY_RIGHT` (106), `KEY_POWER` (116), `ABS_X`/`ABS_Y`, and multitouch position
+codes. Coordinate orientation and any higher-level gesture semantics remain
+intentionally unassigned until a physical sample is available.
+
 The final presentation pass resized the four diagnostic panels and moved the
 lower status block down so all rendered text has clear space from the panel
 borders. A fresh 600x800 framebuffer capture confirmed the corrected layout;

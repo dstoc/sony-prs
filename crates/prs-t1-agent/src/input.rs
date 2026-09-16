@@ -92,8 +92,15 @@ pub fn capture_events(path: &Path, duration: Duration) -> io::Result<()> {
         match reader.read_one()? {
             Some(event) => {
                 println!(
-                    "event index={} sec={} usec={} type={} code={} value={}",
-                    count, event.sec, event.usec, event.event_type, event.code, event.value
+                    "event index={} sec={} usec={} type={} type_name={} code={} code_name={} value={}",
+                    count,
+                    event.sec,
+                    event.usec,
+                    event.event_type,
+                    event_type_name(event.event_type),
+                    event.code,
+                    event_code_name(event.event_type, event.code),
+                    event.value
                 );
                 count += 1;
             }
@@ -127,6 +134,42 @@ pub struct RawEvent {
 impl RawEvent {
     pub fn timestamp_micros(self) -> u64 {
         u64::from(self.sec) * 1_000_000 + u64::from(self.usec)
+    }
+}
+
+pub fn event_type_name(event_type: u16) -> &'static str {
+    match event_type {
+        0 => "SYN",
+        1 => "KEY",
+        2 => "REL",
+        3 => "ABS",
+        4 => "MSC",
+        5 => "SW",
+        17 => "LED",
+        18 => "SND",
+        20 => "REP",
+        _ => "UNKNOWN",
+    }
+}
+
+pub fn event_code_name(event_type: u16, code: u16) -> &'static str {
+    match (event_type, code) {
+        (0, 0) => "SYN_REPORT",
+        (0, 1) => "SYN_CONFIG",
+        (0, 2) => "SYN_MT_REPORT",
+        (1, 102) => "KEY_HOME",
+        (1, 105) => "KEY_LEFT",
+        (1, 106) => "KEY_RIGHT",
+        (1, 115) => "KEY_VOLUME_UP",
+        (1, 116) => "KEY_POWER",
+        (3, 0) => "ABS_X",
+        (3, 1) => "ABS_Y",
+        (3, 47) => "ABS_MT_SLOT",
+        (3, 48) => "ABS_MT_TOUCH_MAJOR",
+        (3, 53) => "ABS_MT_POSITION_X",
+        (3, 54) => "ABS_MT_POSITION_Y",
+        (3, 57) => "ABS_MT_TRACKING_ID",
+        _ => "UNKNOWN",
     }
 }
 
@@ -187,6 +230,17 @@ mod tests {
         assert_eq!(event.event_type, 1);
         assert_eq!(event.code, ABS_X_CODE);
         assert_eq!(event.value, 789);
+    }
+
+    #[test]
+    fn names_t1_key_and_touch_codes() {
+        assert_eq!(super::event_type_name(1), "KEY");
+        assert_eq!(super::event_code_name(1, 105), "KEY_LEFT");
+        assert_eq!(super::event_code_name(1, 116), "KEY_POWER");
+        assert_eq!(super::event_type_name(3), "ABS");
+        assert_eq!(super::event_code_name(3, 0), "ABS_X");
+        assert_eq!(super::event_code_name(3, 54), "ABS_MT_POSITION_Y");
+        assert_eq!(super::event_code_name(99, 99), "UNKNOWN");
     }
 
     const ABS_X_CODE: u16 = 0;

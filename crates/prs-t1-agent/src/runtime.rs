@@ -1,4 +1,4 @@
-use crate::display;
+use crate::{display, input};
 use crate::framebuffer::NativeDisplay;
 use crate::input::{EventReader, RawEvent};
 use std::fs::OpenOptions;
@@ -132,8 +132,10 @@ fn screen_lines(state: &UiState, wake_lock_held: bool) -> Vec<String> {
         .last_touch
         .map(|event| {
             format!(
-                "TOUCH T{} C{} V{}",
-                event.event_type, event.code, event.value
+                "TOUCH {} C{} V{}",
+                input::event_code_name(event.event_type, event.code),
+                event.code,
+                event.value
             )
         })
         .unwrap_or_else(|| "TOUCH NONE".into());
@@ -146,9 +148,9 @@ fn screen_lines(state: &UiState, wake_lock_held: bool) -> Vec<String> {
         .last_key
         .map(|(source, event)| {
             format!(
-                "KEY {} T{} C{} V{}",
+                "KEY {} {} C{} V{}",
                 source.label(),
-                event.event_type,
+                input::event_code_name(event.event_type, event.code),
                 event.code,
                 event.value
             )

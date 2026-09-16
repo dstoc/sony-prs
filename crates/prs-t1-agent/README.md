@@ -464,7 +464,9 @@ for manual zygote-isolated power, display, and input testing.
 The `events` command opens one evdev node read-only and logs a finite raw event
 stream. For example, `prs-t1-agent events /dev/input/event1 10` captures ten
 seconds of touch input. It uses non-blocking reads and never calls
-`EVIOCGRAB`; it should be run while Android is active and only with a recovery
+`EVIOCGRAB`; each numeric event type and code is accompanied by a readable
+Linux name. The native screen uses the same names while retaining the raw code
+and value. It should be run while Android is active and only with a recovery
 route available.
 
 The ARMv5 musl build has been deployed and tested on this T1's ARMv7
