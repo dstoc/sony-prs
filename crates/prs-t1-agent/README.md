@@ -139,7 +139,8 @@ updates, and keeps `GC16` for the initial, status, and suspend/resume redraws.
 The diagnostic screen is black and white, so it does not need grayscale during
 these small updates. A real UI should periodically use a grayscale/full refresh
 to control ghosting, and should validate the visual quality of repeated `DU`
-updates on the target panel.
+updates on the target panel. Transient updates are submitted asynchronously;
+the next full or status update waits for the pending marker before using GC16.
 
 A follow-up 60-second run recorded a physical touch and `KEY_LEFT` button
 press while the marker was active. The exact marker was not preserved after

@@ -130,6 +130,33 @@ latency. The native diagnostic screen is deliberately black and white, making
 may trade grayscale quality and ghosting for responsiveness; this has not yet
 been characterized optically on the T1.
 
+### Asynchronous partial submissions
+
+The blocking wait was then separated from the update submission. A bounded
+`DU NOWAIT` marker probe returned from `MXCFB_SEND_UPDATE` in 0 ms, left the
+marker intact during a one-second interval, and was followed by a normal GC16
+restore update. This demonstrates on this firmware that a partial update can
+be queued without synchronously waiting for the entire waveform.
+
+The native runtime now submits touch, key, and power-detail updates with
+`completion=nowait`. It retains the most recent update marker and drains that
+marker before any full or status redraw, including the full redraw used before
+suspend. A live injected touch frame produced:
+
+```text
+display refresh region=(20,350 560x94) waveform=DU completion=nowait elapsed_ms=0 status=ok
+waited for pending display marker=15 elapsed_ms=0
+display refresh region=(20,88 560x490) waveform=GC16 completion=wait elapsed_ms=707 status=ok
+```
+
+This removes the application-side ~374 ms stall observed with a blocking DU
+update. It does not mean the panel has finished changing at 0 ms; it means the
+driver accepted and queued the update while the native loop remained able to
+process input. The driver queue behavior under rapid repeated touches and the
+optical ghosting produced by repeated DU updates still need a physical visual
+test. A periodic GC16 cleanup policy should be based on that observation, not
+on framebuffer-memory captures alone.
+
 The probe accepts only the four waveform values above even though other MXC
 EPDC headers define additional modes. Acceptance of an ioctl does not by
 itself establish good visual output, so unsupported or poor modes should be
