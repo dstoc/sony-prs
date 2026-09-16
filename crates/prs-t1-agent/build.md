@@ -5,6 +5,38 @@ expects an ARMv5TE, soft-float executable, and the release build is statically
 linked against musl so it does not need Android or other target-side runtime
 libraries.
 
+## Automated GitHub releases
+
+Release Please manages `prs-t1-agent` releases in manifest mode. Pushes to
+`main` create or update a release PR when Conventional Commits affecting the
+crate are ready to release. Merging that PR updates the crate version and
+`CHANGELOG.md`, creates a component-prefixed tag and GitHub Release such as
+`prs-t1-agent-v0.1.0`, and builds the device binary from that tagged commit.
+
+The release workflow follows the production `cargo zigbuild` command below,
+checks the result for ARM/EABI5, soft-float, and static linking, and uploads it
+to the release as `prs-t1-agent-armv5te`. Download it from the matching GitHub
+Release rather than from crates.io; this crate is not published there.
+
+Use Conventional Commit messages for changes that should affect the release:
+
+- `fix:` produces a patch release.
+- `feat:` produces a minor release.
+- `!` after the type/scope or a `BREAKING CHANGE:` footer produces a major
+  release.
+
+Documentation-only, test-only, and other non-release commit types do not bump
+the crate unless the commit also uses an explicit release directive supported
+by Release Please. Pull requests and ordinary pushes do not upload artifacts;
+the ARM build and upload run only when Release Please reports that this
+component's release was created.
+
+Run the repository's configuration guard after changing the release files:
+
+```sh
+python3 tools/test-release-workflow.py
+```
+
 ## Host toolchain
 
 Install or otherwise make these commands available on `PATH`:
@@ -16,8 +48,10 @@ Install or otherwise make these commands available on `PATH`:
 - ADB, for copying and launching the binary on a rooted reader.
 
 The agent does not require the Android SDK, Android NDK, Gradle, or a Java
-toolchain. The repository currently does not pin versions for Rust,
-`cargo-zigbuild`, or Zig; verify the installed tools before building:
+toolchain. The local development workflow does not require the exact versions
+used by the release workflow. The GitHub workflow pins Rust 1.88.0, Zig 0.13.0,
+and `cargo-zigbuild` 0.23.4 so published artifacts are reproducible. Verify
+the tools available for a local build before building:
 
 ```sh
 rustc --version

@@ -50,6 +50,11 @@ host build; it does not produce a T1-compatible ARM executable. See the
 ARMv5TE/musl cross-build and the optional
 [tap-to-launch APK](tools/prs-t1-launcher/build.md).
 
+Merging a Release Please PR publishes the matching ARM executable in the
+`prs-t1-agent-vX.Y.Z` GitHub Release as `prs-t1-agent-armv5te`. See the
+[automated release notes](crates/prs-t1-agent/build.md#automated-github-releases)
+for the Conventional Commit rules and artifact checks.
+
 On Linux, access to `/dev/sgN` normally requires root or membership in the
 group owning the SCSI-generic devices.
 

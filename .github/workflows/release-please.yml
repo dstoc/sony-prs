@@ -1,0 +1,121 @@
+name: Release Please
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+env:
+  CARGO_ZIGBUILD_VERSION: "0.23.4"
+  RUST_TOOLCHAIN: "1.88.0"
+  TARGET: armv5te-unknown-linux-musleabi
+
+jobs:
+  release-please:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Run Release Please
+        id: release
+        uses: googleapis/release-please-action@a02a34c4d625f9be7cb89156071d8567266a2445 # v4.2.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+      - name: Check out the released commit
+        if: ${{ steps.release.outputs['crates/prs-t1-agent--release_created'] == 'true' }}
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          ref: ${{ steps.release.outputs['crates/prs-t1-agent--tag_name'] }}
+
+      - name: Install the pinned Rust toolchain and target
+        if: ${{ steps.release.outputs['crates/prs-t1-agent--release_created'] == 'true' }}
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" \
+            --profile minimal \
+            --target "$TARGET" \
+            --no-self-update
+          rustup run "$RUST_TOOLCHAIN" rustc --version
+          rustup run "$RUST_TOOLCHAIN" cargo --version
+
+      - name: Install pinned Zig
+        if: ${{ steps.release.outputs['crates/prs-t1-agent--release_created'] == 'true' }}
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: "0.13.0"
+
+      - name: Install pinned cargo-zigbuild
+        if: ${{ steps.release.outputs['crates/prs-t1-agent--release_created'] == 'true' }}
+        run: |
+          cargo +"$RUST_TOOLCHAIN" install cargo-zigbuild \
+            --version "$CARGO_ZIGBUILD_VERSION" \
+            --locked
+          zig version
+          cargo +"$RUST_TOOLCHAIN" zigbuild --version
+
+      - name: Build the released PRS-T1 binary
+        if: ${{ steps.release.outputs['crates/prs-t1-agent--release_created'] == 'true' }}
+        run: |
+          RUSTFLAGS='-C target-cpu=arm926ej-s -C link-arg=-mcpu=arm926ej-s' \
+            cargo +"$RUST_TOOLCHAIN" zigbuild \
+            --manifest-path crates/prs-t1-agent/Cargo.toml \
+            --release \
+            --target "$TARGET"
+
+      - name: Verify the device executable
+        if: ${{ steps.release.outputs['crates/prs-t1-agent--release_created'] == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          artifact="target/$TARGET/release/prs-t1-agent"
+          test -x "$artifact"
+
+          file_output="$(file -b "$artifact")"
+          printf '%s\n' "$file_output"
+          case "$file_output" in
+            *"ELF 32-bit LSB"*"ARM"*"EABI5"*"statically linked"*) ;;
+            *)
+              printf 'unexpected executable format: %s\n' "$file_output" >&2
+              exit 1
+              ;;
+          esac
+
+          readelf -h "$artifact" | tee target/prs-t1-agent-readelf-header.txt
+          readelf -l "$artifact" | tee target/prs-t1-agent-readelf-program-headers.txt
+          readelf -A "$artifact" | tee target/prs-t1-agent-readelf-attributes.txt
+
+          grep -Eq '^  Class:.*ELF32' target/prs-t1-agent-readelf-header.txt
+          grep -Eq '^  Machine:.*ARM' target/prs-t1-agent-readelf-header.txt
+          grep -Eq '^  Flags:.*Version5 EABI, soft-float ABI' target/prs-t1-agent-readelf-header.txt
+
+          if grep -q 'INTERP' target/prs-t1-agent-readelf-program-headers.txt; then
+            printf '%s\n' 'the release executable has a dynamic loader' >&2
+            exit 1
+          fi
+
+          if grep -Eq 'Tag_ABI_VFP_args: VFP registers|Tag_ABI_HardFP_use' \
+            target/prs-t1-agent-readelf-attributes.txt; then
+            printf '%s\n' 'the release executable uses hard-float ABI attributes' >&2
+            exit 1
+          fi
+
+          mkdir -p dist
+          install -Dm755 "$artifact" dist/prs-t1-agent-armv5te
+          sha256sum dist/prs-t1-agent-armv5te
+
+      - name: Upload the device executable to the GitHub Release
+        if: ${{ steps.release.outputs['crates/prs-t1-agent--release_created'] == 'true' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload \
+            "${{ steps.release.outputs['crates/prs-t1-agent--tag_name'] }}" \
+            dist/prs-t1-agent-armv5te \
+            --clobber
