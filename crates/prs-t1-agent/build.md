@@ -31,12 +31,6 @@ by Release Please. Pull requests and ordinary pushes do not upload artifacts;
 the ARM build and upload run only when Release Please reports that this
 component's release was created.
 
-Run the repository's configuration guard after changing the release files:
-
-```sh
-python3 tools/test-release-workflow.py
-```
-
 ## Host toolchain
 
 Install or otherwise make these commands available on `PATH`:
