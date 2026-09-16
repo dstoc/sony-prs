@@ -81,6 +81,7 @@ pub fn run(path: &Path, suspend_mode: SuspendMode) -> io::Result<()> {
         .map_err(|error| display_error("acquire wake lock", error))?;
     let mut inputs = InputSet::open().map_err(|error| display_error("open input devices", error))?;
     let mut state = UiState::new();
+    let mut adb_restart_pending = false;
 
     eprintln!(
         "standalone-test: framebuffer={}x{}; zygote must already be stopped",
@@ -91,6 +92,10 @@ pub fn run(path: &Path, suspend_mode: SuspendMode) -> io::Result<()> {
         .map_err(|error| display_error("initial redraw", error))?;
 
     loop {
+        if adb_restart_pending && usb_power_online() {
+            restart_adbd_if_enabled()?;
+            adb_restart_pending = false;
+        }
         let mut redraw_needed = state.refresh_status_if_due();
         let mut action = PowerAction::None;
         for source in &mut inputs.sources {
@@ -113,7 +118,10 @@ pub fn run(path: &Path, suspend_mode: SuspendMode) -> io::Result<()> {
                 &mut inputs,
                 &mut state,
                 suspend_mode,
-            )?,
+            )
+            .map(|()| {
+                adb_restart_pending = true;
+            })?,
             PowerAction::Reboot => {
                 state.mode = "REBOOTING";
                 state.message = "REBOOT REQUESTED".into();
@@ -373,7 +381,9 @@ fn wait_for_display_wake(inputs: &mut InputSet, state: &mut UiState) -> io::Resu
                     if !resume_requested && matches!(event.value, 0..=2) {
                         eprintln!("standalone-test: requesting early resume");
                         request_resume()?;
-                        restart_adbd_if_enabled()?;
+                        eprintln!(
+                            "standalone-test: deferring adbd restart until USB reconnect"
+                        );
                         resume_requested = true;
                     }
                 }
@@ -481,6 +491,12 @@ fn restart_adbd_if_enabled() -> io::Result<()> {
     }
     eprintln!("standalone-test: adbd restart requested");
     Ok(())
+}
+
+fn usb_power_online() -> bool {
+    std::fs::read_to_string("/sys/class/power_supply/sub_cpu_usb/online")
+        .map(|value| value.trim() == "1")
+        .unwrap_or(false)
 }
 
 fn uppercase_or_unknown(value: Option<&str>) -> String {
