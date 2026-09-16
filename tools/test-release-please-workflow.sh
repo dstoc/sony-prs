@@ -2,11 +2,14 @@
 set -euo pipefail
 
 workflow="${1:-.github/workflows/release-please.yml}"
+manifest="${2:-crates/prs-t1-agent/Cargo.toml}"
 
 grep -Fq 'workflow_dispatch:' "$workflow"
 grep -Fq 'description: Existing prs-t1-agent release tag to build/upload' "$workflow"
 grep -Fq 'required: true' "$workflow"
 grep -Fq 'type: string' "$workflow"
+grep -Fq 'RUST_TOOLCHAIN: "1.98.1"' "$workflow"
+grep -Fq 'rust-version = "1.98"' "$manifest"
 grep -Fq "if: \${{ github.event_name == 'push' }}" "$workflow"
 grep -Fq 'id: release-tag' "$workflow"
 grep -Fq 'MANUAL_TAG: ${{ inputs.tag }}' "$workflow"
