@@ -173,6 +173,12 @@ the sub-CPU power-button wake IRQ. Power-key duration is handled from
 been stopped. It opens all relevant input nodes, holds the legacy kernel wake
 lock, renders a full-screen diagnostic pattern, and redraws the pattern with
 the most recent touch/key values. It does not depend on Android Java services.
+At startup it opens and validates the writable framebuffer mapping, then uses
+`/system/bin/ps` to verify that both `zygote` and `system_server` are stopped
+before drawing or acquiring the wake lock. If Android still owns the framework
+UI, it exits without rendering. On this T1, Android's existing framebuffer
+mapping may cause the open step itself to return `EINVAL`, which is also a safe
+refusal path.
 
 The development procedure is:
 

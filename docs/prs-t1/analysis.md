@@ -651,6 +651,15 @@ lower status block down so all rendered text has clear space from the panel
 borders. A fresh 600x800 framebuffer capture confirmed the corrected layout;
 the reader was then rebooted and returned to the normal Android services.
 
+The standalone runtime opens and validates the single writable mapping, then
+performs a fail-closed ownership check with `/system/bin/ps` before it draws or
+acquires the kernel wake lock. If either `zygote` or `system_server` is present,
+it refuses to start, reports both process states, and performs no framebuffer
+update ioctl or pixel write. On this T1, Android's existing framebuffer mapping
+may instead make the initial writable mmap return `EINVAL`; that is also a
+safe refusal path. The stopped-framework path must therefore be launched only
+after zygote has been stopped.
+
 ### Vendor power-state bridge
 
 The installed `/system/lib/libhardware_legacy.so` was pulled from the reader

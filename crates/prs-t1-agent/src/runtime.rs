@@ -65,10 +65,14 @@ impl SuspendMode {
 }
 
 pub fn run(path: &Path, suspend_mode: SuspendMode) -> io::Result<()> {
-    let mut display = NativeDisplay::open(path)?;
-    let mut wake_lock = WakeLock::open()?;
-    wake_lock.acquire()?;
-    let mut inputs = InputSet::open()?;
+    let mut display = NativeDisplay::open(path)
+        .map_err(|error| display_error("open native display", error))?;
+    crate::status::ensure_native_ownership()?;
+    let mut wake_lock = WakeLock::open().map_err(|error| display_error("open wake lock", error))?;
+    wake_lock
+        .acquire()
+        .map_err(|error| display_error("acquire wake lock", error))?;
+    let mut inputs = InputSet::open().map_err(|error| display_error("open input devices", error))?;
     let mut state = UiState::new();
 
     eprintln!(

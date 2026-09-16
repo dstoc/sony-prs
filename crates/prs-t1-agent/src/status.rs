@@ -1,5 +1,6 @@
 use std::fmt::Display;
 use std::fs;
+use std::io;
 use std::path::Path;
 use std::process::Command;
 
@@ -181,6 +182,26 @@ pub fn collect() -> StatusSnapshot {
         },
         storage: read_storage(),
     }
+}
+
+pub fn ensure_native_ownership() -> io::Result<()> {
+    let Some(processes) = process_snapshot() else {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            "cannot verify Android process ownership",
+        ));
+    };
+    let zygote = process_running(Some(&processes), "zygote");
+    let system_server = process_running(Some(&processes), "system_server");
+    if zygote || system_server {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "standalone-test requires zygote and system_server stopped (zygote_running={zygote} system_server_running={system_server})"
+            ),
+        ));
+    }
+    Ok(())
 }
 
 /*
