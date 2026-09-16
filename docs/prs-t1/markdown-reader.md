@@ -93,13 +93,37 @@ The initial crate exposes skeletal module boundaries for the pipeline:
 | `parse` | Replaceable Markdown parser trait and parse errors. |
 | `resources` | Host-provided image/include/resource loading. |
 | `style` | Caller-supplied style and font-independent metrics. |
+| `typography` | Fontdue-backed font loading, proportional measurement, styled wrapping, glyph positions, line metrics, and bounded raster caching. |
 | `layout` | Viewport-relative blocks, lines, fragments, and link semantics. |
 | `pagination` | Pages, display-list commands, and semantic hit regions. |
 | `navigation` | Document paths, anchors, link targets, and history. |
 | `reader` | Page position and navigation state. |
 | `render` | Generic `DrawTarget` adapter. |
 
-The implementation is intentionally skeletal: the parser, production
-typography/font backend, syntax highlighting, image decoding, and pixel
-rasterization are follow-up work. Their integration points should extend
-these boundaries instead of moving T1 hardware policy into the library.
+## Typography boundary
+
+`prs-markdown::typography` exposes the `TextEngine` trait and the backend-neutral
+types used by it. `FontdueTextEngine` loads caller-supplied bytes through
+`FontConfig` for regular, bold, italic, bold-italic, and monospace faces. A
+harness can use one family for every face with `FontConfig::from_regular`, or
+provide independent bytes with `FontConfig::from_faces`; the reader never
+hard-codes a licensed font family.
+
+`TextEngine::measure` returns proportional run metrics. `TextEngine::wrap`
+returns line metrics and positioned glyphs, retaining an optional application
+`SpanId` on each glyph for links or other semantic spans. `rasterize_glyph`
+returns an 8-bit coverage bitmap. `FontdueTextEngine` also implements the
+existing `layout::TextMeasurer` boundary, so a caller can pass it to
+`LayoutEngine::with_measurer` and make document wrapping use the same font
+advances.
+
+Rasterized glyphs are held in an explicitly bounded least-recently-used cache;
+`cache_capacity`, `cached_glyphs`, and the rasterization counters are exposed
+for host instrumentation. The cache is bounded by entry count, and a capacity
+of zero disables reuse.
+
+The initial backend is deliberately scoped to Latin and code-heavy documents.
+It does not yet perform complex-script shaping, bidirectional layout,
+grapheme-aware cursoring, or broad fallback-font selection. A future shaping
+engine can implement `TextEngine` without exposing Fontdue types to parsing,
+pagination, or the device renderer.

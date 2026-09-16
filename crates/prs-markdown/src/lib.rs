@@ -1,9 +1,12 @@
 //! Hardware-independent building blocks for a paginated Markdown reader.
 //!
-//! The crate deliberately stops at a generic [`embedded_graphics::DrawTarget`]
-//! boundary.  A future parser, font backend, image decoder, and device UI can
-//! be added without making the document engine know about a framebuffer or a
-//! particular reader model.
+//! The crate deliberately stops at a generic
+//! [`embedded_graphics::draw_target::DrawTarget`]
+//! boundary. A caller supplies font bytes to [`typography::FontdueTextEngine`];
+//! the reader engine does not choose or bundle a licensed font family. A
+//! future parser, shaping backend, image decoder, and device UI can be added
+//! without making the document engine know about a framebuffer or a particular
+//! reader model.
 
 pub mod document;
 pub mod layout;
@@ -14,12 +17,18 @@ pub mod reader;
 pub mod render;
 pub mod resources;
 pub mod style;
+pub mod typography;
 
 pub use document::{Block, Document, Inline};
 pub use layout::{DocumentLayout, LayoutEngine, Viewport};
 pub use navigation::{DocumentId, DocumentLocation, NavigationTarget, ReaderHistory};
 pub use pagination::{PageLayout, Paginator};
 pub use reader::ReaderSession;
+pub use typography::{
+    FontConfig, FontError, FontFace, FontLoadConfig, FontdueTextEngine, GlyphBitmap, LineMetrics,
+    PositionedGlyph, SpanId, TextEngine, TextLayout, TextLine, TextMetrics, TextRun,
+    TextStyle as TypographyStyle,
+};
 
 #[cfg(test)]
 mod tests {
