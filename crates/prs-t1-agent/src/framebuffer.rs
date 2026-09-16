@@ -32,6 +32,49 @@ const TEST_UPDATE_MARKER: u32 = 1;
 const TEST_RECT_WIDTH: u32 = 200;
 const TEST_RECT_HEIGHT: u32 = 120;
 
+/// Waveforms exposed by the T1's i.MX EPDC ABI. These values match the
+/// waveform table used by the installed Sony gralloc implementation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WaveformMode {
+    Du,
+    Gc16,
+    Gc4,
+    A2,
+}
+
+impl WaveformMode {
+    pub fn parse(value: &str) -> io::Result<Self> {
+        match value.to_ascii_uppercase().as_str() {
+            "DU" => Ok(Self::Du),
+            "GC16" => Ok(Self::Gc16),
+            "GC4" => Ok(Self::Gc4),
+            "A2" => Ok(Self::A2),
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("unknown waveform {value:?}; expected DU, GC16, GC4, or A2"),
+            )),
+        }
+    }
+
+    fn value(self) -> u32 {
+        match self {
+            Self::Du => 1,
+            Self::Gc16 => WAVEFORM_MODE_GC16,
+            Self::Gc4 => 3,
+            Self::A2 => 4,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Du => "DU",
+            Self::Gc16 => "GC16",
+            Self::Gc4 => "GC4",
+            Self::A2 => "A2",
+        }
+    }
+}
+
 #[repr(C)]
 #[derive(Default, Clone, Copy)]
 struct FbBitfield {
@@ -367,6 +410,7 @@ fn write_pgm(
 pub fn render_test_to(
     path: &Path,
     wait_after_capture: Duration,
+    waveform: WaveformMode,
     output: &mut impl Write,
 ) -> io::Result<()> {
     let file = OpenOptions::new().read(true).write(true).open(path)?;
@@ -409,10 +453,16 @@ pub fn render_test_to(
         "render-test: marker rect left={} top={} width={} height={}",
         rect.left, rect.top, rect.width, rect.height
     );
-    if let Err(error) = request_update(file.as_raw_fd(), rect, TEST_UPDATE_MARKER) {
+    eprintln!("render-test: waveform={}", waveform.label());
+    let started = Instant::now();
+    if let Err(error) = request_update(file.as_raw_fd(), rect, waveform, TEST_UPDATE_MARKER) {
         layout.restore(mapping.as_mut_slice(), &backup)?;
         return Err(error);
     }
+    eprintln!(
+        "render-test: update_elapsed_ms={} status=ok",
+        started.elapsed().as_millis()
+    );
 
     let capture_result = write_pgm(&var, &fix, mapping.as_slice(), output);
     let changed_before_wait = layout.differs_from(mapping.as_slice(), &backup);
@@ -421,7 +471,12 @@ pub fn render_test_to(
     let marker_preserved_after_wait = layout.matches(mapping.as_slice(), &marker);
 
     let restore_result = layout.restore(mapping.as_mut_slice(), &backup);
-    let restore_update_result = request_update(file.as_raw_fd(), rect, TEST_UPDATE_MARKER + 1);
+    let restore_update_result = request_update(
+        file.as_raw_fd(),
+        rect,
+        WaveformMode::Gc16,
+        TEST_UPDATE_MARKER + 1,
+    );
 
     if let Err(error) = restore_result {
         return Err(error);
@@ -443,7 +498,12 @@ pub fn render_test_to(
     capture_result
 }
 
-fn request_update(fd: c_int, rect: MxcfbRect, marker: u32) -> io::Result<()> {
+fn request_update(
+    fd: c_int,
+    rect: MxcfbRect,
+    waveform: WaveformMode,
+    marker: u32,
+) -> io::Result<()> {
     let mut auto_update_mode = AUTO_UPDATE_MODE_REGION;
     let result = unsafe {
         ioctl(
@@ -458,7 +518,7 @@ fn request_update(fd: c_int, rect: MxcfbRect, marker: u32) -> io::Result<()> {
 
     let mut update = MxcfbUpdateData {
         update_region: rect,
-        waveform_mode: WAVEFORM_MODE_GC16,
+        waveform_mode: waveform.value(),
         update_mode: UPDATE_MODE_PARTIAL,
         update_marker: marker,
         temperature: TEMP_USE_AMBIENT,
@@ -714,14 +774,20 @@ impl NativeDisplay {
         let marker = self.next_marker;
         self.next_marker = self.next_marker.wrapping_add(1).max(10);
         let started = Instant::now();
-        let result = request_update(self.file.as_raw_fd(), region.as_mxcfb(), marker);
+        let result = request_update(
+            self.file.as_raw_fd(),
+            region.as_mxcfb(),
+            WaveformMode::Gc16,
+            marker,
+        );
         eprintln!(
-            "standalone-test: display refresh region=({},{} {}x{}) elapsed_ms={} status={}",
+            "standalone-test: display refresh region=({},{} {}x{}) waveform={} elapsed_ms={} status={}",
             region.left,
             region.top,
             region.width,
             region.height,
             started.elapsed().as_millis(),
+            WaveformMode::Gc16.label(),
             if result.is_ok() { "ok" } else { "error" },
         );
         result
@@ -1164,6 +1230,19 @@ mod tests {
     fn t1_update_payload_matches_vendor_ioctl_size() {
         assert_eq!(std::mem::size_of::<MxcfbUpdateData>(), 0x44);
         assert_eq!(MXCFB_SEND_UPDATE, 0x4044_462e);
+    }
+
+    #[test]
+    fn parses_t1_waveform_modes() {
+        assert_eq!(WaveformMode::parse("du").unwrap(), WaveformMode::Du);
+        assert_eq!(WaveformMode::parse("GC16").unwrap(), WaveformMode::Gc16);
+        assert_eq!(WaveformMode::parse("Gc4").unwrap(), WaveformMode::Gc4);
+        assert_eq!(WaveformMode::parse("a2").unwrap(), WaveformMode::A2);
+    }
+
+    #[test]
+    fn rejects_unknown_t1_waveform_mode() {
+        assert!(WaveformMode::parse("AUTO").is_err());
     }
 
     #[test]

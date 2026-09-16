@@ -74,6 +74,13 @@ MXCFB_SEND_UPDATE                0x4044462e  (0x44-byte payload)
 MXCFB_WAIT_FOR_UPDATE_COMPLETE   0x4004462f
 ```
 
+The `render-test` waveform argument can probe the standard T1 waveform table:
+`DU` (1-bit direct update), `GC16` (16-level grayscale), `GC4` (4-level
+grayscale), or `A2` (fast 2-level update). It defaults to `GC16`; each probe
+waits for the EPDC marker and reports the device-side elapsed time. The
+waveform changes refresh quality and latency, while the rectangle controls
+which part of the panel is updated.
+
 The `render-test` command is the first write-capable device operation. It
 requires the known T1 RGB565 format, opens `/dev/graphics/fb0` read/write,
 backs up a centered 200x120 rectangle, draws a black-and-white marker, asks
@@ -90,7 +97,7 @@ by the update ioctl. The tested deployment route is:
 ```sh
 adb push ./prs-t1-agent /data/local/tmp/prs-t1-agent
 adb shell chmod 755 /data/local/tmp/prs-t1-agent
-adb shell '/data/local/tmp/prs-t1-agent render-test /dev/graphics/fb0 5 > /data/local/tmp/t1-render-test.pgm'
+adb shell '/data/local/tmp/prs-t1-agent render-test /dev/graphics/fb0 5 GC16 > /data/local/tmp/t1-render-test.pgm'
 adb pull /data/local/tmp/t1-render-test.pgm ./native-custom-render-test.pgm
 ```
 
