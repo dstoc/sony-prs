@@ -36,7 +36,11 @@ pub use highlighting::{
     CodeHighlighter, HighlightSpan, HighlightedCode, HighlightedLine, SyntectHighlighter,
     SUPPORTED_LANGUAGES,
 };
-pub use layout::{ApproximateTextMeasurer, DocumentLayout, LayoutEngine, TextMeasurer};
+pub use layout::{
+    ApproximateTextMeasurer, DocumentLayout, LayoutBlock, LayoutBlockKind, LayoutEngine,
+    LayoutFragment, LayoutLine, TableColumnGroup, TableColumnLayout, TableLayout, TableLayoutMode,
+    TableRowLayout, TextMeasurer,
+};
 pub use navigation::{DocumentId, DocumentLocation, NavigationTarget, ReaderHistory};
 pub use pagination::{
     DisplayCommand, DisplayList, DocumentCursor, DocumentRange, HitRegion, LogicalPosition,

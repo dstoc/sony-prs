@@ -1,10 +1,10 @@
 # Tables, code, and image examples
 
-Tables are currently rendered as a readable pipe-separated placeholder:
+Tables use bounded columns, cell wrapping, alignment, and repeated headers:
 
 | Example | Status |
 | --- | --- |
-| table | placeholder |
+| `table` | [placeholder](https://example.invalid/table) |
 
 ```python
 def paginate(document):

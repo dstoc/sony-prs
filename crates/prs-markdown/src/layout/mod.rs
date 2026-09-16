@@ -14,6 +14,7 @@ use crate::navigation::NavigationTarget;
 use crate::style::{ReaderStyle, TextStyle};
 use embedded_graphics::geometry::{Point, Size};
 use embedded_graphics::primitives::Rectangle;
+use std::ops::Range;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DocumentLayout {
@@ -47,6 +48,10 @@ pub struct LayoutBlock {
     pub bounds: Rectangle,
     pub lines: Vec<LayoutLine>,
     pub anchor: Option<String>,
+    /// Table-only geometry used by pagination and display-list decoration.
+    /// Keeping it on the layout block means repeated table headers do not
+    /// need to reparse or remeasure Markdown cells.
+    pub table: Option<TableLayout>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -67,6 +72,55 @@ pub struct LayoutFragment {
     /// A linked span is repeated on every line containing its visible text.
     /// Pagination turns each fragment into a separate hit region.
     pub link: Option<NavigationTarget>,
+}
+
+/// The sizing pass selected for a table. Grouped tables are continued
+/// vertically with the first column repeated in each group.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TableLayoutMode {
+    Normal,
+    Compact,
+    Aggressive,
+    Grouped,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TableColumnLayout {
+    /// Index in the source table, before continuation groups duplicate keys.
+    pub index: usize,
+    pub minimum_width: u32,
+    pub preferred_width: u32,
+    pub alignment: crate::document::TableAlignment,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TableColumnGroup {
+    /// Source column indexes rendered by this vertical continuation group.
+    pub columns: Vec<usize>,
+    /// Allocated text widths corresponding to [`Self::columns`].
+    pub widths: Vec<u32>,
+    pub alignments: Vec<crate::document::TableAlignment>,
+    pub x: i32,
+    pub width: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TableRowLayout {
+    /// The half-open range of display lines making up this row.
+    pub line_range: Range<usize>,
+    pub group: usize,
+    pub header: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TableLayout {
+    pub mode: TableLayoutMode,
+    pub columns: Vec<TableColumnLayout>,
+    pub groups: Vec<TableColumnGroup>,
+    /// Rows are ordered in display order. A grouped table has one header row
+    /// at the start of each group; repeated page headers are synthesized by
+    /// the paginator and are not included in this range metadata.
+    pub rows: Vec<TableRowLayout>,
 }
 
 /// The metric boundary between document layout and a font/shaping backend.
@@ -165,7 +219,7 @@ impl<M: TextMeasurer> LayoutEngine<M> {
     }
 
     fn layout_block(&self, block: &Block, start_y: i32, x: i32, width: u32) -> (LayoutBlock, i32) {
-        let (kind, anchor, lines) = self.layout_content(block, start_y, x, width);
+        let (kind, anchor, lines, table) = self.layout_content(block, start_y, x, width);
         let bounds = block_bounds(&lines, x, start_y);
         let bottom = rect_bottom(&bounds);
         (
@@ -174,6 +228,7 @@ impl<M: TextMeasurer> LayoutEngine<M> {
                 bounds,
                 lines,
                 anchor,
+                table,
             },
             bottom,
         )
@@ -185,7 +240,12 @@ impl<M: TextMeasurer> LayoutEngine<M> {
         start_y: i32,
         x: i32,
         width: u32,
-    ) -> (LayoutBlockKind, Option<String>, Vec<LayoutLine>) {
+    ) -> (
+        LayoutBlockKind,
+        Option<String>,
+        Vec<LayoutLine>,
+        Option<TableLayout>,
+    ) {
         match block {
             Block::Heading {
                 level,
@@ -195,45 +255,49 @@ impl<M: TextMeasurer> LayoutEngine<M> {
                 LayoutBlockKind::Heading,
                 anchor.clone(),
                 self.inline_lines(content, self.heading_style(*level), start_y, x, width),
+                None,
             ),
             Block::Paragraph(content) => (
                 LayoutBlockKind::Paragraph,
                 None,
                 self.inline_lines(content, self.style.body, start_y, x, width),
+                None,
             ),
             Block::List { ordered, items } => (
                 LayoutBlockKind::List,
                 None,
                 self.list_lines(*ordered, items, start_y, x, width),
+                None,
             ),
             Block::Quote(blocks) => (
                 LayoutBlockKind::Quote,
                 None,
                 self.quote_lines(blocks, start_y, x, width),
+                None,
             ),
             Block::Alert { title, blocks, .. } => (
                 LayoutBlockKind::Alert,
                 None,
                 self.alert_lines(title, blocks, start_y, x, width),
+                None,
             ),
             Block::FootnoteDefinition { name, blocks } => (
                 LayoutBlockKind::Footnote,
                 None,
                 self.footnote_lines(name, blocks, start_y, x, width),
-            ),
-            // Tables are intentionally represented as readable pipe-separated
-            // rows until table-specific layout defines columns.
-            Block::Table(table) => (
-                LayoutBlockKind::Table,
                 None,
-                self.table_lines(table, start_y, x, width),
             ),
+            Block::Table(table) => {
+                let (lines, table_layout) = self.table_lines(table, start_y, x, width);
+                (LayoutBlockKind::Table, None, lines, Some(table_layout))
+            }
             // Syntax highlighting is a separate concern. Preserve code text,
             // line breaks, indentation, and a monospace style here.
             Block::CodeBlock { language, code, .. } => (
                 LayoutBlockKind::Code,
                 None,
                 self.code_lines(language.as_deref(), code, start_y, x, width),
+                None,
             ),
             // Image decoding is separate; an alt-text placeholder is still
             // useful and deterministic for the first reader.
@@ -247,6 +311,7 @@ impl<M: TextMeasurer> LayoutEngine<M> {
                     x,
                     width,
                 ),
+                None,
             ),
             Block::Rule => (
                 LayoutBlockKind::Rule,
@@ -259,6 +324,7 @@ impl<M: TextMeasurer> LayoutEngine<M> {
                     fragments: Vec::new(),
                     wrapped: false,
                 }],
+                None,
             ),
         }
     }
@@ -373,7 +439,7 @@ impl<M: TextMeasurer> LayoutEngine<M> {
             // per nesting level, and each child line remains a legal split.
             for child in &item.children {
                 y = y.saturating_add(self.spacing_before(child));
-                let (_, _, lines) = self.layout_content(child, y, item_x, item_width);
+                let (_, _, lines, _) = self.layout_content(child, y, item_x, item_width);
                 y = append_lines(output, lines, y);
                 y = y.saturating_add(self.spacing_after(child));
             }
@@ -396,7 +462,7 @@ impl<M: TextMeasurer> LayoutEngine<M> {
 
         for block in blocks {
             y = y.saturating_add(self.spacing_before(block));
-            let (_, _, lines) = self.layout_content(block, y, inner_x, inner_width);
+            let (_, _, lines, _) = self.layout_content(block, y, inner_x, inner_width);
             y = append_lines(&mut result, lines, y);
             y = y.saturating_add(self.spacing_after(block));
         }
@@ -441,7 +507,7 @@ impl<M: TextMeasurer> LayoutEngine<M> {
 
         for block in blocks {
             y = y.saturating_add(self.spacing_before(block));
-            let (_, _, lines) = self.layout_content(block, y, inner_x, inner_width);
+            let (_, _, lines, _) = self.layout_content(block, y, inner_x, inner_width);
             y = append_lines(&mut result, lines, y);
             y = y.saturating_add(self.spacing_after(block));
         }
@@ -474,37 +540,451 @@ impl<M: TextMeasurer> LayoutEngine<M> {
             .unwrap_or(start_y);
         for block in rest {
             y = y.saturating_add(self.spacing_before(block));
-            let (_, _, lines) = self.layout_content(block, y, x, width);
+            let (_, _, lines, _) = self.layout_content(block, y, x, width);
             y = append_lines(&mut result, lines, y);
             y = y.saturating_add(self.spacing_after(block));
         }
         result
     }
 
-    fn table_lines(&self, table: &Table, start_y: i32, x: i32, width: u32) -> Vec<LayoutLine> {
-        let mut rows = Vec::new();
-        if !table.headers.is_empty() {
-            rows.push(table.headers.clone());
+    fn table_lines(
+        &self,
+        table: &Table,
+        start_y: i32,
+        x: i32,
+        width: u32,
+    ) -> (Vec<LayoutLine>, TableLayout) {
+        let column_count = table
+            .headers
+            .len()
+            .max(table.rows.iter().map(Vec::len).max().unwrap_or(0));
+        if column_count == 0 {
+            return (
+                vec![empty_line(x, start_y, self.style.body.line_height)],
+                TableLayout {
+                    mode: TableLayoutMode::Normal,
+                    columns: Vec::new(),
+                    groups: Vec::new(),
+                    rows: Vec::new(),
+                },
+            );
         }
-        rows.extend(table.rows.clone());
 
-        let mut result = Vec::new();
-        let mut y = start_y;
-        for row in rows {
-            let mut cells = Vec::new();
-            for (index, cell) in row.iter().enumerate() {
-                if index > 0 {
-                    cells.push(Inline::Text(" | ".into()));
-                }
-                cells.extend(cell.clone());
+        let all_columns = (0..column_count).collect::<Vec<_>>();
+        let stages = [
+            (TableLayoutMode::Normal, self.table_text_style(false, false)),
+            (TableLayoutMode::Compact, self.table_text_style(true, false)),
+            (
+                TableLayoutMode::Aggressive,
+                self.table_text_style(true, true),
+            ),
+        ];
+
+        for (mode, text_style) in stages {
+            let columns = self.table_columns(table, column_count, text_style);
+            if let Some(widths) = self
+                .allocate_table_widths(
+                    &all_columns,
+                    &columns,
+                    width,
+                    mode == TableLayoutMode::Aggressive,
+                )
+                .filter(|widths| {
+                    mode != TableLayoutMode::Aggressive
+                        || self.table_widths_are_readable(widths, text_style)
+                })
+            {
+                let groups = vec![TableColumnGroup {
+                    columns: all_columns,
+                    width: table_group_width(
+                        &widths,
+                        self.style.table_cell_padding,
+                        self.style.table_border.width.max(1),
+                    ),
+                    alignments: table
+                        .alignments
+                        .iter()
+                        .copied()
+                        .chain(std::iter::repeat(crate::document::TableAlignment::None))
+                        .take(column_count)
+                        .collect(),
+                    x,
+                    widths,
+                }];
+                return self.render_table(table, start_y, text_style, mode, columns, groups);
             }
-            let lines = self.inline_lines(&cells, self.style.body, y, x, width);
-            y = append_lines(&mut result, lines, y);
         }
-        if result.is_empty() {
-            result.push(empty_line(x, start_y, self.style.body.line_height));
+
+        // Even character-level wrapping cannot make a table with more cells
+        // than the physical viewport can frame fit horizontally. Continue it
+        // as deterministic vertical groups. The first source column is kept in
+        // every group where the viewport can hold it; this keeps row identity
+        // visible while reading a continuation group.
+        let text_style = self.table_text_style(true, true);
+        let columns = self.table_columns(table, column_count, text_style);
+        let mut groups = Vec::new();
+        let mut pending = vec![0];
+        for index in 1..column_count {
+            let mut candidate = pending.clone();
+            candidate.push(index);
+            if self
+                .allocate_table_widths(&candidate, &columns, width, true)
+                .filter(|widths| self.table_widths_are_readable(widths, text_style))
+                .is_some()
+            {
+                pending = candidate;
+            } else {
+                groups.push(self.make_table_group(&pending, &columns, width, x, text_style));
+                pending = vec![0, index];
+                if self
+                    .allocate_table_widths(&pending, &columns, width, true)
+                    .filter(|widths| self.table_widths_are_readable(widths, text_style))
+                    .is_none()
+                {
+                    // At an exceptionally narrow viewport, preserve progress
+                    // even when duplicating the key column is impossible.
+                    groups.push(self.make_table_group(&[index], &columns, width, x, text_style));
+                    pending = vec![0];
+                }
+            }
         }
-        result
+        if pending.len() > 1 || groups.is_empty() {
+            groups.push(self.make_table_group(&pending, &columns, width, x, text_style));
+        }
+
+        self.render_table(
+            table,
+            start_y,
+            text_style,
+            TableLayoutMode::Grouped,
+            columns,
+            groups,
+        )
+    }
+
+    fn table_text_style(&self, compact: bool, aggressive: bool) -> TextStyle {
+        if !compact {
+            return self.style.body;
+        }
+        let minimum = 8;
+        let target_size = if aggressive {
+            self.style.body.font_size.saturating_mul(2) / 3
+        } else {
+            self.style.body.font_size.saturating_mul(3) / 4
+        };
+        let font_size = target_size.max(minimum).max(1);
+        TextStyle {
+            font_size,
+            line_height: self
+                .style
+                .body
+                .line_height
+                .saturating_mul(font_size)
+                .checked_div(self.style.body.font_size.max(1))
+                .unwrap_or(font_size)
+                .max(font_size),
+            ..self.style.body
+        }
+    }
+
+    fn table_columns(
+        &self,
+        table: &Table,
+        column_count: usize,
+        text_style: TextStyle,
+    ) -> Vec<TableColumnLayout> {
+        (0..column_count)
+            .map(|index| {
+                let mut minimum_width = 0;
+                let mut preferred_width = 0;
+                let mut inspect = |cell: &[Inline]| {
+                    let (minimum, preferred) = self.table_cell_metrics(cell, text_style);
+                    minimum_width = minimum_width.max(minimum);
+                    preferred_width = preferred_width.max(preferred);
+                };
+                if let Some(cell) = table.headers.get(index) {
+                    inspect(cell);
+                }
+                for row in &table.rows {
+                    if let Some(cell) = row.get(index) {
+                        inspect(cell);
+                    }
+                }
+                TableColumnLayout {
+                    index,
+                    minimum_width,
+                    preferred_width: preferred_width.max(minimum_width),
+                    alignment: table.alignments.get(index).copied().unwrap_or_default(),
+                }
+            })
+            .collect()
+    }
+
+    fn table_cell_metrics(&self, inlines: &[Inline], style: TextStyle) -> (u32, u32) {
+        let mut spans = Vec::new();
+        for inline in inlines {
+            collect_spans(inline, style, None, &mut spans);
+        }
+        let lines = wrap_spans(
+            &self.measurer,
+            spans.clone(),
+            0,
+            0,
+            u32::MAX / 4,
+            style.line_height,
+        );
+        let preferred = lines
+            .iter()
+            .map(|line| line.bounds.size.width)
+            .max()
+            .unwrap_or(0);
+        let mut minimum = 0;
+        for span in spans {
+            for token in span.text.split(char::is_whitespace) {
+                minimum = minimum.max(self.measurer.measure(token, &span.style));
+            }
+        }
+        (minimum, preferred.max(minimum))
+    }
+
+    fn allocate_table_widths(
+        &self,
+        indexes: &[usize],
+        columns: &[TableColumnLayout],
+        table_width: u32,
+        aggressive: bool,
+    ) -> Option<Vec<u32>> {
+        let overhead = table_group_overhead(
+            indexes.len(),
+            self.style.table_cell_padding,
+            self.style.table_border.width.max(1),
+        );
+        let available = table_width.checked_sub(overhead)?;
+        if available < indexes.len() as u32 {
+            return None;
+        }
+        let minimums = indexes
+            .iter()
+            .map(|index| {
+                if aggressive {
+                    1
+                } else {
+                    columns[*index].minimum_width.max(1)
+                }
+            })
+            .collect::<Vec<_>>();
+        let preferreds = indexes
+            .iter()
+            .zip(minimums.iter())
+            .map(|(index, minimum)| columns[*index].preferred_width.max(*minimum))
+            .collect::<Vec<_>>();
+        let minimum_total = minimums.iter().copied().sum::<u32>();
+        if minimum_total > available {
+            return None;
+        }
+
+        if aggressive {
+            let even_width = available / indexes.len() as u32;
+            let remainder = available % indexes.len() as u32;
+            return Some(
+                (0..indexes.len())
+                    .map(|index| even_width + if (index as u32) < remainder { 1 } else { 0 })
+                    .collect(),
+            );
+        }
+
+        let mut widths = minimums;
+        let mut remaining = available - minimum_total;
+        // First grow toward normally laid-out widths. Iterating source order
+        // makes the result stable and gives earlier/key columns precedence.
+        for (width, preferred) in widths.iter_mut().zip(preferreds.iter()) {
+            let growth = preferred.saturating_sub(*width).min(remaining);
+            *width += growth;
+            remaining -= growth;
+        }
+        // Any spare space is distributed one pixel at a time. This avoids
+        // rounding-dependent results and keeps narrow columns usable.
+        let mut index = 0;
+        while remaining > 0 && !widths.is_empty() {
+            widths[index] = widths[index].saturating_add(1);
+            remaining -= 1;
+            index = (index + 1) % widths.len();
+        }
+        Some(widths)
+    }
+
+    fn table_widths_are_readable(&self, widths: &[u32], text_style: TextStyle) -> bool {
+        widths.len() <= 1
+            || widths
+                .iter()
+                .all(|width| *width >= text_style.font_size.saturating_mul(2).max(12))
+    }
+
+    fn make_table_group(
+        &self,
+        indexes: &[usize],
+        columns: &[TableColumnLayout],
+        width: u32,
+        x: i32,
+        text_style: TextStyle,
+    ) -> TableColumnGroup {
+        let widths = self
+            .allocate_table_widths(indexes, columns, width, true)
+            .filter(|widths| self.table_widths_are_readable(widths, text_style))
+            .unwrap_or_else(|| vec![1; indexes.len()]);
+        TableColumnGroup {
+            columns: indexes.to_vec(),
+            width: table_group_width(
+                &widths,
+                self.style.table_cell_padding,
+                self.style.table_border.width.max(1),
+            ),
+            alignments: indexes
+                .iter()
+                .map(|index| columns[*index].alignment)
+                .collect(),
+            x,
+            widths,
+        }
+    }
+
+    fn render_table(
+        &self,
+        table: &Table,
+        start_y: i32,
+        text_style: TextStyle,
+        mode: TableLayoutMode,
+        columns: Vec<TableColumnLayout>,
+        groups: Vec<TableColumnGroup>,
+    ) -> (Vec<LayoutLine>, TableLayout) {
+        let mut lines = Vec::new();
+        let mut rows = Vec::new();
+        let mut y = start_y;
+        for (group_index, group) in groups.iter().enumerate() {
+            let header = if table.headers.is_empty() {
+                None
+            } else {
+                Some(table.headers.as_slice())
+            };
+            if let Some(header) = header {
+                y = self.render_table_row(
+                    header,
+                    true,
+                    group_index,
+                    group,
+                    text_style,
+                    y,
+                    &mut lines,
+                    &mut rows,
+                );
+            }
+            for source_row in &table.rows {
+                y = self.render_table_row(
+                    source_row,
+                    false,
+                    group_index,
+                    group,
+                    text_style,
+                    y,
+                    &mut lines,
+                    &mut rows,
+                );
+            }
+        }
+        if lines.is_empty() {
+            lines.push(empty_line(
+                groups.first().map(|group| group.x).unwrap_or(0),
+                start_y,
+                text_style.line_height,
+            ));
+        }
+        (
+            lines,
+            TableLayout {
+                mode,
+                columns,
+                groups,
+                rows,
+            },
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn render_table_row(
+        &self,
+        source_row: &[Vec<Inline>],
+        header: bool,
+        group_index: usize,
+        group: &TableColumnGroup,
+        text_style: TextStyle,
+        start_y: i32,
+        output: &mut Vec<LayoutLine>,
+        rows: &mut Vec<TableRowLayout>,
+    ) -> i32 {
+        let cell_padding = self.style.table_cell_padding;
+        let cell_lines = group
+            .columns
+            .iter()
+            .zip(group.widths.iter())
+            .scan(
+                group.x + self.style.table_border.width.max(1) as i32,
+                |cell_x, (column, column_width)| {
+                    let inlines = source_row.get(*column).map(Vec::as_slice).unwrap_or(&[]);
+                    let cell_style = TextStyle {
+                        bold: header,
+                        ..text_style
+                    };
+                    let mut lines = self.inline_lines(
+                        inlines,
+                        cell_style,
+                        start_y,
+                        cell_x.saturating_add(cell_padding as i32),
+                        (*column_width).max(1),
+                    );
+                    align_cell_lines(
+                        &mut lines,
+                        *column_width,
+                        group
+                            .columns
+                            .iter()
+                            .position(|index| index == column)
+                            .and_then(|index| group.alignments.get(index).copied())
+                            .unwrap_or_default(),
+                    );
+                    *cell_x = cell_x.saturating_add(
+                        (*column_width
+                            + cell_padding.saturating_mul(2)
+                            + self.style.table_border.width.max(1)) as i32,
+                    );
+                    Some(lines)
+                },
+            )
+            .collect::<Vec<_>>();
+        let row_height = cell_lines.iter().map(Vec::len).max().unwrap_or(1);
+        let row_start = output.len();
+        let mut row_y = start_y;
+        for line_index in 0..row_height {
+            let mut fragments = Vec::new();
+            let mut height = text_style.line_height.max(1);
+            for lines in &cell_lines {
+                if let Some(line) = lines.get(line_index) {
+                    height = height.max(line.bounds.size.height);
+                    fragments.extend(line.fragments.clone());
+                }
+            }
+            output.push(LayoutLine {
+                bounds: Rectangle::new(Point::new(group.x, row_y), Size::new(group.width, height)),
+                fragments,
+                wrapped: false,
+            });
+            row_y = row_y.saturating_add(height as i32);
+        }
+        rows.push(TableRowLayout {
+            line_range: row_start..output.len(),
+            group: group_index,
+            header,
+        });
+        row_y
     }
 
     fn code_lines(
@@ -561,6 +1041,51 @@ impl<M: TextMeasurer> LayoutEngine<M> {
             result.push(empty_line(x, start_y, self.style.code.line_height));
         }
         result
+    }
+}
+
+fn table_group_overhead(column_count: usize, padding: u32, border_width: u32) -> u32 {
+    (column_count as u32)
+        .saturating_mul(padding.saturating_mul(2))
+        .saturating_add((column_count.saturating_add(1) as u32).saturating_mul(border_width.max(1)))
+}
+
+fn table_group_width(widths: &[u32], padding: u32, border_width: u32) -> u32 {
+    table_group_overhead(widths.len(), padding, border_width)
+        .saturating_add(widths.iter().copied().sum::<u32>())
+}
+
+fn align_cell_lines(
+    lines: &mut [LayoutLine],
+    cell_width: u32,
+    alignment: crate::document::TableAlignment,
+) {
+    for line in lines {
+        let spare = cell_width.saturating_sub(line.bounds.size.width);
+        let offset = match alignment {
+            crate::document::TableAlignment::Center => spare / 2,
+            crate::document::TableAlignment::Right => spare,
+            crate::document::TableAlignment::None | crate::document::TableAlignment::Left => 0,
+        } as i32;
+        if offset == 0 {
+            continue;
+        }
+        line.bounds = Rectangle::new(
+            Point::new(
+                line.bounds.top_left.x.saturating_add(offset),
+                line.bounds.top_left.y,
+            ),
+            line.bounds.size,
+        );
+        for fragment in &mut line.fragments {
+            fragment.bounds = Rectangle::new(
+                Point::new(
+                    fragment.bounds.top_left.x.saturating_add(offset),
+                    fragment.bounds.top_left.y,
+                ),
+                fragment.bounds.size,
+            );
+        }
     }
 }
 
@@ -1148,6 +1673,87 @@ mod tests {
                 + style().heading_spacing_after as i32
                 + style().heading_spacing_before as i32
         );
+    }
+
+    #[test]
+    fn tables_allocate_columns_and_keep_cell_content_separate() {
+        let table = Table {
+            headers: vec![
+                vec![Inline::Text("Name".into())],
+                vec![Inline::Text("Status".into())],
+                vec![Inline::Text("Owner".into())],
+            ],
+            rows: vec![vec![
+                vec![Inline::Text("Parser".into())],
+                vec![Inline::Text("ready".into())],
+                vec![Inline::Link {
+                    label: vec![Inline::Text("design-doc".into())],
+                    destination: "docs/design.md".into(),
+                    title: None,
+                }],
+            ]],
+            alignments: vec![
+                crate::document::TableAlignment::Left,
+                crate::document::TableAlignment::Center,
+                crate::document::TableAlignment::Right,
+            ],
+        };
+        let document = Document::from_blocks(vec![Block::Table(table)]);
+        let layout = LayoutEngine::new(style()).layout(&document, Viewport::new(180, 200));
+        let block = &layout.blocks()[0];
+        let table_layout = block.table.as_ref().expect("table metadata");
+
+        assert_eq!(table_layout.mode, TableLayoutMode::Normal);
+        assert_eq!(table_layout.groups.len(), 1);
+        assert_eq!(table_layout.rows.len(), 2);
+        assert!(table_layout
+            .columns
+            .iter()
+            .all(|column| column.preferred_width >= column.minimum_width));
+        assert!(block
+            .lines
+            .iter()
+            .flat_map(|line| line.fragments.iter())
+            .any(|fragment| fragment.text == "Parser"));
+        assert!(block
+            .lines
+            .iter()
+            .flat_map(|line| line.fragments.iter())
+            .any(|fragment| fragment.link.is_some()));
+        assert!(
+            block.lines[0].fragments[1].bounds.top_left.x
+                > block.lines[0].fragments[0].bounds.top_left.x
+        );
+    }
+
+    #[test]
+    fn tables_use_key_column_groups_when_the_frame_cannot_fit() {
+        let document = Document::from_blocks(vec![Block::Table(Table {
+            headers: (0..8)
+                .map(|index| vec![Inline::Text(format!("H{index}"))])
+                .collect(),
+            rows: vec![vec![
+                vec![Inline::Text("key".into())],
+                vec![Inline::Text("one".into())],
+                vec![Inline::Text("two".into())],
+                vec![Inline::Text("three".into())],
+                vec![Inline::Text("four".into())],
+                vec![Inline::Text("five".into())],
+                vec![Inline::Text("six".into())],
+                vec![Inline::Text("seven".into())],
+            ]],
+            alignments: Vec::new(),
+        })]);
+        let layout = LayoutEngine::new(style()).layout(&document, Viewport::new(60, 300));
+        let table_layout = layout.blocks()[0].table.as_ref().unwrap();
+
+        assert_eq!(table_layout.mode, TableLayoutMode::Grouped);
+        assert!(table_layout.groups.len() > 1);
+        assert!(table_layout
+            .groups
+            .iter()
+            .skip(1)
+            .all(|group| group.columns.contains(&0)));
     }
 
     #[test]

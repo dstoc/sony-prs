@@ -43,6 +43,7 @@ const FIXTURES: &[(&str, &str)] = &[
         "tables-code-images",
         include_str!("fixtures/tables-code-images.md"),
     ),
+    ("table-layout", include_str!("fixtures/table-layout.md")),
 ];
 
 fn structural_style() -> ReaderStyle {
@@ -274,6 +275,38 @@ fn syntax_highlighting_is_eink_styled_lossless_and_wraps_code() {
         let source_without_newlines = source_code.replace('\n', "");
         assert_eq!(rendered, source_without_newlines);
     }
+}
+
+#[test]
+fn table_fixture_exposes_rows_headers_and_link_hit_regions() {
+    let reader = HostReader::from_source(
+        include_str!("fixtures/table-layout.md"),
+        structural_style(),
+        Viewport::new(96, 76),
+    )
+    .expect("table fixture should parse");
+    let tables = reader
+        .layout()
+        .blocks()
+        .iter()
+        .filter_map(|block| block.table.as_ref())
+        .collect::<Vec<_>>();
+
+    assert!(tables.len() >= 2);
+    assert!(tables
+        .iter()
+        .any(|table| table.rows.iter().any(|row| !row.header)));
+    assert!(reader.page_count() > 1);
+    assert!(reader
+        .pagination()
+        .pages()
+        .iter()
+        .flat_map(|page| page.hit_regions.iter())
+        .any(|region| matches!(
+            region.target,
+            prs_markdown::NavigationTarget::External(ref url)
+                if url == "https://example.invalid/sony-prs/14"
+        )));
 }
 
 #[test]

@@ -6,7 +6,7 @@
 //! by a framebuffer adapter, a host test target, or another renderer.
 
 use crate::geometry::{translate, Rect, Viewport};
-use crate::layout::{DocumentLayout, LayoutBlockKind, LayoutLine};
+use crate::layout::{DocumentLayout, LayoutBlockKind, LayoutLine, TableLayout, TableRowLayout};
 use crate::navigation::NavigationTarget;
 use crate::style::{BorderStyle, Color, FillStyle, ReaderStyle, TextStyle};
 use embedded_graphics::geometry::Point;
@@ -384,6 +384,37 @@ impl Paginator {
                         .y
                         .saturating_sub(self.style.page_padding.top as i32);
                     page = PageLayout::new(pages.len() + 1, layout.viewport);
+                    if block.kind == LayoutBlockKind::Table {
+                        if let Some(table) = block.table.as_ref().filter(|table| {
+                            table_row_at(table, line_index).is_some_and(|row| !row.header)
+                        }) {
+                            if let Some(header) = table_header_for_line(table, line_index) {
+                                let header_height = table_row_height(block, header);
+                                page_origin_y = line
+                                    .bounds
+                                    .top_left
+                                    .y
+                                    .saturating_sub(self.style.page_padding.top as i32)
+                                    .saturating_sub(header_height);
+                                let header_offset = Point::new(
+                                    0,
+                                    self.style.page_padding.top as i32
+                                        - block.lines[header.line_range.start].bounds.top_left.y,
+                                );
+                                for header_index in header.line_range.clone() {
+                                    add_line(
+                                        &mut page,
+                                        &block.lines[header_index],
+                                        header_offset,
+                                        block.kind,
+                                        &self.style,
+                                        block.table.as_ref(),
+                                        header_index,
+                                    );
+                                }
+                            }
+                        }
+                    }
                     page_start = None;
                 }
                 page_start.get_or_insert(cursor);
@@ -393,6 +424,8 @@ impl Paginator {
                     Point::new(0, page_origin_y.saturating_neg()),
                     block.kind,
                     &self.style,
+                    block.table.as_ref(),
+                    line_index,
                 );
             }
         }
@@ -427,6 +460,29 @@ impl Paginator {
             .saturating_sub(self.style.page_padding.bottom as i32);
         let line_fits = line_bottom(line.bounds) <= page_limit;
         let block = &layout.blocks()[block_index];
+
+        if block.kind == LayoutBlockKind::Table {
+            if let Some(table) = block.table.as_ref() {
+                if let Some(row) = table_row_at(table, line_index) {
+                    if row.line_range.start == line_index {
+                        let row_bottom = block
+                            .lines
+                            .get(row.line_range.end.saturating_sub(1))
+                            .map(|line| line_bottom(line.bounds))
+                            .unwrap_or(line_bottom(line.bounds));
+                        // A normal row moves as a unit. If a single row is
+                        // taller than a page, allow its lines to split after
+                        // the row has been placed once; this is the explicit
+                        // oversized-row fallback and guarantees progress.
+                        if row_bottom > page_limit
+                            && page_start != DocumentCursor::new(block_index, line_index)
+                        {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
 
         if !line_fits {
             // If an image is taller than a page, keep its already-started
@@ -540,6 +596,8 @@ fn add_line(
     page_offset: Point,
     kind: LayoutBlockKind,
     style: &ReaderStyle,
+    table: Option<&TableLayout>,
+    line_index: usize,
 ) {
     if matches!(kind, LayoutBlockKind::Quote | LayoutBlockKind::Alert) {
         let border_x = line.bounds.top_left.x.saturating_sub(
@@ -570,6 +628,9 @@ fn add_line(
                 style.code_background
             },
         });
+    }
+    if kind == LayoutBlockKind::Table {
+        add_table_decoration(page, line, page_offset, style, table, line_index);
     }
     for fragment in &line.fragments {
         let bounds = translate(fragment.bounds, page_offset);
@@ -620,6 +681,87 @@ fn add_line(
                 style: BorderStyle::new(Color::BLACK, 1),
             }),
         }
+    }
+}
+
+fn table_row_at(table: &TableLayout, line_index: usize) -> Option<&TableRowLayout> {
+    table
+        .rows
+        .iter()
+        .find(|row| row.line_range.contains(&line_index))
+}
+
+fn table_header_for_line(table: &TableLayout, line_index: usize) -> Option<&TableRowLayout> {
+    let row = table_row_at(table, line_index)?;
+    table
+        .rows
+        .iter()
+        .find(|candidate| candidate.group == row.group && candidate.header)
+}
+
+fn table_row_height(block: &crate::layout::LayoutBlock, row: &TableRowLayout) -> i32 {
+    let Some(first) = block.lines.get(row.line_range.start) else {
+        return 0;
+    };
+    let last = block
+        .lines
+        .get(row.line_range.end.saturating_sub(1))
+        .unwrap_or(first);
+    line_bottom(last.bounds).saturating_sub(first.bounds.top_left.y)
+}
+
+fn add_table_decoration(
+    page: &mut PageLayout,
+    line: &LayoutLine,
+    page_offset: Point,
+    style: &ReaderStyle,
+    table: Option<&TableLayout>,
+    line_index: usize,
+) {
+    let Some(table) = table else {
+        return;
+    };
+    let Some(row) = table_row_at(table, line_index) else {
+        return;
+    };
+    let Some(group) = table.groups.get(row.group) else {
+        return;
+    };
+    let border_width = style.table_border.width.max(1);
+    let mut cell_x = group.x;
+    for (column_index, column_width) in group.widths.iter().enumerate() {
+        let remaining = group
+            .width
+            .saturating_sub(cell_x.saturating_sub(group.x) as u32);
+        let cell_width = if column_index + 1 == group.widths.len() {
+            remaining
+        } else {
+            column_width
+                .saturating_add(style.table_cell_padding.saturating_mul(2))
+                .saturating_add(border_width)
+        };
+        let bounds = translate(
+            Rect::new(
+                Point::new(cell_x, line.bounds.top_left.y),
+                embedded_graphics::geometry::Size::new(cell_width, line.bounds.size.height),
+            ),
+            page_offset,
+        );
+        if row.header {
+            page.push_command(DisplayCommand::Fill {
+                bounds,
+                style: style.table_header_fill,
+            });
+        }
+        page.push_command(DisplayCommand::Border {
+            bounds,
+            style: if row.header {
+                style.table_header_border
+            } else {
+                style.table_border
+            },
+        });
+        cell_x = cell_x.saturating_add(cell_width as i32);
     }
 }
 
@@ -828,6 +970,7 @@ mod tests {
                         wrapped: false,
                     }],
                     anchor: None,
+                    table: None,
                 },
                 LayoutBlock {
                     kind: LayoutBlockKind::Paragraph,
@@ -843,6 +986,7 @@ mod tests {
                         wrapped: false,
                     }],
                     anchor: None,
+                    table: None,
                 },
             ],
         };
@@ -1053,5 +1197,71 @@ mod tests {
                     if *style == pagination_style().block_quote_border)
             })
         }));
+    }
+
+    #[test]
+    fn tables_break_between_rows_and_repeat_headers_on_continuations() {
+        let style = pagination_style();
+        let document = Document::from_blocks(vec![Block::Table(crate::Table {
+            headers: vec![vec![Inline::Text("Header".into())]],
+            rows: (0..6)
+                .map(|index| vec![vec![Inline::Text(format!("row-{index}"))]])
+                .collect(),
+            alignments: Vec::new(),
+        })]);
+        let layout = LayoutEngine::new(style).layout(&document, Viewport::new(100, 25));
+        let table = layout.blocks()[0].table.as_ref().unwrap();
+        let pages = Paginator::new(style).paginate(&layout);
+
+        assert!(pages.len() > 1);
+        assert!(pages.iter().skip(1).all(|page| page
+            .display_list()
+            .iter()
+            .filter_map(|command| match command {
+                DisplayCommand::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .any(|text| text == "Header")));
+        for pair in pages.windows(2) {
+            assert_eq!(pair[0].range.end, pair[1].range.start);
+        }
+        assert!(pages
+            .iter()
+            .flat_map(|page| page.display_list())
+            .any(|command| matches!(command, DisplayCommand::Border { .. })));
+        assert!(table.rows.iter().all(|row| !row.line_range.is_empty()));
+        assert!(pages.iter().all(|page| {
+            page.display_list()
+                .iter()
+                .filter_map(|command| match command {
+                    DisplayCommand::Text { bounds, .. } => Some(bounds.top_left.y),
+                    _ => None,
+                })
+                .all(|y| y >= style.page_padding.top as i32)
+        }));
+    }
+
+    #[test]
+    fn oversized_table_rows_split_deterministically_after_first_placement() {
+        let style = pagination_style();
+        let document = Document::from_blocks(vec![Block::Table(crate::Table {
+            headers: vec![vec![Inline::Text("Key".into())]],
+            rows: vec![vec![vec![Inline::Text(
+                "a-very-long-unbreakable-identifier-that-needs-many-lines".into(),
+            )]]],
+            alignments: Vec::new(),
+        })]);
+        let layout = LayoutEngine::new(style).layout(&document, Viewport::new(24, 20));
+        let first = Paginator::new(style).paginate(&layout);
+        let second = Paginator::new(style).paginate(&layout);
+
+        assert!(first.len() > 1);
+        assert_eq!(first, second);
+        assert!(first
+            .iter()
+            .skip(1)
+            .all(|page| page.display_list().iter().any(
+                |command| matches!(command, DisplayCommand::Text { text, .. } if text == "Key")
+            )));
     }
 }

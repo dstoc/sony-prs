@@ -37,7 +37,7 @@ corresponding options shown by `--help`.
 The fixture corpus in `tests/fixtures/` covers prose, headings, inline styles,
 nested lists, task lists, quotes, alerts, footnotes, autolinks, strikethrough,
 long paragraphs, links and anchors, cross-file links, exact page boundaries,
-agent responses, table placeholders, fenced specialist source, raw HTML
+agent responses, readable GFM tables, fenced specialist source, raw HTML
 fallbacks, image references, and explicit font-face selection. `tests/harness.rs`
 asserts structural outputs such as page count, logical cursor ranges, visible
 fragments, hit regions, navigation, and PGM encoding. Those structural tests use the

@@ -126,6 +126,15 @@ pub struct ReaderStyle {
     /// source line, while source-newline lines retain `code_background`.
     pub code_continuation_background: FillStyle,
     pub thematic_break: BorderStyle,
+    /// Horizontal inset applied to each table cell around its text.
+    pub table_cell_padding: u32,
+    /// Monochrome cell border used for table framing and row separators.
+    pub table_border: BorderStyle,
+    /// A heavier rule distinguishes the header without relying on colour.
+    pub table_header_border: BorderStyle,
+    /// Optional light fill behind headers; bold text and the heavier rule are
+    /// the primary header distinction for monochrome displays.
+    pub table_header_fill: FillStyle,
 }
 
 impl Default for ReaderStyle {
@@ -160,6 +169,10 @@ impl Default for ReaderStyle {
             code_background: FillStyle::new(Color::rgb(248, 248, 248)),
             code_continuation_background: FillStyle::new(Color::rgb(238, 238, 238)),
             thematic_break: BorderStyle::new(Color::rgb(128, 128, 128), 1),
+            table_cell_padding: 3,
+            table_border: BorderStyle::new(Color::BLACK, 1),
+            table_header_border: BorderStyle::new(Color::BLACK, 2),
+            table_header_fill: FillStyle::new(Color::rgb(238, 238, 238)),
         }
     }
 }
