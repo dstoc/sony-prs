@@ -99,7 +99,14 @@ The initial crate exposes skeletal module boundaries for the pipeline:
 | `reader` | Page position and navigation state. |
 | `render` | Generic `DrawTarget` adapter. |
 
-The implementation is intentionally skeletal: the parser, production
-typography/font backend, syntax highlighting, image decoding, and pixel
-rasterization are follow-up work. Their integration points should extend
-these boundaries instead of moving T1 hardware policy into the library.
+The parser stage is implemented by `parse::ComrakParser`. It enables the GFM
+extensions used by agent output (tables, task lists, strikethrough, and
+autolinks), then copies Comrak's arena-backed tree into the owned IR. The IR
+retains fenced-code info strings, link/image destinations, task state, table
+alignment, heading anchors, source text, and source spans for top-level blocks.
+Comrak nodes, arenas, and their lifetimes stop at the parser module; layout and
+later stages consume only `prs-markdown` types.
+
+The production typography/font backend, syntax highlighting, image decoding,
+and pixel rasterization remain follow-up work. Their integration points should
+extend these boundaries instead of moving T1 hardware policy into the library.

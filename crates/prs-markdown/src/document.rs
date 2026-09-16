@@ -8,6 +8,8 @@
 pub struct Document {
     title: Option<String>,
     blocks: Vec<Block>,
+    source: Option<String>,
+    block_metadata: Vec<BlockMetadata>,
 }
 
 impl Document {
@@ -19,13 +21,31 @@ impl Document {
         Self {
             title: Some(title.into()),
             blocks: Vec::new(),
+            source: None,
+            block_metadata: Vec::new(),
         }
     }
 
     pub fn from_blocks(blocks: Vec<Block>) -> Self {
+        let block_metadata = block_metadata_for(&blocks);
         Self {
             title: None,
             blocks,
+            source: None,
+            block_metadata,
+        }
+    }
+
+    pub(crate) fn from_parsed(
+        source: String,
+        blocks: Vec<Block>,
+        block_metadata: Vec<BlockMetadata>,
+    ) -> Self {
+        Self {
+            title: None,
+            blocks,
+            source: Some(source),
+            block_metadata,
         }
     }
 
@@ -41,13 +61,90 @@ impl Document {
         &self.blocks
     }
 
+    /// Returns the original Markdown source when this document came from a
+    /// parser that retains it.
+    pub fn source(&self) -> Option<&str> {
+        self.source.as_deref()
+    }
+
+    /// Returns stable semantic metadata for each top-level block.
+    ///
+    /// The metadata is separate from [`Block`] so the semantic block variants
+    /// remain convenient to construct by hand. Parser-produced documents have
+    /// source spans; documents constructed with [`Document::from_blocks`] have
+    /// IDs but no source spans.
+    pub fn block_metadata(&self) -> &[BlockMetadata] {
+        &self.block_metadata
+    }
+
+    pub fn block_metadata_at(&self, index: usize) -> Option<&BlockMetadata> {
+        self.block_metadata.get(index)
+    }
+
     pub fn blocks_mut(&mut self) -> &mut Vec<Block> {
         &mut self.blocks
     }
 
     pub fn push(&mut self, block: Block) {
         self.blocks.push(block);
+        self.block_metadata.push(BlockMetadata {
+            id: NodeId(self.block_metadata.len() as u64),
+            source_span: None,
+        });
     }
+}
+
+fn block_metadata_for(blocks: &[Block]) -> Vec<BlockMetadata> {
+    (0..blocks.len())
+        .map(|index| BlockMetadata {
+            id: NodeId(index as u64),
+            source_span: None,
+        })
+        .collect()
+}
+
+/// A stable identity for a semantic node within one parsed document.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct NodeId(u64);
+
+impl NodeId {
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    pub const fn value(self) -> u64 {
+        self.0
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct SourcePosition {
+    pub line: usize,
+    pub column: usize,
+}
+
+impl SourcePosition {
+    pub const fn new(line: usize, column: usize) -> Self {
+        Self { line, column }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct SourceSpan {
+    pub start: SourcePosition,
+    pub end: SourcePosition,
+}
+
+impl SourceSpan {
+    pub const fn new(start: SourcePosition, end: SourcePosition) -> Self {
+        Self { start, end }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct BlockMetadata {
+    pub id: NodeId,
+    pub source_span: Option<SourceSpan>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -66,6 +163,7 @@ pub enum Block {
     Table(Table),
     CodeBlock {
         language: Option<String>,
+        info: Option<String>,
         code: String,
     },
     Image {
@@ -127,6 +225,7 @@ impl Block {
 pub struct ListItem {
     pub content: Vec<Inline>,
     pub children: Vec<Block>,
+    pub task: TaskState,
 }
 
 impl ListItem {
@@ -134,7 +233,26 @@ impl ListItem {
         Self {
             content,
             children: Vec::new(),
+            task: TaskState::None,
         }
+    }
+}
+
+/// The semantic state of a GFM task-list item.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TaskState {
+    None,
+    Unchecked,
+    Checked,
+}
+
+impl TaskState {
+    pub const fn is_task(self) -> bool {
+        !matches!(self, Self::None)
+    }
+
+    pub const fn is_checked(self) -> bool {
+        matches!(self, Self::Checked)
     }
 }
 
@@ -142,6 +260,16 @@ impl ListItem {
 pub struct Table {
     pub headers: Vec<Vec<Inline>>,
     pub rows: Vec<Vec<Vec<Inline>>>,
+    pub alignments: Vec<TableAlignment>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TableAlignment {
+    #[default]
+    None,
+    Left,
+    Center,
+    Right,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -3,7 +3,9 @@
 //! The crate deliberately stops at a generic [`embedded_graphics::DrawTarget`]
 //! boundary.  A future parser, font backend, image decoder, and device UI can
 //! be added without making the document engine know about a framebuffer or a
-//! particular reader model.
+//! particular reader model. [`parse::ComrakParser`] converts CommonMark/GFM
+//! input into the owned [`Document`] IR; Comrak nodes and arena lifetimes do
+//! not appear in document, layout, pagination, or rendering types.
 
 pub mod document;
 pub mod layout;
@@ -15,7 +17,10 @@ pub mod render;
 pub mod resources;
 pub mod style;
 
-pub use document::{Block, Document, Inline};
+pub use document::{
+    Block, BlockMetadata, Document, Inline, ListItem, NodeId, SourcePosition, SourceSpan, Table,
+    TableAlignment, TaskState,
+};
 pub use layout::{DocumentLayout, LayoutEngine, Viewport};
 pub use navigation::{DocumentId, DocumentLocation, NavigationTarget, ReaderHistory};
 pub use pagination::{PageLayout, Paginator};
