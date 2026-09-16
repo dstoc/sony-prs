@@ -1,6 +1,6 @@
-use crate::{display, input};
-use crate::framebuffer::NativeDisplay;
+use crate::framebuffer::{DisplayRegion, NativeDisplay};
 use crate::input::{EventReader, RawEvent};
+use crate::{display, input};
 use std::fs::OpenOptions;
 use std::io::{self, Read, Write};
 use std::os::fd::AsRawFd;
@@ -72,14 +72,15 @@ impl SuspendMode {
 }
 
 pub fn run(path: &Path, suspend_mode: SuspendMode) -> io::Result<()> {
-    let mut display = NativeDisplay::open(path)
-        .map_err(|error| display_error("open native display", error))?;
+    let mut display =
+        NativeDisplay::open(path).map_err(|error| display_error("open native display", error))?;
     crate::status::ensure_native_ownership()?;
     let mut wake_lock = WakeLock::open().map_err(|error| display_error("open wake lock", error))?;
     wake_lock
         .acquire()
         .map_err(|error| display_error("acquire wake lock", error))?;
-    let mut inputs = InputSet::open().map_err(|error| display_error("open input devices", error))?;
+    let mut inputs =
+        InputSet::open().map_err(|error| display_error("open input devices", error))?;
     let mut state = UiState::new();
     let mut adb_restart_pending = false;
 
@@ -88,7 +89,7 @@ pub fn run(path: &Path, suspend_mode: SuspendMode) -> io::Result<()> {
         display.width(),
         display.height()
     );
-    redraw(&mut display, &state, wake_lock.is_held())
+    redraw(&mut display, &state, wake_lock.is_held(), DirtyArea::Full)
         .map_err(|error| display_error("initial redraw", error))?;
 
     loop {
@@ -96,7 +97,7 @@ pub fn run(path: &Path, suspend_mode: SuspendMode) -> io::Result<()> {
             restart_adbd_if_enabled()?;
             adb_restart_pending = false;
         }
-        let mut redraw_needed = state.refresh_status_if_due();
+        let mut redraw_area = state.refresh_status_if_due().then_some(DirtyArea::Status);
         let mut action = PowerAction::None;
         for source in &mut inputs.sources {
             loop {
@@ -104,7 +105,12 @@ pub fn run(path: &Path, suspend_mode: SuspendMode) -> io::Result<()> {
                     break;
                 };
                 let (dirty, event_action) = state.observe(source.kind, event);
-                redraw_needed |= dirty;
+                if let Some(dirty) = dirty {
+                    redraw_area = Some(match redraw_area {
+                        Some(existing) => existing.merge(dirty),
+                        None => dirty,
+                    });
+                }
                 if event_action != PowerAction::None {
                     action = event_action;
                 }
@@ -125,13 +131,13 @@ pub fn run(path: &Path, suspend_mode: SuspendMode) -> io::Result<()> {
             PowerAction::Reboot => {
                 state.mode = "REBOOTING";
                 state.message = "REBOOT REQUESTED".into();
-                redraw(&mut display, &state, wake_lock.is_held())
+                redraw(&mut display, &state, wake_lock.is_held(), DirtyArea::Full)
                     .map_err(|error| display_error("reboot redraw", error))?;
                 request_reboot()?;
                 return Ok(());
             }
-            PowerAction::None if redraw_needed => {
-                redraw(&mut display, &state, wake_lock.is_held())
+            PowerAction::None if let Some(area) = redraw_area => {
+                redraw(&mut display, &state, wake_lock.is_held(), area)
                     .map_err(|error| display_error("input redraw", error))?;
             }
             PowerAction::None => {}
@@ -140,9 +146,50 @@ pub fn run(path: &Path, suspend_mode: SuspendMode) -> io::Result<()> {
     }
 }
 
-fn redraw(display: &mut NativeDisplay, state: &UiState, wake_lock_held: bool) -> io::Result<()> {
+fn redraw(
+    display: &mut NativeDisplay,
+    state: &UiState,
+    wake_lock_held: bool,
+    area: DirtyArea,
+) -> io::Result<()> {
     let lines = screen_lines(state, wake_lock_held);
-    display::draw_screen(display, &lines)
+    display::draw_screen(display, &lines, area.region(display))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DirtyArea {
+    Full,
+    Status,
+    Touch,
+    Key,
+    Power,
+}
+
+impl DirtyArea {
+    fn merge(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Full, _) | (_, Self::Full) => Self::Full,
+            (Self::Key, Self::Power) | (Self::Power, Self::Key) => Self::Power,
+            (left, right) if left == right => left,
+            _ => Self::Full,
+        }
+    }
+
+    fn region(self, display: &NativeDisplay) -> DisplayRegion {
+        let region = match self {
+            Self::Full => DisplayRegion::full(display.width(), display.height()),
+            // Coordinates cover the three touch diagnostic rows, including
+            // the glyph margins. Keep the update well inside the display.
+            Self::Touch => DisplayRegion::new(20, 350, 560, 94),
+            // Key and power diagnostics share one region so a power press can
+            // update the key row and the power/message rows together.
+            Self::Key | Self::Power => DisplayRegion::new(20, 434, 560, 210),
+            // Status includes both the battery/connectivity block and the
+            // framebuffer/process rows near the bottom of the diagnostics.
+            Self::Status => DisplayRegion::new(20, 88, 560, 490),
+        };
+        region.bounded(display.width(), display.height())
+    }
 }
 
 fn screen_lines(state: &UiState, wake_lock_held: bool) -> Vec<String> {
@@ -268,7 +315,7 @@ fn sleep_cycle(
     }
     .into();
     eprintln!("standalone-test: drawing pre-suspend screen");
-    redraw(display, state, wake_lock.is_held())
+    redraw(display, state, wake_lock.is_held(), DirtyArea::Full)
         .map_err(|error| display_error("pre-suspend redraw", error))?;
     let standby_lines = screen_lines(state, wake_lock.is_held());
     let standby = display::standby_screen(
@@ -310,7 +357,7 @@ fn sleep_cycle(
     state.message = format!("WOKE AFTER {suspend_elapsed_ms}MS");
     state.last_power_duration_ms = None;
     state.ignore_power_until = Some(Instant::now() + Duration::from_secs(2));
-    redraw(display, state, wake_lock.is_held())
+    redraw(display, state, wake_lock.is_held(), DirtyArea::Full)
         .map_err(|error| display_error("post-resume redraw", error))
 }
 
@@ -381,9 +428,7 @@ fn wait_for_display_wake(inputs: &mut InputSet, state: &mut UiState) -> io::Resu
                     if !resume_requested && matches!(event.value, 0..=2) {
                         eprintln!("standalone-test: requesting early resume");
                         request_resume()?;
-                        eprintln!(
-                            "standalone-test: deferring adbd restart until USB reconnect"
-                        );
+                        eprintln!("standalone-test: deferring adbd restart until USB reconnect");
                         resume_requested = true;
                     }
                 }
@@ -452,9 +497,7 @@ fn request_resume() -> io::Result<()> {
         return run_power_state_helper("on");
     }
 
-    eprintln!(
-        "standalone-test: vendor resume helper unavailable; using raw sysfs on fallback"
-    );
+    eprintln!("standalone-test: vendor resume helper unavailable; using raw sysfs on fallback");
     let mut state = OpenOptions::new().write(true).open("/sys/power/state")?;
     state.write_all(b"on\n")?;
     state.flush()
@@ -703,26 +746,26 @@ impl UiState {
         self.last_status_refresh = Instant::now();
     }
 
-    fn observe(&mut self, source: InputSourceKind, event: RawEvent) -> (bool, PowerAction) {
+    fn observe(
+        &mut self,
+        source: InputSourceKind,
+        event: RawEvent,
+    ) -> (Option<DirtyArea>, PowerAction) {
         if source == InputSourceKind::Touch {
             self.last_touch = Some(event);
-            if event.event_type == EVENT_ABS
-                && matches!(event.code, ABS_X | ABS_MT_POSITION_X)
-            {
+            if event.event_type == EVENT_ABS && matches!(event.code, ABS_X | ABS_MT_POSITION_X) {
                 self.touch_x = event.value;
                 self.touch_seen = true;
             }
-            if event.event_type == EVENT_ABS
-                && matches!(event.code, ABS_Y | ABS_MT_POSITION_Y)
-            {
+            if event.event_type == EVENT_ABS && matches!(event.code, ABS_Y | ABS_MT_POSITION_Y) {
                 self.touch_y = event.value;
                 self.touch_seen = true;
             }
             if event.event_type == EVENT_SYN && event.code == SYN_REPORT {
                 self.touch_events += 1;
-                return (true, PowerAction::None);
+                return (Some(DirtyArea::Touch), PowerAction::None);
             }
-            return (false, PowerAction::None);
+            return (None, PowerAction::None);
         }
 
         if event.event_type == EVENT_KEY {
@@ -738,20 +781,29 @@ impl UiState {
                 );
                 return self.observe_power(source, event);
             }
-            return (true, PowerAction::None);
+            let area = if source.is_power() {
+                DirtyArea::Power
+            } else {
+                DirtyArea::Key
+            };
+            return (Some(area), PowerAction::None);
         }
 
-        (false, PowerAction::None)
+        (None, PowerAction::None)
     }
 
-    fn observe_power(&mut self, source: InputSourceKind, event: RawEvent) -> (bool, PowerAction) {
+    fn observe_power(
+        &mut self,
+        source: InputSourceKind,
+        event: RawEvent,
+    ) -> (Option<DirtyArea>, PowerAction) {
         if let Some(deadline) = self.ignore_power_until {
             if Instant::now() < deadline {
                 if event.value == 0 {
                     self.ignore_power_until = None;
                 }
                 self.message = "WAKE POWER IGNORED".into();
-                return (true, PowerAction::None);
+                return (Some(DirtyArea::Power), PowerAction::None);
             }
             self.ignore_power_until = None;
         }
@@ -761,7 +813,7 @@ impl UiState {
                     self.power_press_us = Some(event.timestamp_micros());
                 }
                 self.message = "POWER HELD".into();
-                (true, PowerAction::None)
+                (Some(DirtyArea::Power), PowerAction::None)
             }
             0 => {
                 let duration = self
@@ -777,7 +829,7 @@ impl UiState {
                         source.label(),
                         duration / 1_000
                     );
-                    (true, PowerAction::Reboot)
+                    (Some(DirtyArea::Power), PowerAction::Reboot)
                 } else {
                     self.message = "SHORT POWER - SLEEP".into();
                     eprintln!(
@@ -785,14 +837,14 @@ impl UiState {
                         source.label(),
                         duration / 1_000
                     );
-                    (true, PowerAction::Sleep)
+                    (Some(DirtyArea::Power), PowerAction::Sleep)
                 }
             }
             2 => {
                 self.message = "POWER REPEAT".into();
-                (true, PowerAction::None)
+                (Some(DirtyArea::Power), PowerAction::None)
             }
-            _ => (true, PowerAction::None),
+            _ => (Some(DirtyArea::Power), PowerAction::None),
         }
     }
 }

@@ -1,12 +1,16 @@
-use crate::framebuffer::{DisplayCanvas, NativeDisplay};
+use crate::framebuffer::{DisplayCanvas, DisplayRegion, NativeDisplay};
 
 const BLACK: u16 = 0x0000;
 const WHITE: u16 = 0xffff;
 const SCALE: usize = 3;
 const CELL_WIDTH: usize = 6 * SCALE;
 
-pub fn draw_screen(display: &mut NativeDisplay, lines: &[String]) -> std::io::Result<()> {
-    display.draw(|canvas| {
+pub fn draw_screen(
+    display: &mut NativeDisplay,
+    lines: &[String],
+    refresh_region: DisplayRegion,
+) -> std::io::Result<()> {
+    display.draw_region(refresh_region, |canvas| {
         draw_pattern(canvas);
         let positions = [
             (24, 20),

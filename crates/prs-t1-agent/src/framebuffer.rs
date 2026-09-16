@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::ptr;
 use std::slice;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const FBIOGET_VSCREENINFO: c_ulong = 0x4600;
 const FBIOGET_FSCREENINFO: c_ulong = 0x4602;
@@ -142,6 +142,53 @@ struct MxcfbUpdateData {
 pub struct ChannelInfo {
     pub offset: u32,
     pub length: u32,
+}
+
+/// A logical, visible-screen rectangle to submit to the T1 EPDC.
+///
+/// The framebuffer remains full-screen and RGB565; this rectangle controls
+/// which part of the panel the update waveform touches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DisplayRegion {
+    pub left: u32,
+    pub top: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl DisplayRegion {
+    pub const fn new(left: u32, top: u32, width: u32, height: u32) -> Self {
+        Self {
+            left,
+            top,
+            width,
+            height,
+        }
+    }
+
+    pub const fn full(width: u32, height: u32) -> Self {
+        Self::new(0, 0, width, height)
+    }
+
+    pub fn bounded(self, width: u32, height: u32) -> Self {
+        let left = self.left.min(width);
+        let top = self.top.min(height);
+        Self {
+            left,
+            top,
+            width: self.width.min(width.saturating_sub(left)),
+            height: self.height.min(height.saturating_sub(top)),
+        }
+    }
+
+    fn as_mxcfb(self) -> MxcfbRect {
+        MxcfbRect {
+            top: self.top,
+            left: self.left,
+            width: self.width,
+            height: self.height,
+        }
+    }
 }
 
 impl fmt::Display for ChannelInfo {
@@ -623,7 +670,12 @@ impl NativeDisplay {
         self.var.yres
     }
 
-    pub fn draw<F>(&mut self, paint: F) -> io::Result<()>
+    /// Paint the shared framebuffer and refresh only `region` on the panel.
+    ///
+    /// The closure still sees the full logical screen so callers can retain a
+    /// simple complete-screen renderer while avoiding a full-panel waveform
+    /// for small state changes.
+    pub fn draw_region<F>(&mut self, region: DisplayRegion, paint: F) -> io::Result<()>
     where
         F: FnOnce(&mut DisplayCanvas<'_>),
     {
@@ -652,18 +704,27 @@ impl NativeDisplay {
             paint(&mut canvas);
         }
 
+        let region = region.bounded(self.var.xres, self.var.yres);
+        if region.width == 0 || region.height == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "display update region is empty",
+            ));
+        }
         let marker = self.next_marker;
         self.next_marker = self.next_marker.wrapping_add(1).max(10);
-        request_update(
-            self.file.as_raw_fd(),
-            MxcfbRect {
-                top: 0,
-                left: 0,
-                width: self.var.xres,
-                height: self.var.yres,
-            },
-            marker,
-        )
+        let started = Instant::now();
+        let result = request_update(self.file.as_raw_fd(), region.as_mxcfb(), marker);
+        eprintln!(
+            "standalone-test: display refresh region=({},{} {}x{}) elapsed_ms={} status={}",
+            region.left,
+            region.top,
+            region.width,
+            region.height,
+            started.elapsed().as_millis(),
+            if result.is_ok() { "ok" } else { "error" },
+        );
+        result
     }
 
     /// Copy a logical RGB565 screen into the EPDC driver's hidden standby
