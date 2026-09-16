@@ -373,6 +373,7 @@ fn wait_for_display_wake(inputs: &mut InputSet, state: &mut UiState) -> io::Resu
                     if !resume_requested && matches!(event.value, 0..=2) {
                         eprintln!("standalone-test: requesting early resume");
                         request_resume()?;
+                        restart_adbd_if_enabled()?;
                         resume_requested = true;
                     }
                 }
@@ -447,6 +448,39 @@ fn request_resume() -> io::Result<()> {
     let mut state = OpenOptions::new().write(true).open("/sys/power/state")?;
     state.write_all(b"on\n")?;
     state.flush()
+}
+
+fn restart_adbd_if_enabled() -> io::Result<()> {
+    let enabled = Command::new("/system/bin/getprop")
+        .arg("persist.service.adb.enable")
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim() == "1")
+        .unwrap_or(false);
+    if !enabled {
+        eprintln!("standalone-test: ADB restart skipped; persistent ADB is disabled");
+        return Ok(());
+    }
+
+    eprintln!("standalone-test: restarting adbd after wake");
+    let stop = Command::new("/system/bin/stop").arg("adbd").status()?;
+    if !stop.success() {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!("stop adbd exited with {stop}"),
+        ));
+    }
+    thread::sleep(Duration::from_millis(200));
+    let start = Command::new("/system/bin/start").arg("adbd").status()?;
+    if !start.success() {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!("start adbd exited with {start}"),
+        ));
+    }
+    eprintln!("standalone-test: adbd restart requested");
+    Ok(())
 }
 
 fn uppercase_or_unknown(value: Option<&str>) -> String {
