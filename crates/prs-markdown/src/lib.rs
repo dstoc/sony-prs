@@ -14,6 +14,7 @@
 
 pub mod document;
 pub mod geometry;
+pub mod harness;
 pub mod layout;
 pub mod navigation;
 pub mod pagination;
@@ -29,6 +30,7 @@ pub use document::{
     TableAlignment, TaskState,
 };
 pub use geometry::{intersection, translate, Rect, Viewport};
+pub use harness::{render_page, HostImage, HostReader};
 pub use layout::{ApproximateTextMeasurer, DocumentLayout, LayoutEngine, TextMeasurer};
 pub use navigation::{DocumentId, DocumentLocation, NavigationTarget, ReaderHistory};
 pub use pagination::{
