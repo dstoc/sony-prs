@@ -10,3 +10,6 @@ publish = false
 comrak = { version = "0.55.0", default-features = false }
 embedded-graphics = { version = "0.8.2", default-features = false }
 fontdue = "0.9.4"
+
+[dev-dependencies]
+notosans = "0.1.0"

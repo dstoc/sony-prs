@@ -42,10 +42,13 @@ asserts structural outputs such as page count, logical cursor ranges, visible
 fragments, hit regions, navigation, and PGM encoding. Those structural tests use the
 deterministic approximate measurer and remain independent of font files. The
 checked-in corpus PNG goldens use the production Fontdue pipeline with the
-bundled DejaVu Sans and Sans Mono faces in `tests/fonts/`, so they are readable,
-deterministic across CI hosts, and sensitive to glyph geometry, bold/italic
-selection, and code-font selection. The command-line harness uses the supplied
-Fontdue font for both layout metrics and rasterization.
+Noto Sans faces supplied by the test-only `notosans` crate, so they are readable,
+deterministic across CI hosts, and sensitive to glyph geometry and
+bold/italic selection. The crate does not publish a monospace face, so its
+regular face fills the golden harness's monospace slot while code styling and
+face selection remain covered by the structural and Fontdue tests. The
+command-line harness uses the supplied Fontdue font for both layout metrics and
+rasterization.
 The CLI writes both formats from the same rendered grayscale pixels, so PNGs
 can be opened directly while PGM remains convenient for simple tooling.
 

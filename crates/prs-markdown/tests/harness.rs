@@ -17,11 +17,15 @@ use std::path::{Path, PathBuf};
 
 const CORPUS: &str = include_str!("fixtures/regression.md");
 const BOUNDARY: &str = include_str!("fixtures/page-boundary.md");
-const GOLDEN_REGULAR: &[u8] = include_bytes!("fonts/DejaVuSans.ttf");
-const GOLDEN_BOLD: &[u8] = include_bytes!("fonts/DejaVuSans-Bold.ttf");
-const GOLDEN_ITALIC: &[u8] = include_bytes!("fonts/DejaVuSansMono-Oblique.ttf");
-const GOLDEN_BOLD_ITALIC: &[u8] = include_bytes!("fonts/DejaVuSansMono-BoldOblique.ttf");
-const GOLDEN_MONOSPACE: &[u8] = include_bytes!("fonts/DejaVuSansMono.ttf");
+const GOLDEN_REGULAR: &[u8] = notosans::REGULAR_TTF;
+const GOLDEN_BOLD: &[u8] = notosans::BOLD_TTF;
+const GOLDEN_ITALIC: &[u8] = notosans::ITALIC_TTF;
+const GOLDEN_BOLD_ITALIC: &[u8] = notosans::BOLD_ITALIC_TTF;
+// The notosans crate provides the four Noto Sans family faces, but no
+// monospace face. Keep the reader's monospace slot font-backed and stable by
+// using its regular face; code styling and face selection remain covered by
+// the structural and Fontdue tests.
+const GOLDEN_MONOSPACE: &[u8] = notosans::REGULAR_TTF;
 const FIXTURES: &[(&str, &str)] = &[
     ("agent-output", include_str!("fixtures/agent-output.md")),
     ("agent-response", include_str!("fixtures/agent-response.md")),
@@ -390,14 +394,13 @@ fn host_page_golden_failure_path() -> PathBuf {
 #[test]
 fn golden_font_assets_cover_each_reader_face() {
     let mut engine = golden_font_engine();
-    let faces = [
+    let family_faces = [
         FontFace::Regular,
         FontFace::Bold,
         FontFace::Italic,
         FontFace::BoldItalic,
-        FontFace::Monospace,
     ];
-    let rasters = faces
+    let rasters = family_faces
         .into_iter()
         .map(|face| {
             let layout = engine.layout(&[TextRun::new("Ag", FontTextStyle::new(face, 20))], 100);
@@ -422,4 +425,18 @@ fn golden_font_assets_cover_each_reader_face() {
             "golden face {index} should have distinct glyph coverage"
         );
     }
+
+    let monospace = engine.layout(&[TextRun::new("Ag", FontTextStyle::monospace(20))], 100);
+    let glyph = monospace
+        .glyphs()
+        .first()
+        .expect("monospace slot should produce a glyph");
+    assert!(
+        glyph.width > 0,
+        "monospace glyph should have visible geometry"
+    );
+    assert!(TextEngine::rasterize_glyph(&mut engine, glyph)
+        .alpha
+        .iter()
+        .any(|pixel| *pixel > 0));
 }
