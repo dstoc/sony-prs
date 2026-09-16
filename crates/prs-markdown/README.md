@@ -57,6 +57,25 @@ The complete Markdown decision record, including deterministic fallbacks for raw
 HTML, Mermaid/diagram source, and optional math/directive extensions, is in the
 [Markdown support matrix](../../docs/prs-t1/markdown-reader.md#markdown-support-matrix).
 
+## Fenced code highlighting
+
+Fenced code is highlighted by the isolated `highlighting` component. Syntect
+is used with a build-generated packdump containing 17 deliberately selected
+small grammars: shell/bash, Rust, Python, JavaScript, TypeScript, JSON, YAML,
+TOML, C, C++, Go, HTML, CSS, SQL, diff/patch, Markdown, and plain text. The
+packdump is currently 7,551 bytes in this build (the build script reports its
+exact size), compared with loading Syntect's unrestricted default package.
+The runtime enables only parsing, fancy-regex, and dump loading; grammar source
+files are not parsed on the reader.
+
+The theme maps token colors into four grayscale ink levels and uses bold or
+italic where useful. Unknown or absent language tags are lossless plain
+monospace. Source lines are highlighted in one stateful pass before layout,
+so multiline strings/comments continue across wrapped display lines and page
+boundaries. Long source lines wrap at character boundaries when necessary;
+continuation lines receive a slightly darker code fill to distinguish them
+from source-newline lines. Code blocks paginate at displayed line boundaries.
+
 The corpus regression test compares every page of every checked-in fixture
 against a deterministic PNG golden in `tests/goldens/`. If a comparison fails,
 the rendered page is written to `target/prs-markdown-golden-failures/` and the

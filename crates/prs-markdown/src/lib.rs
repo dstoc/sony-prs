@@ -15,6 +15,7 @@
 pub mod document;
 pub mod geometry;
 pub mod harness;
+pub mod highlighting;
 pub mod layout;
 pub mod navigation;
 pub mod pagination;
@@ -31,6 +32,10 @@ pub use document::{
 };
 pub use geometry::{intersection, translate, Rect, Viewport};
 pub use harness::{render_page, HostImage, HostReader};
+pub use highlighting::{
+    CodeHighlighter, HighlightSpan, HighlightedCode, HighlightedLine, SyntectHighlighter,
+    SUPPORTED_LANGUAGES,
+};
 pub use layout::{ApproximateTextMeasurer, DocumentLayout, LayoutEngine, TextMeasurer};
 pub use navigation::{DocumentId, DocumentLocation, NavigationTarget, ReaderHistory};
 pub use pagination::{

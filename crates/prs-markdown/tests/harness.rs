@@ -36,6 +36,10 @@ const FIXTURES: &[(&str, &str)] = &[
     ("page-boundary", BOUNDARY),
     ("regression", CORPUS),
     (
+        "syntax-highlight",
+        include_str!("fixtures/syntax-highlight.md"),
+    ),
+    (
         "tables-code-images",
         include_str!("fixtures/tables-code-images.md"),
     ),
@@ -208,6 +212,68 @@ fn modern_gfm_fixture_has_alert_footnote_and_strike_output() {
     assert!(visible.contains("policy:"));
     assert!(visible.contains("[^reader]:"));
     assert!(visible.contains("flowchart"));
+}
+
+#[test]
+fn syntax_highlighting_is_eink_styled_lossless_and_wraps_code() {
+    let source = include_str!("fixtures/syntax-highlight.md");
+    let reader = HostReader::from_source(source, structural_style(), Viewport::new(96, 80))
+        .expect("syntax fixture should parse");
+
+    let code_blocks = reader
+        .document()
+        .blocks()
+        .iter()
+        .filter_map(|block| match block {
+            prs_markdown::Block::CodeBlock { language, code, .. } => {
+                Some((language.as_deref(), code.as_str()))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(code_blocks.len() >= 16);
+
+    let code_layouts = reader
+        .layout()
+        .blocks()
+        .iter()
+        .filter(|block| block.kind == prs_markdown::layout::LayoutBlockKind::Code)
+        .collect::<Vec<_>>();
+    assert!(code_layouts
+        .iter()
+        .any(|block| block.lines.iter().any(|line| line.wrapped)));
+    assert!(code_layouts
+        .iter()
+        .flat_map(|block| &block.lines)
+        .flat_map(|line| &line.fragments)
+        .any(|fragment| fragment.style.ink != 0));
+    assert!(code_layouts
+        .iter()
+        .flat_map(|block| &block.lines)
+        .flat_map(|line| &line.fragments)
+        .any(|fragment| fragment.style.bold));
+
+    let unknown = code_layouts
+        .iter()
+        .zip(code_blocks.iter())
+        .find(|(_, (language, _))| *language == Some("unknown-agent-language"))
+        .expect("unknown code block should be present")
+        .0;
+    assert!(unknown
+        .lines
+        .iter()
+        .flat_map(|line| &line.fragments)
+        .all(|fragment| fragment.style.ink == 0 && !fragment.style.bold));
+
+    for ((_, source_code), layout) in code_blocks.iter().zip(code_layouts.iter()) {
+        let rendered = layout
+            .lines
+            .iter()
+            .flat_map(|line| line.fragments.iter().map(|fragment| fragment.text.as_str()))
+            .collect::<String>();
+        let source_without_newlines = source_code.replace('\n', "");
+        assert_eq!(rendered, source_without_newlines);
+    }
 }
 
 #[test]

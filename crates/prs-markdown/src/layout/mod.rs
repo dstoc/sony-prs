@@ -9,6 +9,7 @@
 
 use crate::document::{Block, Inline, ListItem, Table, TaskState};
 pub use crate::geometry::Viewport;
+use crate::highlighting::{CodeHighlighter, SyntectHighlighter};
 use crate::navigation::NavigationTarget;
 use crate::style::{ReaderStyle, TextStyle};
 use embedded_graphics::geometry::{Point, Size};
@@ -52,6 +53,9 @@ pub struct LayoutBlock {
 pub struct LayoutLine {
     pub bounds: Rectangle,
     pub fragments: Vec<LayoutFragment>,
+    /// True when this displayed line is a continuation produced by wrapping
+    /// one source line of a fenced code block.
+    pub wrapped: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -101,6 +105,7 @@ impl TextMeasurer for ApproximateTextMeasurer {
 pub struct LayoutEngine<M = ApproximateTextMeasurer> {
     pub style: ReaderStyle,
     pub measurer: M,
+    code_highlighter: SyntectHighlighter,
 }
 
 impl Default for LayoutEngine<ApproximateTextMeasurer> {
@@ -114,13 +119,18 @@ impl LayoutEngine<ApproximateTextMeasurer> {
         Self {
             style,
             measurer: ApproximateTextMeasurer,
+            code_highlighter: SyntectHighlighter::new(),
         }
     }
 }
 
 impl<M: TextMeasurer> LayoutEngine<M> {
     pub fn with_measurer(style: ReaderStyle, measurer: M) -> Self {
-        Self { style, measurer }
+        Self {
+            style,
+            measurer,
+            code_highlighter: SyntectHighlighter::new(),
+        }
     }
 
     /// Lay out all top-level blocks in document coordinates.
@@ -220,10 +230,10 @@ impl<M: TextMeasurer> LayoutEngine<M> {
             ),
             // Syntax highlighting is a separate concern. Preserve code text,
             // line breaks, indentation, and a monospace style here.
-            Block::CodeBlock { code, .. } => (
+            Block::CodeBlock { language, code, .. } => (
                 LayoutBlockKind::Code,
                 None,
-                self.code_lines(code, start_y, x, width),
+                self.code_lines(language.as_deref(), code, start_y, x, width),
             ),
             // Image decoding is separate; an alt-text placeholder is still
             // useful and deterministic for the first reader.
@@ -247,6 +257,7 @@ impl<M: TextMeasurer> LayoutEngine<M> {
                         Size::new(width, self.style.body.line_height.max(1)),
                     ),
                     fragments: Vec::new(),
+                    wrapped: false,
                 }],
             ),
         }
@@ -496,15 +507,60 @@ impl<M: TextMeasurer> LayoutEngine<M> {
         result
     }
 
-    fn code_lines(&self, code: &str, start_y: i32, x: i32, width: u32) -> Vec<LayoutLine> {
-        wrap_spans(
-            &self.measurer,
-            vec![Span::new(code.to_owned(), self.style.code, None, true)],
-            start_y,
-            x,
-            width,
-            self.style.code.line_height,
-        )
+    fn code_lines(
+        &self,
+        language: Option<&str>,
+        code: &str,
+        start_y: i32,
+        x: i32,
+        width: u32,
+    ) -> Vec<LayoutLine> {
+        let highlighted = self.code_highlighter.highlight(language, code);
+        let mut result = Vec::new();
+        let mut y = start_y;
+        for source_line in highlighted.lines {
+            let spans = source_line
+                .spans
+                .into_iter()
+                .map(|span| {
+                    Span::new(
+                        span.text,
+                        TextStyle {
+                            code: true,
+                            bold: self.style.code.bold || span.bold,
+                            italic: self.style.code.italic || span.italic,
+                            ink: span.ink,
+                            ..self.style.code
+                        },
+                        None,
+                        true,
+                    )
+                })
+                .collect();
+            let mut lines = wrap_spans(
+                &self.measurer,
+                spans,
+                y,
+                x,
+                width,
+                self.style.code.line_height,
+            );
+            for (line_index, line) in lines.iter_mut().enumerate() {
+                line.wrapped = line_index > 0;
+            }
+            if let Some(last) = lines.last() {
+                y = last
+                    .bounds
+                    .top_left
+                    .y
+                    .saturating_add(last.bounds.size.height as i32);
+            }
+            result.extend(lines);
+        }
+        if result.is_empty() {
+            result.push(empty_line(x, start_y, self.style.code.line_height));
+        }
+        result
     }
 }
 
@@ -698,6 +754,7 @@ impl LineBuilder {
                 Size::new(self.used, self.height),
             ),
             fragments: self.fragments,
+            wrapped: false,
         }
     }
 }
@@ -888,6 +945,7 @@ fn empty_line(x: i32, y: i32, line_height: u32) -> LayoutLine {
     LayoutLine {
         bounds: Rectangle::new(Point::new(x, y), Size::new(0, line_height.max(1))),
         fragments: Vec::new(),
+        wrapped: false,
     }
 }
 

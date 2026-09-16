@@ -233,7 +233,20 @@ where
             bounds.top_left.x.saturating_add(glyph.x),
             bounds.top_left.y.saturating_add(glyph.y),
             &bitmap,
+            style.ink,
         )?;
+        // FontConfig intentionally has one monospace face. A one-pixel
+        // second pass provides a bounded synthetic bold for highlighted code
+        // while keeping all code glyphs on the monospace metrics.
+        if style.code && style.bold {
+            draw_glyph(
+                &mut text_target,
+                bounds.top_left.x.saturating_add(glyph.x).saturating_add(1),
+                bounds.top_left.y.saturating_add(glyph.y),
+                &bitmap,
+                style.ink,
+            )?;
+        }
     }
 
     Ok(())
@@ -253,7 +266,13 @@ fn font_face(style: &ReaderTextStyle) -> FontFace {
     }
 }
 
-fn draw_glyph<T>(target: &mut T, x: i32, y: i32, bitmap: &GlyphBitmap) -> Result<(), T::Error>
+fn draw_glyph<T>(
+    target: &mut T,
+    x: i32,
+    y: i32,
+    bitmap: &GlyphBitmap,
+    ink: u8,
+) -> Result<(), T::Error>
 where
     T: DrawTarget<Color = Rgb888>,
 {
@@ -278,7 +297,7 @@ where
                             x.saturating_add(column as i32),
                             y.saturating_add(row as i32),
                         ),
-                        coverage_color(*alpha),
+                        coverage_color(ink, *alpha),
                     )
                 })
         });
@@ -300,8 +319,8 @@ where
     draw_border(target, rectangle, BorderStyle::new(Color::BLACK, 1))
 }
 
-fn coverage_color(alpha: u8) -> Rgb888 {
-    to_rgb888(Color::rgba(0, 0, 0, alpha))
+fn coverage_color(ink: u8, alpha: u8) -> Rgb888 {
+    to_rgb888(Color::rgba(ink, ink, ink, alpha))
 }
 
 /// Convert a device-independent RGBA value into the opaque intermediate color
@@ -505,6 +524,7 @@ mod tests {
     #[test]
     fn rgba_and_glyph_coverage_are_composited_deterministically() {
         assert_eq!(to_rgb888(Color::rgba(0, 0, 0, 0)), Rgb888::WHITE);
-        assert_eq!(coverage_color(128), Rgb888::new(127, 127, 127));
+        assert_eq!(coverage_color(0, 128), Rgb888::new(127, 127, 127));
+        assert_eq!(coverage_color(160, 255), Rgb888::new(160, 160, 160));
     }
 }
