@@ -11,6 +11,7 @@ use prs_markdown::style::{Insets, ReaderStyle, TextStyle};
 
 const CORPUS: &str = include_str!("fixtures/regression.md");
 const BOUNDARY: &str = include_str!("fixtures/page-boundary.md");
+const HOST_PAGE_GOLDEN: &[u8] = include_bytes!("goldens/host-page.png");
 const FIXTURES: &[(&str, &str)] = &[
     ("agent-output", include_str!("fixtures/agent-output.md")),
     ("agent-response", include_str!("fixtures/agent-response.md")),
@@ -200,7 +201,7 @@ fn exact_boundary_fixture_retains_canonical_page_ranges() {
 }
 
 #[test]
-fn host_image_is_a_grayscale_pgm_draw_target() {
+fn host_image_is_a_grayscale_pgm_and_png_draw_target() {
     let mut image = HostImage::new(3, 2);
     image
         .draw_iter([Pixel(Point::new(1, 0), Rgb888::BLACK)])
@@ -213,6 +214,10 @@ fn host_image_is_a_grayscale_pgm_draw_target() {
         image.pgm_bytes(),
         b"P5\n3 2\n255\n\xFF\0\xFF\xFF\xFF\xFF".to_vec()
     );
+    let png = image.png_bytes();
+    assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+    assert!(png.windows(4).any(|chunk| chunk == b"IHDR"));
+    assert!(png.windows(4).any(|chunk| chunk == b"IEND"));
 }
 
 #[test]
@@ -231,20 +236,34 @@ fn host_render_helper_uses_the_production_renderer() {
     assert!(image.pixels().iter().any(|pixel| *pixel < 255));
 }
 
+#[test]
+fn rendered_host_page_matches_checked_in_png_golden() {
+    let reader = HostReader::from_source(
+        "# Host page\n\nA visible paragraph.",
+        structural_style(),
+        Viewport::new(120, 80),
+    )
+    .unwrap();
+    let mut renderer = prs_markdown::EmbeddedGraphicsRenderer::new(TestTextEngine);
+    let image = render_page(reader.page(0).unwrap(), &mut renderer);
+    assert!(image.pixels().iter().any(|pixel| *pixel < 255));
+    assert_eq!(image.png_bytes(), HOST_PAGE_GOLDEN);
+}
+
 #[derive(Debug)]
 struct TestTextEngine;
 
 impl prs_markdown::TextEngine for TestTextEngine {
     fn measure(&self, _run: &prs_markdown::TextRun<'_>) -> prs_markdown::TextMetrics {
         prs_markdown::TextMetrics {
-            advance_width: 4.0,
-            width: 4,
+            advance_width: 6.0,
+            width: 6,
             line: prs_markdown::LineMetrics {
-                ascent: 4,
-                descent: 0,
+                ascent: 7,
+                descent: 1,
                 line_gap: 0,
-                line_height: 6,
-                baseline: 4,
+                line_height: 10,
+                baseline: 7,
             },
         }
     }
@@ -263,11 +282,11 @@ impl prs_markdown::TextEngine for TestTextEngine {
                 glyph_id: 0,
                 face: prs_markdown::FontFace::Regular,
                 font_size: 10,
-                x: index as i32 * 4,
+                x: index as i32 * 6,
                 y: 0,
-                width: 1,
-                height: 1,
-                advance_width: 4.0,
+                width: 5,
+                height: 7,
+                advance_width: 6.0,
                 byte_offset: index,
                 span_id: None,
             })
@@ -275,13 +294,13 @@ impl prs_markdown::TextEngine for TestTextEngine {
         prs_markdown::TextLayout {
             lines: vec![prs_markdown::TextLine {
                 glyph_range: 0..glyphs.len(),
-                width: glyphs.len() as u32 * 4,
+                width: glyphs.len() as u32 * 6,
                 metrics: prs_markdown::LineMetrics {
-                    ascent: 4,
-                    descent: 0,
+                    ascent: 7,
+                    descent: 1,
                     line_gap: 0,
-                    line_height: 6,
-                    baseline: 4,
+                    line_height: 10,
+                    baseline: 7,
                 },
             }],
             glyphs,
@@ -290,15 +309,30 @@ impl prs_markdown::TextEngine for TestTextEngine {
 
     fn rasterize_glyph(
         &mut self,
-        _glyph: &prs_markdown::PositionedGlyph,
+        glyph: &prs_markdown::PositionedGlyph,
     ) -> prs_markdown::GlyphBitmap {
+        let width = 5;
+        let height = 7;
+        let alpha = (0..height)
+            .flat_map(|row| {
+                (0..width).map(move |column| {
+                    let edge = row == 0 || row == height - 1 || column == 0 || column == width - 1;
+                    let mark = (u32::from(glyph.character) + row + column) % 7 == 0;
+                    if !glyph.character.is_whitespace() && (edge || mark) {
+                        255
+                    } else {
+                        0
+                    }
+                })
+            })
+            .collect();
         prs_markdown::GlyphBitmap {
-            width: 1,
-            height: 1,
+            width,
+            height,
             left: 0,
             top: 0,
-            advance_width: 4.0,
-            alpha: vec![255],
+            advance_width: 6.0,
+            alpha,
         }
     }
 }

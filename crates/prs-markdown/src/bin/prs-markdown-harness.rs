@@ -82,17 +82,20 @@ fn run() -> Result<(), Box<dyn Error>> {
     for index in page_indices {
         let page = reader.page(index).expect("validated page index");
         let image = render_page(page, &mut renderer);
-        let output = cli.output.join(format!("page-{:03}.pgm", page.number));
-        image.save_pgm(&output)?;
+        let pgm_output = cli.output.join(format!("page-{:03}.pgm", page.number));
+        let png_output = cli.output.join(format!("page-{:03}.png", page.number));
+        image.save_pgm(&pgm_output)?;
+        image.save_png(&png_output)?;
         let visible = reader.visible_fragments(index).unwrap_or_default();
         println!(
-            "page {}: range {:?} commands={} hit_regions={} visible_fragments={} file={}",
+            "page {}: range {:?} commands={} hit_regions={} visible_fragments={} pgm={} png={}",
             page.number,
             page.logical_range(),
             page.display_list().len(),
             page.hit_regions.len(),
             visible.len(),
-            output.display()
+            pgm_output.display(),
+            png_output.display()
         );
     }
 
@@ -301,7 +304,7 @@ fn print_usage() {
     println!(
         "Usage: prs-markdown-harness [OPTIONS] FILE\n\n\
          Render the production Markdown parser/layout/pagination/renderer pipeline\n\
-         into one PGM file per selected page. With no --page, all pages are rendered.\n\n\
+         into PGM and PNG files per selected page. With no --page, all pages are rendered.\n\n\
          Input:\n\
            FILE                         Markdown file to read\n\
            --fixture NAME               checked-in tests/fixtures/NAME.md\n\n\
