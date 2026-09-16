@@ -640,6 +640,11 @@ runtime now accepts both the T1's legacy `ABS_X/ABS_Y` axes and the multitouch
 position codes, leaving coordinate-format handling ready for the next physical
 sample.
 
+The final presentation pass resized the four diagnostic panels and moved the
+lower status block down so all rendered text has clear space from the panel
+borders. A fresh 600x800 framebuffer capture confirmed the corrected layout;
+the reader was then rebooted and returned to the normal Android services.
+
 ### Vendor power-state bridge
 
 The installed `/system/lib/libhardware_legacy.so` was pulled from the reader

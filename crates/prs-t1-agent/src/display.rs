@@ -24,10 +24,10 @@ pub fn draw_screen(display: &mut NativeDisplay, lines: &[String]) -> std::io::Re
             (28, 415),
             (28, 443),
             (28, 471),
-            (28, 507),
-            (28, 535),
-            (28, 563),
-            (28, 591),
+            (28, 527),
+            (28, 555),
+            (28, 583),
+            (28, 611),
         ];
         for (line, &(x, y)) in lines.iter().zip(positions.iter()) {
             draw_text(canvas, x, y, line);
@@ -59,10 +59,10 @@ pub fn standby_screen(lines: &[String], width: usize, height: usize) -> Vec<u8> 
             (28, 415),
             (28, 443),
             (28, 471),
-            (28, 507),
-            (28, 535),
-            (28, 563),
-            (28, 591),
+            (28, 527),
+            (28, 555),
+            (28, 583),
+            (28, 611),
         ];
         for (line, &(x, y)) in lines.iter().zip(positions.iter()) {
             draw_text(&mut canvas, x, y, line);
@@ -82,10 +82,10 @@ fn draw_pattern(canvas: &mut DisplayCanvas<'_>) {
         height.saturating_sub(8),
         BLACK,
     );
-    canvas.stroke_rect(16, 80, width.saturating_sub(32), 100, BLACK);
-    canvas.stroke_rect(16, 198, width.saturating_sub(32), 132, BLACK);
-    canvas.stroke_rect(16, 346, width.saturating_sub(32), 132, BLACK);
-    canvas.stroke_rect(16, 494, width.saturating_sub(32), 120, BLACK);
+    canvas.stroke_rect(16, 80, width.saturating_sub(32), 124, BLACK);
+    canvas.stroke_rect(16, 208, width.saturating_sub(32), 122, BLACK);
+    canvas.stroke_rect(16, 346, width.saturating_sub(32), 152, BLACK);
+    canvas.stroke_rect(16, 514, width.saturating_sub(32), 124, BLACK);
 
     for (index, x) in (20..width.saturating_sub(20)).step_by(40).enumerate() {
         if index % 2 == 0 {
