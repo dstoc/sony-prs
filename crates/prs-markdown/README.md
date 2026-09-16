@@ -47,6 +47,18 @@ the supplied Fontdue font for both layout metrics and rasterization.
 The CLI writes both formats from the same rendered grayscale pixels, so PNGs
 can be opened directly while PGM remains convenient for simple tooling.
 
+The corpus regression test compares every page of every checked-in fixture
+against a deterministic PNG golden in `tests/goldens/`. If a comparison fails,
+the rendered page is written to `target/prs-markdown-golden-failures/` and the
+test output includes the command to promote all current renders after they
+have been inspected:
+
+```sh
+PRS_MARKDOWN_UPDATE_GOLDENS=1 \
+  cargo test -p prs-markdown --test harness \
+  every_checked_in_fixture_matches_png_goldens
+```
+
 Run the focused harness tests with:
 
 ```sh

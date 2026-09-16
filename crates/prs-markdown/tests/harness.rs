@@ -8,6 +8,9 @@ use prs_markdown::navigation::{DocumentId, NavigationTarget};
 use prs_markdown::pagination::{DisplayCommand, DocumentCursor};
 use prs_markdown::reader::ReaderSession;
 use prs_markdown::style::{Insets, ReaderStyle, TextStyle};
+use std::env;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 const CORPUS: &str = include_str!("fixtures/regression.md");
 const BOUNDARY: &str = include_str!("fixtures/page-boundary.md");
@@ -198,6 +201,89 @@ fn exact_boundary_fixture_retains_canonical_page_ranges() {
         .unwrap()
         .join(" ")
         .contains("following"));
+}
+
+#[test]
+fn every_checked_in_fixture_matches_png_goldens() {
+    for (name, source) in FIXTURES {
+        assert_fixture_goldens(name, source);
+    }
+}
+
+fn assert_fixture_goldens(name: &str, source: &str) {
+    let viewport = Viewport::new(180, 120);
+    let reader = HostReader::from_source(source, structural_style(), viewport)
+        .unwrap_or_else(|error| panic!("fixture {name} should parse: {error}"));
+    let mut renderer = prs_markdown::EmbeddedGraphicsRenderer::new(TestTextEngine);
+
+    for (page_index, page) in reader.pagination().pages().iter().enumerate() {
+        let image = render_page(page, &mut renderer);
+        assert_png_golden(name, page_index + 1, &image);
+    }
+}
+
+fn assert_png_golden(name: &str, page_number: usize, image: &HostImage) {
+    let golden = golden_path(name, page_number);
+    let actual = image.png_bytes();
+
+    if env::var_os("PRS_MARKDOWN_UPDATE_GOLDENS").is_some() {
+        fs::write(&golden, &actual)
+            .unwrap_or_else(|error| panic!("write golden {}: {error}", golden.display()));
+        return;
+    }
+
+    let failure = golden_failure_path(name, page_number);
+    let expected = match fs::read(&golden) {
+        Ok(expected) => expected,
+        Err(error) => {
+            write_golden_failure(&failure, &actual);
+            panic!(
+                concat!(
+                    "missing golden {} ({}); rendered output was written to {}. ",
+                    "Inspect it, then promote it with `PRS_MARKDOWN_UPDATE_GOLDENS=1 ",
+                    "cargo test -p prs-markdown --test harness every_checked_in_fixture_matches_png_goldens`"
+                ),
+                golden.display(),
+                error,
+                failure.display()
+            );
+        }
+    };
+
+    if expected != actual {
+        write_golden_failure(&failure, &actual);
+        panic!(
+            concat!(
+                "PNG golden mismatch for {} page {}; rendered output was written to {}. ",
+                "Inspect it, then promote it with `PRS_MARKDOWN_UPDATE_GOLDENS=1 ",
+                "cargo test -p prs-markdown --test harness every_checked_in_fixture_matches_png_goldens`"
+            ),
+            name,
+            page_number,
+            failure.display()
+        );
+    }
+}
+
+fn golden_path(name: &str, page_number: usize) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/goldens")
+        .join(format!("{name}-page-{page_number:03}.png"))
+}
+
+fn golden_failure_path(name: &str, page_number: usize) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/prs-markdown-golden-failures")
+        .join(format!("{name}-page-{page_number:03}.png"))
+}
+
+fn write_golden_failure(path: &Path, bytes: &[u8]) {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .unwrap_or_else(|error| panic!("create golden failure directory: {error}"));
+    }
+    fs::write(path, bytes)
+        .unwrap_or_else(|error| panic!("write golden failure {}: {error}", path.display()));
 }
 
 #[test]
