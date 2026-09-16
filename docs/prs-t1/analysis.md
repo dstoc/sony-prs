@@ -1039,3 +1039,40 @@ native long-press reboot escape route, and confirms that USB should be
 disconnected for physical power-button tests. Native short-press sleep/wake
 remains a separate unresolved test; a failed wake still requires the hardware
 reset button or a reboot performed while ADB is available.
+
+## Native `mem` sleep/wake test
+
+On 2026-09-16, the native runtime was launched with the display explicitly
+forced `on`, zygote and `system_server` stopped, and the suspend mode set to
+`mem`. USB was physically disconnected before the power-button test. The
+reader briefly updated the pre-suspend display and then showed a visibly
+corrupted/static e-ink image while asleep; this is a remaining standby-image
+quality issue, not evidence that the native state machine failed.
+
+The preserved runtime log shows the complete wake handoff:
+
+```text
+power release source=E4 duration_ms=253 action=SLEEP
+drawing pre-suspend screen
+standby screen supplied
+requesting suspend mode=NORMAL_MEM
+requesting vendor suspend helper state=mem
+suspend request queued: Ok(())
+wake-side power event source=E4 value=1
+requesting early resume
+requesting vendor resume helper state=on
+wake-side power event source=E4 value=0
+display wake barrier released bytes=5
+suspend/wake wait returned: Ok(()) elapsed_ms=5314
+wake lock reacquire returned: Ok(())
+post-resume framebuffer 600x800 virtual=608x1792 smem_len=2179072 stride=1216 offsets=(0, 896)
+framebuffer mapping retained across resume
+framebuffer remap returned: Ok(())
+```
+
+The user observed the native screen return to `STATE ACTIVE` after the second
+power press. Reconnecting USB did not re-enumerate ADB, so the hardware reset
+button was used to recover. After reset, ADB returned with zygote,
+`system_server`, `dispd`, and `adbd` running. This validates the native
+sleep-to-wake control path with USB disconnected, while leaving the displayed
+standby image and post-wake USB/ADB re-enumeration for further investigation.
