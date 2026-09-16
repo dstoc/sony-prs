@@ -28,8 +28,18 @@ Use Conventional Commit messages for changes that should affect the release:
 Documentation-only, test-only, and other non-release commit types do not bump
 the crate unless the commit also uses an explicit release directive supported
 by Release Please. Pull requests and ordinary pushes do not upload artifacts;
-the ARM build and upload run only when Release Please reports that this
-component's release was created.
+the ARM build and upload run when Release Please reports that this component's
+release was created. If a release was created but its artifact job failed, the
+same workflow can be manually dispatched with the existing release tag:
+
+```sh
+gh workflow run release-please.yml --ref main \
+  --field tag=prs-t1-agent-v0.2.0
+```
+
+The recovery run checks out that tag, rebuilds the binary with the pinned
+toolchain, and uploads it to the existing GitHub Release with `--clobber`; it
+does not create a new release.
 
 ## Host toolchain
 

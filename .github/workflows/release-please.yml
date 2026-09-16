@@ -4,6 +4,12 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing prs-t1-agent release tag to build/upload
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -21,21 +27,42 @@ jobs:
     steps:
       - name: Run Release Please
         id: release
+        if: ${{ github.event_name == 'push' }}
         uses: googleapis/release-please-action@a02a34c4d625f9be7cb89156071d8567266a2445 # v4.2.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
+      - name: Resolve the release tag
+        id: release-tag
+        if: ${{ github.event_name == 'workflow_dispatch' || steps.release.outputs['crates/prs-t1-agent--release_created'] == 'true' }}
+        env:
+          MANUAL_TAG: ${{ inputs.tag }}
+          RELEASE_TAG: ${{ steps.release.outputs['crates/prs-t1-agent--tag_name'] }}
+        run: |
+          set -euo pipefail
+
+          tag="$MANUAL_TAG"
+          if [[ -z "$tag" ]]; then
+            tag="$RELEASE_TAG"
+          fi
+          if [[ -z "$tag" ]]; then
+            printf '%s\n' 'no prs-t1-agent release tag was provided or created' >&2
+            exit 1
+          fi
+
+          printf 'tag=%s\n' "$tag" >> "$GITHUB_OUTPUT"
+
       - name: Check out the released commit
-        if: ${{ steps.release.outputs['crates/prs-t1-agent--release_created'] == 'true' }}
+        if: ${{ steps.release-tag.outputs.tag != '' }}
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
-          ref: ${{ steps.release.outputs['crates/prs-t1-agent--tag_name'] }}
+          ref: ${{ steps.release-tag.outputs.tag }}
 
       - name: Install the pinned Rust toolchain and target
-        if: ${{ steps.release.outputs['crates/prs-t1-agent--release_created'] == 'true' }}
+        if: ${{ steps.release-tag.outputs.tag != '' }}
         run: |
           rustup toolchain install "$RUST_TOOLCHAIN" \
             --profile minimal \
@@ -45,22 +72,21 @@ jobs:
           rustup run "$RUST_TOOLCHAIN" cargo --version
 
       - name: Install pinned Zig
-        if: ${{ steps.release.outputs['crates/prs-t1-agent--release_created'] == 'true' }}
+        if: ${{ steps.release-tag.outputs.tag != '' }}
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: "0.13.0"
 
       - name: Install pinned cargo-zigbuild
-        if: ${{ steps.release.outputs['crates/prs-t1-agent--release_created'] == 'true' }}
+        if: ${{ steps.release-tag.outputs.tag != '' }}
         run: |
           cargo +"$RUST_TOOLCHAIN" install cargo-zigbuild \
             --version "$CARGO_ZIGBUILD_VERSION" \
             --locked
           zig version
-          cargo +"$RUST_TOOLCHAIN" zigbuild --version
 
       - name: Build the released PRS-T1 binary
-        if: ${{ steps.release.outputs['crates/prs-t1-agent--release_created'] == 'true' }}
+        if: ${{ steps.release-tag.outputs.tag != '' }}
         run: |
           RUSTFLAGS='-C target-cpu=arm926ej-s -C link-arg=-mcpu=arm926ej-s' \
             cargo +"$RUST_TOOLCHAIN" zigbuild \
@@ -69,7 +95,7 @@ jobs:
             --target "$TARGET"
 
       - name: Verify the device executable
-        if: ${{ steps.release.outputs['crates/prs-t1-agent--release_created'] == 'true' }}
+        if: ${{ steps.release-tag.outputs.tag != '' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -111,11 +137,11 @@ jobs:
           sha256sum dist/prs-t1-agent-armv5te
 
       - name: Upload the device executable to the GitHub Release
-        if: ${{ steps.release.outputs['crates/prs-t1-agent--release_created'] == 'true' }}
+        if: ${{ steps.release-tag.outputs.tag != '' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release upload \
-            "${{ steps.release.outputs['crates/prs-t1-agent--tag_name'] }}" \
+            "${{ steps.release-tag.outputs.tag }}" \
             dist/prs-t1-agent-armv5te \
             --clobber
