@@ -391,6 +391,7 @@ fn screen_lines(state: &UiState, wake_lock_held: bool) -> Vec<String> {
         return vec![
             header,
             "PRS-T1 Native Shell".into(),
+            format!("Status: {}", state.message),
             "Tap status for details".into(),
         ];
     }
@@ -469,11 +470,12 @@ fn screen_lines(state: &UiState, wake_lock_held: bool) -> Vec<String> {
         key,
         format!("Key events {}", state.key_events),
         format!(
-            "Power last {}",
+            "Power last {}  Status: {}",
             state
                 .last_power_duration_ms
                 .map(|duration| format!("{}ms", duration))
-                .unwrap_or_else(|| "none".into())
+                .unwrap_or_else(|| "none".into()),
+            state.message,
         ),
     ]);
     lines
@@ -1348,6 +1350,19 @@ mod tests {
         let state = UiState::new();
         let lines = super::screen_lines(&state, true);
         assert_eq!(lines[0].split('|').nth(4), Some(""));
+    }
+
+    #[test]
+    fn interaction_message_is_rendered_on_both_pages() {
+        let mut state = UiState::new();
+        state.message = "Power held".into();
+
+        let home = super::screen_lines(&state, true);
+        assert!(home.iter().any(|line| line.contains("Power held")));
+
+        state.page = UiPage::Details;
+        let details = super::screen_lines(&state, true);
+        assert!(details.iter().any(|line| line.contains("Power held")));
     }
 
     #[test]
