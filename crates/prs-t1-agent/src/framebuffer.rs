@@ -28,6 +28,7 @@ const MXCFB_WRITE_SSCREEN: c_ulong = 0x4004_463b;
 const AUTO_UPDATE_MODE_REGION: u32 = 0;
 const WAVEFORM_MODE_GC16: u32 = 2;
 const UPDATE_MODE_PARTIAL: u32 = 0;
+const UPDATE_MODE_FULL: u32 = 1;
 const TEMP_USE_AMBIENT: i32 = 0x1000;
 const TEST_UPDATE_MARKER: u32 = 1;
 const TEST_RECT_WIDTH: u32 = 200;
@@ -475,7 +476,7 @@ pub fn render_test_to(
     let update_result = if wait_for_completion {
         request_update(file.as_raw_fd(), rect, waveform, TEST_UPDATE_MARKER)
     } else {
-        submit_update(file.as_raw_fd(), rect, waveform, TEST_UPDATE_MARKER)
+        submit_update(file.as_raw_fd(), rect, waveform, TEST_UPDATE_MARKER, false)
     };
     if let Err(error) = update_result {
         layout.restore(mapping.as_mut_slice(), &backup)?;
@@ -531,7 +532,7 @@ fn request_update(
     waveform: WaveformMode,
     marker: u32,
 ) -> io::Result<()> {
-    submit_update(fd, rect, waveform, marker)?;
+    submit_update(fd, rect, waveform, marker, false)?;
     wait_for_update_complete(fd, marker)
 }
 
@@ -540,6 +541,7 @@ fn submit_update(
     rect: MxcfbRect,
     waveform: WaveformMode,
     marker: u32,
+    full_update: bool,
 ) -> io::Result<()> {
     let mut auto_update_mode = AUTO_UPDATE_MODE_REGION;
     let result = unsafe {
@@ -556,7 +558,7 @@ fn submit_update(
     let mut update = MxcfbUpdateData {
         update_region: rect,
         waveform_mode: waveform.value(),
-        update_mode: UPDATE_MODE_PARTIAL,
+        update_mode: update_mode(full_update),
         update_marker: marker,
         temperature: TEMP_USE_AMBIENT,
         ..Default::default()
@@ -567,6 +569,14 @@ fn submit_update(
         return Err(ioctl_error("send display update"));
     }
     Ok(())
+}
+
+fn update_mode(full_update: bool) -> u32 {
+    if full_update {
+        UPDATE_MODE_FULL
+    } else {
+        UPDATE_MODE_PARTIAL
+    }
 }
 
 fn wait_for_update_complete(fd: c_int, marker: u32) -> io::Result<()> {
@@ -857,7 +867,13 @@ impl NativeDisplay {
         let marker = self.next_marker;
         self.next_marker = self.next_marker.wrapping_add(1).max(10);
         let started = Instant::now();
-        submit_update(self.file.as_raw_fd(), region.as_mxcfb(), waveform, marker)?;
+        submit_update(
+            self.file.as_raw_fd(),
+            region.as_mxcfb(),
+            waveform,
+            marker,
+            force_refresh,
+        )?;
         let pending = PendingUpdate {
             marker,
             region,
@@ -880,12 +896,13 @@ impl NativeDisplay {
             self.pending_update = Some(pending);
         }
         eprintln!(
-            "standalone-test: display refresh region=({},{} {}x{}) waveform={} completion={} elapsed_ms={} status={}",
+            "standalone-test: display refresh region=({},{} {}x{}) waveform={} update_mode={} completion={} elapsed_ms={} status={}",
             region.left,
             region.top,
             region.width,
             region.height,
             waveform.label(),
+            if force_refresh { "FULL" } else { "PARTIAL" },
             if wait_for_completion { "wait" } else { "nowait" },
             started.elapsed().as_millis(),
             "ok",
@@ -1502,6 +1519,12 @@ mod tests {
     fn t1_update_payload_matches_vendor_ioctl_size() {
         assert_eq!(std::mem::size_of::<MxcfbUpdateData>(), 0x44);
         assert_eq!(MXCFB_SEND_UPDATE, 0x4044_462e);
+    }
+
+    #[test]
+    fn forced_refresh_uses_full_epdc_update_mode() {
+        assert_eq!(update_mode(false), UPDATE_MODE_PARTIAL);
+        assert_eq!(update_mode(true), UPDATE_MODE_FULL);
     }
 
     #[test]

@@ -1369,7 +1369,12 @@ kernel names this code `Unknown`; it is the `E0 Unknown C357` control seen in
 the diagnostics. A hold of at least one second now requests `DirtyArea::Full`.
 That path clears and redraws the entire framebuffer using the existing GC16
 waveform, which is the slowest and highest-quality mode currently exposed by
-the T1 EPDC ABI. The timer is checked by the main loop so a device without
-key-repeat events still triggers while the button remains down; repeat and
-release timestamps provide event-driven fallbacks. The trigger is latched so
-one physical hold cannot cause repeated full refreshes.
+the T1 EPDC ABI, and sets `UPDATE_MODE_FULL` (`1`) in the ioctl payload. The
+earlier implementation only supplied a full-sized rectangle while retaining
+`UPDATE_MODE_PARTIAL` (`0`), which was enough for an accepted ioctl but did not
+reliably request the panel's flashing/full-refresh behavior. Touch, key, and
+status updates continue to use partial mode. The timer is checked by the main
+loop so a device without key-repeat events still triggers while the button
+remains down; repeat and release timestamps provide event-driven fallbacks.
+The trigger is latched so one physical hold cannot cause repeated full
+refreshes.

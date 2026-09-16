@@ -185,8 +185,9 @@ navigate this vendor UI with the corresponding Android DPAD keycodes.
 
 The physical menu button is reported by `/dev/input/event0` as `KEY` code 357
 (`Unknown`, shown by the diagnostics as `E0 Unknown C357`). Holding it for at
-least one second requests a full-screen GC16 redraw. The runtime detects the
-threshold from its timer even if the device emits no key-repeat event, and
+least one second requests a full-screen GC16 redraw using the EPDC's explicit
+`UPDATE_MODE_FULL` flag, not just a full-sized rectangle. The runtime detects
+the threshold from its timer even if the device emits no key-repeat event, and
 also handles a repeat or release event as a fallback. A short menu press only
 updates the key diagnostics; the hold action is fired once per press.
 
