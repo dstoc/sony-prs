@@ -98,7 +98,6 @@ fn draw_pattern(canvas: &mut DisplayCanvas<'_>) {
         width.saturating_sub(40),
         BLACK,
     );
-    draw_target(canvas, 28, 92);
     draw_target(canvas, width.saturating_sub(44), 92);
     draw_target(canvas, 28, height.saturating_sub(60));
     draw_target(canvas, width.saturating_sub(44), height.saturating_sub(60));
