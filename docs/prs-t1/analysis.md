@@ -681,6 +681,15 @@ before `system_server` was ready; the latter was present by about 20 seconds.
 This makes separate ADB-daemon, USB-transport, and framework-readiness states
 useful to the UI rather than a single generic "connected" flag.
 
+The expanded live snapshot also reports `power.supported_states=standby mem`,
+`screen.framebuffer_state=0`, `screen.rotate=3`, 22,067 KiB available on
+`/data`, and 1,396,884 KiB available on `/mnt/sdcard`. The screen values are
+kernel framebuffer state rather than Android display-service state, and the
+storage values are intentionally kept in the T1 toolbox's KiB units so the UI
+does not have to infer a block size. No thermal sysfs class is present on this
+firmware, so thermal data remains an explicit future `unknown` field rather
+than being fabricated from battery temperature.
+
 ## Exposed storage
 
 The T1 file service exposes the internal eMMC as

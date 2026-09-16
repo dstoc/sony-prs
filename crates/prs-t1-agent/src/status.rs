@@ -17,6 +17,8 @@ pub struct StatusSnapshot {
     pub wifi: WifiStatus,
     pub adb: AdbStatus,
     pub android: AndroidStatus,
+    pub screen: ScreenStatus,
+    pub storage: StorageStatus,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -33,6 +35,7 @@ pub struct BatteryStatus {
 pub struct PowerStatus {
     pub ac_online: Option<bool>,
     pub usb_online: Option<bool>,
+    pub supported_states: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -66,9 +69,58 @@ pub struct AndroidStatus {
     pub dispd_running: bool,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct ScreenStatus {
+    pub framebuffer_blank: Option<i64>,
+    pub framebuffer_state: Option<i64>,
+    pub rotate: Option<i64>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct StorageStatus {
+    pub data: FilesystemStatus,
+    pub sdcard: FilesystemStatus,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct FilesystemStatus {
+    pub total_kib: Option<i64>,
+    pub used_kib: Option<i64>,
+    pub available_kib: Option<i64>,
+}
+
+#[derive(Debug, Default)]
+struct Properties {
+    values: Vec<(String, String)>,
+}
+
+impl Properties {
+    fn load() -> Self {
+        let Ok(output) = Command::new("/system/bin/getprop").output() else {
+            return Self::default();
+        };
+        if !output.status.success() {
+            return Self::default();
+        }
+        Self {
+            values: parse_properties(&String::from_utf8_lossy(&output.stdout)),
+        }
+    }
+
+    fn get(&self, name: &str) -> Option<&str> {
+        self.values
+            .iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.as_str())
+    }
+}
+
 pub fn collect() -> StatusSnapshot {
-    let wifi_interface =
-        read_property("wifi.interface").unwrap_or_else(|| DEFAULT_WIFI_INTERFACE.into());
+    let properties = Properties::load();
+    let wifi_interface = properties
+        .get("wifi.interface")
+        .unwrap_or(DEFAULT_WIFI_INTERFACE)
+        .to_owned();
     let wifi_path = format!("/sys/class/net/{wifi_interface}");
 
     let uptime_seconds = read_first_number("/proc/uptime");
@@ -83,27 +135,29 @@ pub fn collect() -> StatusSnapshot {
     let power = PowerStatus {
         ac_online: read_bool_field(AC_PATH, "online"),
         usb_online: read_bool_field(USB_POWER_PATH, "online"),
+        supported_states: read_trimmed(Path::new("/sys/power/state")),
     };
     let usb = UsbStatus {
         physical_connected: read_bool_field(USB_POWER_PATH, "online"),
         gadget_state: read_field("/sys/class/android_usb/android0", "state")
-            .or_else(|| read_property("sys.usb.state")),
+            .or_else(|| properties.get("sys.usb.state").map(str::to_owned)),
         gadget_functions: read_field("/sys/class/android_usb/android0", "functions")
-            .or_else(|| read_property("sys.usb.config")),
+            .or_else(|| properties.get("sys.usb.config").map(str::to_owned)),
     };
     let wifi = WifiStatus {
         interface_present: Path::new(&wifi_path).is_dir(),
         operstate: read_field(&wifi_path, "operstate"),
         carrier: read_bool_field(&wifi_path, "carrier"),
         signal_dbm: read_wireless_signal(&wifi_interface),
-        supplicant_state: read_property("init.svc.wpa_supplicant"),
+        supplicant_state: properties.get("init.svc.wpa_supplicant").map(str::to_owned),
         interface: wifi_interface,
     };
     let processes = process_snapshot();
     let adb = AdbStatus {
-        persist_enabled: read_property("persist.service.adb.enable")
-            .and_then(|value| parse_bool(&value)),
-        service_state: read_property("init.svc.adbd"),
+        persist_enabled: properties
+            .get("persist.service.adb.enable")
+            .and_then(parse_bool),
+        service_state: properties.get("init.svc.adbd").map(str::to_owned),
         process_running: process_running(processes.as_deref(), "adbd"),
     };
     let android = AndroidStatus {
@@ -120,7 +174,29 @@ pub fn collect() -> StatusSnapshot {
         wifi,
         adb,
         android,
+        screen: ScreenStatus {
+            framebuffer_blank: read_numeric_field("/sys/class/graphics/fb0", "blank"),
+            framebuffer_state: read_numeric_field("/sys/class/graphics/fb0", "state"),
+            rotate: read_numeric_field("/sys/class/graphics/fb0", "rotate"),
+        },
+        storage: read_storage(),
     }
+}
+
+/*
+ * Keep the property lookup in one getprop invocation. The status snapshot is
+ * intended to be polled by a UI, and spawning one toolbox process for every
+ * property would be needlessly expensive on the T1.
+ */
+fn parse_properties(content: &str) -> Vec<(String, String)> {
+    content
+        .lines()
+        .filter_map(|line| {
+            let key = line.strip_prefix('[')?.split_once("]: [")?.0;
+            let value = line.split_once("]: [")?.1.strip_suffix(']')?;
+            Some((key.to_owned(), value.to_owned()))
+        })
+        .collect()
 }
 
 pub fn print_status() {
@@ -137,6 +213,7 @@ pub fn print_status() {
 
     print_option("power.ac_online", status.power.ac_online);
     print_option("power.usb_online", status.power.usb_online);
+    print_option("power.supported_states", status.power.supported_states);
 
     print_option("usb.physical_connected", status.usb.physical_connected);
     print_option("usb.gadget_state", status.usb.gadget_state);
@@ -159,6 +236,19 @@ pub fn print_status() {
         status.android.system_server_running
     );
     println!("android.dispd_running={}", status.android.dispd_running);
+
+    print_option("screen.framebuffer_blank", status.screen.framebuffer_blank);
+    print_option("screen.framebuffer_state", status.screen.framebuffer_state);
+    print_option("screen.rotate", status.screen.rotate);
+
+    print_filesystem("storage.data", &status.storage.data);
+    print_filesystem("storage.sdcard", &status.storage.sdcard);
+}
+
+fn print_filesystem(prefix: &str, filesystem: &FilesystemStatus) {
+    print_option(&format!("{prefix}.total_kib"), filesystem.total_kib);
+    print_option(&format!("{prefix}.used_kib"), filesystem.used_kib);
+    print_option(&format!("{prefix}.available_kib"), filesystem.available_kib);
 }
 
 fn print_option<T: Display>(key: &str, value: Option<T>) {
@@ -177,6 +267,10 @@ fn read_bool_field(root: &str, field: &str) -> Option<bool> {
     read_field(root, field).and_then(|value| parse_bool(&value))
 }
 
+fn read_numeric_field(root: &str, field: &str) -> Option<i64> {
+    read_field(root, field).and_then(|value| value.parse().ok())
+}
+
 fn read_trimmed(path: &Path) -> Option<String> {
     let value = fs::read_to_string(path).ok()?.trim().to_owned();
     (!value.is_empty()).then_some(value)
@@ -188,18 +282,6 @@ fn read_first_number(path: &str) -> Option<f64> {
         .next()?
         .parse()
         .ok()
-}
-
-fn read_property(name: &str) -> Option<String> {
-    let output = Command::new("/system/bin/getprop")
-        .arg(name)
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let value = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    (!value.is_empty()).then_some(value)
 }
 
 fn process_snapshot() -> Option<String> {
@@ -239,6 +321,56 @@ fn parse_wireless_signal(content: &str, interface: &str) -> Option<i32> {
     None
 }
 
+fn read_storage() -> StorageStatus {
+    let Ok(output) = Command::new("/system/bin/df").output() else {
+        return StorageStatus::default();
+    };
+    if !output.status.success() {
+        return StorageStatus::default();
+    }
+    let content = String::from_utf8_lossy(&output.stdout);
+    StorageStatus {
+        data: parse_df_mount(&content, "/data"),
+        sdcard: parse_df_mount(&content, "/mnt/sdcard"),
+    }
+}
+
+fn parse_df_mount(content: &str, mount: &str) -> FilesystemStatus {
+    let Some(line) = content.lines().find(|line| {
+        line.split_whitespace()
+            .next()
+            .is_some_and(|value| value.trim_end_matches(':') == mount)
+    }) else {
+        return FilesystemStatus::default();
+    };
+    let mut fields = line.split_whitespace();
+    let _mount = fields.next();
+    let total_kib = fields.next().and_then(parse_df_size_kib);
+    let _total_label = fields.next();
+    let used_kib = fields.next().and_then(parse_df_size_kib);
+    let _used_label = fields.next();
+    let available_kib = fields.next().and_then(parse_df_size_kib);
+    FilesystemStatus {
+        total_kib,
+        used_kib,
+        available_kib,
+    }
+}
+
+fn parse_df_size_kib(value: &str) -> Option<i64> {
+    let value = value.trim_end_matches(',');
+    if let Some(value) = value.strip_suffix('K') {
+        return value.parse().ok();
+    }
+    if let Some(value) = value.strip_suffix('M') {
+        return value.parse::<i64>().ok()?.checked_mul(1024);
+    }
+    if let Some(value) = value.strip_suffix('G') {
+        return value.parse::<i64>().ok()?.checked_mul(1024 * 1024);
+    }
+    value.parse().ok()
+}
+
 fn parse_bool(value: &str) -> Option<bool> {
     match value.trim() {
         "1" | "true" | "TRUE" | "yes" | "on" => Some(true),
@@ -249,13 +381,29 @@ fn parse_bool(value: &str) -> Option<bool> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_bool, parse_wireless_signal};
+    use super::{parse_bool, parse_df_mount, parse_properties, parse_wireless_signal};
 
     #[test]
     fn parses_boolean_sysfs_and_property_values() {
         assert_eq!(parse_bool("1"), Some(true));
         assert_eq!(parse_bool("off"), Some(false));
         assert_eq!(parse_bool("not-a-bool"), None);
+    }
+
+    #[test]
+    fn parses_getprop_output() {
+        let values = parse_properties("[wifi.interface]: [wlan0]\n[init.svc.adbd]: [running]\n");
+        assert_eq!(values[0], ("wifi.interface".into(), "wlan0".into()));
+        assert_eq!(values[1], ("init.svc.adbd".into(), "running".into()));
+    }
+
+    #[test]
+    fn parses_vendor_df_output() {
+        let content = "/data: 47590K total, 25507K used, 22083K available (block size 1024)\n";
+        let status = parse_df_mount(content, "/data");
+        assert_eq!(status.total_kib, Some(47590));
+        assert_eq!(status.used_kib, Some(25507));
+        assert_eq!(status.available_kib, Some(22083));
     }
 
     #[test]
