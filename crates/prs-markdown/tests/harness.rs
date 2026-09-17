@@ -40,6 +40,7 @@ const FIXTURES: &[(&str, &str)] = &[
         "syntax-highlight",
         include_str!("fixtures/syntax-highlight.md"),
     ),
+    ("code-surface", include_str!("fixtures/code-surface.md")),
     (
         "tables-code-images",
         include_str!("fixtures/tables-code-images.md"),

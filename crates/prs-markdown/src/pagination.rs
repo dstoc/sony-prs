@@ -829,6 +829,9 @@ fn add_line(
                 source: None,
                 alt: String::new(),
             }),
+            // The code surface fill is sufficient for a source-newline line.
+            // Do not turn an empty code line into the generic fallback rule.
+            LayoutBlockKind::Code => {}
             _ => page.push_command(DisplayCommand::Rule {
                 bounds,
                 style: BorderStyle::new(Color::BLACK, 1),
@@ -1157,6 +1160,45 @@ mod tests {
                 DisplayCommand::Rule { style, .. } if style.color == Color::rgb(10, 11, 12)
             )
         }));
+    }
+
+    #[test]
+    fn code_surface_fills_blank_and_wrapped_lines_without_fallback_rules() {
+        let style = ReaderStyle {
+            code_block_padding: 4,
+            code_background: FillStyle::new(Color::rgb(240, 240, 240)),
+            code_continuation_background: FillStyle::new(Color::rgb(236, 236, 236)),
+            ..pagination_style()
+        };
+        let document = Document::from_blocks(vec![Block::CodeBlock {
+            language: None,
+            info: None,
+            code: "short\n\nThis deliberately long source line wraps inside the padded code surface and keeps every continuation aligned".into(),
+        }]);
+        let layout = LayoutEngine::new(style).layout(&document, Viewport::new(58, 500));
+        let code_block = &layout.blocks()[0];
+        let page = Paginator::new(style).paginate(&layout).remove(0);
+        let fills = page
+            .display_list()
+            .iter()
+            .filter_map(|command| match command {
+                DisplayCommand::Fill { bounds, style } => Some((*bounds, *style)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(fills.len(), code_block.lines.len());
+        assert!(fills.iter().all(|(bounds, _)| {
+            bounds.top_left.x == style.page_padding.left as i32
+                && bounds.size.width == 58 - style.page_padding.left - style.page_padding.right
+        }));
+        assert!(fills
+            .iter()
+            .any(|(_, fill)| *fill == style.code_continuation_background));
+        assert!(!page
+            .display_list()
+            .iter()
+            .any(|command| matches!(command, DisplayCommand::Rule { .. })));
     }
 
     #[test]

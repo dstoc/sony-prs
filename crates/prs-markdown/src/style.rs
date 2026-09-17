@@ -118,6 +118,8 @@ pub struct ReaderStyle {
     pub block_quote_indent: u32,
     pub block_quote_border: BorderStyle,
     pub block_quote_padding: u32,
+    /// Horizontal inset between a fenced-code surface and its text.
+    pub code_block_padding: u32,
     pub list_indent: u32,
     pub list_item_spacing: u32,
     pub inline_code_background: FillStyle,
@@ -172,6 +174,7 @@ impl Default for ReaderStyle {
             block_quote_indent: 24,
             block_quote_border: BorderStyle::new(Color::rgb(150, 150, 150), 2),
             block_quote_padding: 8,
+            code_block_padding: 8,
             list_indent: 24,
             list_item_spacing: 4,
             inline_code_background: FillStyle::new(Color::rgb(242, 242, 242)),

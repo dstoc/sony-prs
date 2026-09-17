@@ -1408,6 +1408,18 @@ impl<M: TextMeasurer> LayoutEngine<M> {
         x: i32,
         width: u32,
     ) -> Vec<LayoutLine> {
+        let surface_width = width.max(1);
+        // Keep at least one pixel for code text on narrow diagnostic
+        // viewports. The normal T1 content width leaves the configured inset
+        // on both sides.
+        let padding = self
+            .style
+            .code_block_padding
+            .min(surface_width.saturating_sub(1) / 2);
+        let text_x = x.saturating_add(padding as i32);
+        let text_width = surface_width
+            .saturating_sub(padding.saturating_mul(2))
+            .max(1);
         let highlighted = self.code_highlighter.highlight(language, code);
         let mut result = Vec::new();
         let mut y = start_y;
@@ -1434,12 +1446,19 @@ impl<M: TextMeasurer> LayoutEngine<M> {
                 &self.measurer,
                 spans,
                 y,
-                x,
-                width,
+                text_x,
+                text_width,
                 self.style.code.line_height,
             );
             for (line_index, line) in lines.iter_mut().enumerate() {
                 line.wrapped = line_index > 0;
+                // `LineBuilder` uses used text width for ordinary prose.
+                // Code lines instead expose the stable block surface to
+                // pagination; fragments keep their inset text bounds.
+                line.bounds = Rectangle::new(
+                    Point::new(x, line.bounds.top_left.y),
+                    Size::new(surface_width, line.bounds.size.height),
+                );
             }
             if let Some(last) = lines.last() {
                 y = last
@@ -1451,7 +1470,14 @@ impl<M: TextMeasurer> LayoutEngine<M> {
             result.extend(lines);
         }
         if result.is_empty() {
-            result.push(empty_line(x, start_y, self.style.code.line_height));
+            result.push(LayoutLine {
+                bounds: Rectangle::new(
+                    Point::new(x, start_y),
+                    Size::new(surface_width, self.style.code.line_height.max(1)),
+                ),
+                fragments: Vec::new(),
+                wrapped: false,
+            });
         }
         result
     }
@@ -2110,6 +2136,40 @@ mod tests {
             .any(|fragment| fragment.style.strikethrough));
         assert!(fragments.iter().any(|fragment| fragment.style.code));
         assert!(fragments.iter().any(|fragment| fragment.text == " "));
+    }
+
+    #[test]
+    fn fenced_code_uses_an_inset_text_box_and_stable_surface() {
+        let style = ReaderStyle {
+            code_block_padding: 4,
+            ..style()
+        };
+        let document = Document::from_blocks(vec![Block::CodeBlock {
+            language: None,
+            info: None,
+            code: "short\n\nThis deliberately long source line wraps inside the padded code surface and keeps every continuation aligned\nafter".into(),
+        }]);
+        let layout = LayoutEngine::new(style).layout(&document, Viewport::new(58, 500));
+        let block = &layout.blocks()[0];
+        let surface_x = style.page_padding.left as i32;
+        let surface_width = 58 - style.page_padding.left - style.page_padding.right;
+        let text_x = surface_x + style.code_block_padding as i32;
+
+        assert!(block.lines.len() > 3, "the long source line should wrap");
+        assert!(block.lines.iter().any(|line| line.fragments.is_empty()));
+        assert!(block.lines.iter().any(|line| line.wrapped));
+        assert!(block
+            .lines
+            .iter()
+            .all(|line| line.bounds.top_left.x == surface_x
+                && line.bounds.size.width == surface_width));
+        assert_eq!(block.bounds.top_left.x, surface_x);
+        assert_eq!(block.bounds.size.width, surface_width);
+        assert!(block
+            .lines
+            .iter()
+            .flat_map(|line| &line.fragments)
+            .all(|fragment| fragment.bounds.top_left.x >= text_x));
     }
 
     #[test]
