@@ -7,19 +7,22 @@
 //! surrounding T1 runtime.
 
 use crate::display::{self, CONTENT_TOP};
-use crate::framebuffer::{DisplayCanvas, DisplayRegion, NativeDisplay, WaveformMode};
+use crate::framebuffer::{DisplayCanvas, DisplayRegion, NativeDisplay};
+use crate::refresh::{PageTone, RefreshPlan};
 use embedded_graphics::geometry::Point;
 use embedded_graphics::mono_font::{ascii::FONT_8X13, MonoTextStyle};
 use embedded_graphics::pixelcolor::{Rgb565, RgbColor};
 use embedded_graphics::prelude::{Drawable, IntoStorage};
 use embedded_graphics::text::{Baseline, Text};
 use prs_markdown::geometry::Viewport;
+use prs_markdown::pagination::{DisplayCommand, PageLayout};
 use prs_markdown::parse::ComrakParser;
 use prs_markdown::reader::{Reader, ReaderError, ReaderEvent};
 use prs_markdown::render::EmbeddedGraphicsRenderer;
 use prs_markdown::resources::FileSystemResourceProvider;
 use prs_markdown::style::ReaderStyle;
 use prs_markdown::typography::{FontConfig, FontdueTextEngine};
+use prs_markdown::Color;
 use std::env;
 use std::fmt::Display;
 use std::fs;
@@ -168,6 +171,7 @@ impl T1Reader {
     pub fn render_frame(
         &mut self,
         status_line: &str,
+        feedback: &str,
         width: u32,
         height: u32,
     ) -> io::Result<Vec<u8>> {
@@ -184,6 +188,7 @@ impl T1Reader {
         canvas.fill(Rgb565::WHITE.into_storage());
         let status = [status_line.to_owned()];
         display::draw_status_bar(&mut canvas, &status);
+        display::draw_reader_feedback(&mut canvas, feedback);
 
         let page = self.reader.current_page().ok_or_else(|| {
             io::Error::new(
@@ -233,22 +238,35 @@ impl T1Reader {
         .expect("RGB565 DisplayCanvas drawing is infallible");
     }
 
+    /// Classify the current page for the T1 refresh policy.
+    ///
+    /// The classification is derived from the shared page's display list but
+    /// remains in this adapter: the Markdown crate does not know about
+    /// waveforms, damage, or EPDC scheduling. Ordinary black/white text keeps
+    /// the responsive DU path; intentional gray paint and loaded rasters get
+    /// a synchronous GC16 update.
+    pub fn current_page_tone(&self) -> PageTone {
+        self.reader
+            .current_page()
+            .map(page_tone)
+            .unwrap_or(PageTone::Grayscale)
+    }
+
     pub fn draw(
         &mut self,
         display: &mut NativeDisplay,
         status_line: &str,
+        feedback: &str,
         refresh_region: DisplayRegion,
-        waveform: WaveformMode,
-        wait_for_completion: bool,
-        force_refresh: bool,
+        plan: RefreshPlan,
     ) -> io::Result<()> {
-        let frame = self.render_frame(status_line, display.width(), display.height())?;
+        let frame = self.render_frame(status_line, feedback, display.width(), display.height())?;
         display.draw_frame_with_waveform(
             &frame,
             refresh_region,
-            waveform,
-            wait_for_completion,
-            force_refresh,
+            plan.waveform(),
+            plan.wait_for_completion(),
+            plan.force_refresh(),
         )
     }
 }
@@ -290,6 +308,32 @@ fn integration_error(stage: &str, error: impl Display) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, format!("{stage}: {error}"))
 }
 
+fn page_tone(page: &PageLayout) -> PageTone {
+    if page.display_list().iter().any(command_requires_grayscale) {
+        PageTone::Grayscale
+    } else {
+        PageTone::Monochrome
+    }
+}
+
+fn command_requires_grayscale(command: &DisplayCommand) -> bool {
+    match command {
+        DisplayCommand::Text { style, .. } => style.ink != 0 && style.ink != u8::MAX,
+        DisplayCommand::Fill { style, .. } => color_requires_grayscale(style.color),
+        DisplayCommand::Border { style, .. } | DisplayCommand::Rule { style, .. } => {
+            color_requires_grayscale(style.color)
+        }
+        DisplayCommand::Image { .. } => true,
+        DisplayCommand::ImagePlaceholder { .. } => false,
+    }
+}
+
+fn color_requires_grayscale(color: Color) -> bool {
+    color.alpha != 0
+        && !((color.red == 0 && color.green == 0 && color.blue == 0)
+            || (color.red == u8::MAX && color.green == u8::MAX && color.blue == u8::MAX))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -328,7 +372,7 @@ mod tests {
         let viewport = Viewport::new(240, 180);
         let mut reader = T1Reader::open(fixture_config(&root), viewport).expect("open fixture");
         let frame = reader
-            .render_frame("100%|On|On|On|||12:00", 240, 256)
+            .render_frame("100%|On|On|On|||12:00", "Opened document", 240, 256)
             .expect("render fixture");
 
         let content_offset = CONTENT_TOP * 240 * 2;
@@ -336,7 +380,39 @@ mod tests {
             .iter()
             .any(|pixel| *pixel != Rgb565::WHITE.into_storage().to_ne_bytes()[0]));
         assert_eq!(reader.reader.page_count(), 1);
+        assert_eq!(reader.current_page_tone(), PageTone::Monochrome);
         fs::remove_dir_all(root).expect("remove reader fixture root");
+    }
+
+    #[test]
+    fn gray_display_list_commands_request_quality_waveform() {
+        let mut page = PageLayout::new(1, Viewport::new(100, 80));
+        page.push_command(DisplayCommand::Fill {
+            bounds: embedded_graphics::primitives::Rectangle::new(
+                Point::zero(),
+                embedded_graphics::geometry::Size::new(20, 20),
+            ),
+            style: prs_markdown::FillStyle::new(Color::rgb(240, 240, 240)),
+        });
+
+        assert_eq!(page_tone(&page), PageTone::Grayscale);
+    }
+
+    #[test]
+    fn loaded_images_request_quality_waveform_even_without_gray_decorations() {
+        let mut page = PageLayout::new(1, Viewport::new(100, 80));
+        page.push_command(DisplayCommand::Image {
+            bounds: embedded_graphics::primitives::Rectangle::new(
+                Point::zero(),
+                embedded_graphics::geometry::Size::new(1, 1),
+            ),
+            image: prs_markdown::RasterImage::new(1, 1, std::sync::Arc::<[u8]>::from(vec![128]))
+                .expect("valid test raster"),
+            source: "image.png".into(),
+            alt: "test image".into(),
+        });
+
+        assert_eq!(page_tone(&page), PageTone::Grayscale);
     }
 
     #[test]

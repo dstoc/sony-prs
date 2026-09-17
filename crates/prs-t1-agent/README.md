@@ -214,11 +214,40 @@ waveform hint and a fallback; a change outside that hint is promoted to GC16
 rather than being silently omitted. One update marker is tracked so an
 asynchronous transient update completes before the next mapped-frame write.
 
-Transient touch, key, and power updates use the fast `DU` waveform and are
-submitted asynchronously. Initial, status, and full redraws use `GC16` and
-wait for completion. The T1's EPDC alignment quantum has not been measured, so
-damage defaults to exact one-pixel alignment. Repeated DU ghosting and the
-right cadence for GC16 cleanup still need physical visual characterization.
+The device-side refresh policy is intentionally separate from the Markdown
+crate. It classifies a rendered page's display list as monochrome or grayscale
+by looking for loaded images, non-black/white fills and borders, or non-extreme
+syntax/text ink. The policy is:
+
+| Event | Region | Waveform | Completion | EPDC mode / cadence |
+| --- | --- | --- | --- | --- |
+| Initial screen, menu full redraw, details/settings entry or exit | Full screen | `GC16` | Wait | Forced full update |
+| Monochrome text page turn | Document region | `DU` | Async | Damage rectangle; the fifth turn is a forced `GC16` cleanup |
+| Grayscale/image page turn | Document region | `GC16` | Wait | Forced quality update for the document region |
+| Status change while reading | Status bar only | `DU` | Async | Damage stays out of the document region |
+| Status/diagnostic change on details | Details dirty region | `DU` | Async | Damage-driven partial update |
+| Transient link/interaction feedback | Document region | `DU` | Async | Damage-driven partial update |
+| Resume after suspend | Full screen | `GC16` | Wait | Forced full update after the panel's wake-side clear |
+
+The cleanup boundary is four completed fast page turns: the first four
+ordinary text turns can remain responsive, and the next text turn waits for and
+forces a GC16 update over the document region. Any grayscale/image page, full
+redraw, or resume resets that cadence. Status and transient updates do not
+consume the page-turn budget. A failed submission does not advance the policy
+state, and a page event changes the shared reader's logical page before this
+policy is consulted; retrying or promoting its display update therefore never
+advances pagination a second time.
+
+The T1's EPDC alignment quantum has not been measured, so damage defaults to
+exact one-pixel alignment. The available waveform timings were measured on the
+tested reader: DU is about 273--381 ms, GC4 about 614 ms, and GC16 about
+700 ms. Those runs established acceptance and latency, not optical ghosting;
+the policy's four-turn cleanup cadence is a conservative starting point that
+must be revisited after a repeated-turn visual inspection on hardware. A
+GC16 cleanup is always preferred before or after content that intentionally
+uses grayscale rather than assuming that the fastest accepted waveform is
+visually adequate.
+
 
 ## Power and Android ownership
 

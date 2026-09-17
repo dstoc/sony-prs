@@ -1,5 +1,6 @@
 use crate::framebuffer::{DisplayRegion, NativeDisplay, WaveformMode};
 use crate::input::{EventReader, RawEvent};
+use crate::refresh::{PageTone, RefreshPolicy, RefreshReason};
 use crate::{display, input, reader};
 use embedded_graphics::geometry::Point;
 use prs_markdown::reader::{ReaderError, ReaderEvent};
@@ -103,6 +104,7 @@ pub fn run(path: &Path, suspend_mode: SuspendMode) -> io::Result<()> {
     )
     .map_err(|error| display_error("open development Markdown reader", error))?;
     let mut state = UiState::new();
+    let mut refresh_policy = RefreshPolicy::default();
     let mut adb_restart_pending = false;
 
     eprintln!(
@@ -116,6 +118,7 @@ pub fn run(path: &Path, suspend_mode: SuspendMode) -> io::Result<()> {
         &mut markdown_reader,
         wake_lock.is_held(),
         DirtyArea::Full,
+        &mut refresh_policy,
     )
     .map_err(|error| display_error("initial redraw", error))?;
 
@@ -178,6 +181,7 @@ pub fn run(path: &Path, suspend_mode: SuspendMode) -> io::Result<()> {
                 &mut state,
                 &mut markdown_reader,
                 suspend_mode,
+                &mut refresh_policy,
             )
             .map(|()| {
                 adb_restart_pending = true;
@@ -197,6 +201,7 @@ pub fn run(path: &Path, suspend_mode: SuspendMode) -> io::Result<()> {
                     &mut markdown_reader,
                     wake_lock.is_held(),
                     DirtyArea::Full,
+                    &mut refresh_policy,
                 )
                 .map_err(|error| display_error("reboot redraw", error))?;
                 match action {
@@ -213,6 +218,7 @@ pub fn run(path: &Path, suspend_mode: SuspendMode) -> io::Result<()> {
                     &mut markdown_reader,
                     wake_lock.is_held(),
                     area,
+                    &mut refresh_policy,
                 )
                 .map_err(|error| display_error("input redraw", error))?;
             }
@@ -295,27 +301,62 @@ fn redraw(
     markdown_reader: &mut reader::T1Reader,
     wake_lock_held: bool,
     area: DirtyArea,
+    refresh_policy: &mut RefreshPolicy,
 ) -> io::Result<()> {
     let lines = screen_lines(state, wake_lock_held);
+    let reason = area.reason(state.page);
+    let plan = refresh_policy.plan(reason);
+    eprintln!(
+        "standalone-test: refresh policy reason={} waveform={} completion={} force={} cleanup={}",
+        reason.label(),
+        plan.waveform().label(),
+        if plan.wait_for_completion() {
+            "wait"
+        } else {
+            "nowait"
+        },
+        plan.force_refresh(),
+        plan.is_cleanup(),
+    );
     if state.page == UiPage::Home {
         let status_line = lines.first().map(String::as_str).unwrap_or_default();
-        return markdown_reader.draw(
+        let result = markdown_reader.draw(
             display,
             status_line,
-            area.region(display),
-            area.waveform(),
-            area.wait_for_completion(),
-            area.force_refresh(),
+            &state.message,
+            area.region(display, state.page),
+            plan,
         );
+        if result.is_ok() {
+            refresh_policy.record_success(reason, plan);
+        }
+        return result;
     }
-    display::draw_screen(
+    let result = display::draw_screen(
         display,
         &lines,
-        area.region(display),
-        area.waveform(),
-        area.wait_for_completion(),
-        area.force_refresh(),
-    )
+        area.region(display, state.page),
+        plan.waveform(),
+        plan.wait_for_completion(),
+        plan.force_refresh(),
+    );
+    if result.is_ok() {
+        refresh_policy.record_success(reason, plan);
+    }
+    result
+}
+
+fn reader_event_dirty_area(event: &ReaderEvent, tone: PageTone) -> Option<DirtyArea> {
+    match event {
+        ReaderEvent::PageChanged { .. }
+        | ReaderEvent::Navigated { .. }
+        | ReaderEvent::Back { .. }
+        | ReaderEvent::Forward { .. } => Some(DirtyArea::PageTurn(tone)),
+        ReaderEvent::ExternalUrl(_) | ReaderEvent::Asset(_) | ReaderEvent::NoAction => {
+            Some(DirtyArea::Interaction)
+        }
+        ReaderEvent::Opened { .. } => None,
+    }
 }
 
 fn reader_event_message(event: &ReaderEvent) -> String {
@@ -365,6 +406,8 @@ fn apply_reader_result(
     match result {
         Ok(event) => {
             state.message = reader_event_message(&event);
+            let dirty = reader_event_dirty_area(&event, markdown_reader.current_page_tone())
+                .unwrap_or(DirtyArea::Full);
             match event {
                 ReaderEvent::ExternalUrl(url) => {
                     markdown_reader.set_external_url_notice(Some(url));
@@ -377,20 +420,23 @@ fn apply_reader_result(
                 | ReaderEvent::Forward { .. }
                 | ReaderEvent::Asset(_) => markdown_reader.set_external_url_notice(None),
             }
+            dirty
         }
         Err(error) => {
             state.message = format!("Reader error: {error}");
             markdown_reader.set_external_url_notice(None);
             eprintln!("standalone-test: Markdown operation failed: {error}");
+            DirtyArea::Full
         }
     }
-    DirtyArea::Full
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DirtyArea {
     Full,
     Status,
+    PageTurn(PageTone),
+    Interaction,
     Touch,
     Key,
     Power,
@@ -400,41 +446,56 @@ impl DirtyArea {
     fn merge(self, other: Self) -> Self {
         match (self, other) {
             (Self::Full, _) | (_, Self::Full) => Self::Full,
+            (Self::PageTurn(left), Self::PageTurn(right)) => Self::PageTurn(match (left, right) {
+                (PageTone::Grayscale, _) | (_, PageTone::Grayscale) => PageTone::Grayscale,
+                (PageTone::Monochrome, PageTone::Monochrome) => PageTone::Monochrome,
+            }),
+            (Self::PageTurn(_), Self::Status) | (Self::Status, Self::PageTurn(_)) => Self::Full,
+            (Self::PageTurn(tone), Self::Interaction)
+            | (Self::Interaction, Self::PageTurn(tone)) => Self::PageTurn(tone),
             (Self::Key, Self::Power) | (Self::Power, Self::Key) => Self::Power,
             (left, right) if left == right => left,
             _ => Self::Full,
         }
     }
 
-    fn region(self, display: &NativeDisplay) -> DisplayRegion {
+    fn reason(self, page: UiPage) -> RefreshReason {
+        match self {
+            Self::Full => RefreshReason::FullRedraw,
+            Self::PageTurn(tone) => RefreshReason::PageTurn(tone),
+            Self::Status if page == UiPage::Home => RefreshReason::StatusBar,
+            Self::Status | Self::Interaction | Self::Touch | Self::Key | Self::Power => {
+                RefreshReason::Transient
+            }
+        }
+    }
+
+    fn region(self, display: &NativeDisplay, page: UiPage) -> DisplayRegion {
+        let content_region = || {
+            DisplayRegion::new(
+                0,
+                display::STATUS_BAR_HEIGHT as u32,
+                display.width(),
+                display
+                    .height()
+                    .saturating_sub(display::STATUS_BAR_HEIGHT as u32),
+            )
+        };
         let region = match self {
             Self::Full => DisplayRegion::full(display.width(), display.height()),
+            Self::PageTurn(_) | Self::Interaction => content_region(),
+            Self::Status if page == UiPage::Home => {
+                DisplayRegion::new(0, 0, display.width(), display::STATUS_BAR_HEIGHT as u32)
+            }
+            Self::Status => DisplayRegion::new(0, 0, display.width(), 640),
             // The details page keeps the touch diagnostics near the bottom
             // of the content area. Keep the update well inside the display.
             Self::Touch => DisplayRegion::new(20, 460, 560, 130),
             // Key and power diagnostics share one region so a power press can
             // update the key row, power row, and status message together.
             Self::Key | Self::Power => DisplayRegion::new(20, 535, 560, 105),
-            // Status refreshes also update the clock in the header, so include
-            // the header and the complete diagnostic block above the actions.
-            Self::Status => DisplayRegion::new(0, 0, display.width(), 640),
         };
         region.bounded(display.width(), display.height())
-    }
-
-    fn waveform(self) -> WaveformMode {
-        match self {
-            Self::Touch | Self::Key | Self::Power => WaveformMode::Du,
-            Self::Full | Self::Status => WaveformMode::Gc16,
-        }
-    }
-
-    fn wait_for_completion(self) -> bool {
-        matches!(self, Self::Full | Self::Status)
-    }
-
-    fn force_refresh(self) -> bool {
-        matches!(self, Self::Full)
     }
 }
 
@@ -659,6 +720,7 @@ fn sleep_cycle(
     state: &mut UiState,
     markdown_reader: &mut reader::T1Reader,
     suspend_mode: SuspendMode,
+    refresh_policy: &mut RefreshPolicy,
 ) -> io::Result<()> {
     state.mode = "SLEEPING";
     state.message = match suspend_mode {
@@ -673,6 +735,7 @@ fn sleep_cycle(
         markdown_reader,
         wake_lock.is_held(),
         DirtyArea::Full,
+        refresh_policy,
     )
     .map_err(|error| display_error("pre-suspend redraw", error))?;
     let standby_lines = screen_lines(state, wake_lock.is_held());
@@ -682,6 +745,7 @@ fn sleep_cycle(
                 .first()
                 .map(String::as_str)
                 .unwrap_or_default(),
+            &state.message,
             display.width(),
             display.height(),
         )?
@@ -732,6 +796,7 @@ fn sleep_cycle(
         markdown_reader,
         wake_lock.is_held(),
         DirtyArea::Full,
+        refresh_policy,
     )
     .map_err(|error| display_error("post-resume redraw", error))
 }
@@ -1234,7 +1299,7 @@ impl UiState {
                         "standalone-test: touch tap x={} y={} page={:?} action={action:?}",
                         self.touch_x, self.touch_y, self.page
                     );
-                    return (Some(DirtyArea::Full), action);
+                    return (Some(self.touch_release_dirty()), action);
                 }
             }
             if event.event_type == EVENT_ABS && event.code == ABS_MT_TOUCH_MAJOR {
@@ -1263,7 +1328,7 @@ impl UiState {
                         "standalone-test: touch tap x={} y={} page={:?} action={action:?}",
                         self.touch_x, self.touch_y, self.page
                     );
-                    return (Some(DirtyArea::Full), action);
+                    return (Some(self.touch_release_dirty()), action);
                 }
                 return (Some(DirtyArea::Touch), PowerAction::None);
             }
@@ -1311,6 +1376,19 @@ impl UiState {
         }
 
         (None, PowerAction::None)
+    }
+
+    fn touch_release_dirty(&self) -> DirtyArea {
+        if self.page == UiPage::Home && self.touch_y >= display::STATUS_BAR_HEIGHT as i32 {
+            // The reader will refine this into a page-turn tone or a retained
+            // interaction message. Keep the status bar out of the initial
+            // semantic hint so a normal page turn can use DU.
+            DirtyArea::Interaction
+        } else {
+            // Status-bar/details actions change application chrome and need a
+            // complete quality redraw.
+            DirtyArea::Full
+        }
     }
 
     fn poll_menu_hold(&mut self) -> Option<DirtyArea> {
@@ -1494,9 +1572,10 @@ impl UiState {
 #[cfg(test)]
 mod tests {
     use super::{
-        display, DirtyArea, InputSourceKind, Point, ReaderOperation, SuspendMode, UiPage, UiState,
-        ABS_MT_POSITION_X, ABS_MT_POSITION_Y, ABS_MT_TOUCH_MAJOR, ABS_MT_TRACKING_ID, ABS_X, ABS_Y,
-        BTN_TOUCH, EVENT_ABS, EVENT_KEY, EVENT_SYN, KEY_LEFT, KEY_MENU, KEY_RIGHT, SYN_REPORT,
+        display, DirtyArea, InputSourceKind, PageTone, Point, ReaderOperation, RefreshReason,
+        SuspendMode, UiPage, UiState, ABS_MT_POSITION_X, ABS_MT_POSITION_Y, ABS_MT_TOUCH_MAJOR,
+        ABS_MT_TRACKING_ID, ABS_X, ABS_Y, BTN_TOUCH, EVENT_ABS, EVENT_KEY, EVENT_SYN, KEY_LEFT,
+        KEY_MENU, KEY_RIGHT, SYN_REPORT,
     };
     use crate::input::RawEvent;
     use std::time::{Duration, Instant};
@@ -1545,9 +1624,10 @@ mod tests {
         state.touch_y = display::CONTENT_TOP as i32 + 80;
         state.touch_down = true;
 
-        let (_, action) = state.observe(InputSourceKind::Touch, event(BTN_TOUCH, 0, 1_000_000));
+        let (dirty, action) = state.observe(InputSourceKind::Touch, event(BTN_TOUCH, 0, 1_000_000));
 
         assert_eq!(action, super::PowerAction::None);
+        assert_eq!(dirty, Some(DirtyArea::Interaction));
         assert_eq!(state.take_reader_tap(), Some(Point::new(500, 156)));
         assert_eq!(state.page, UiPage::Home);
     }
@@ -1557,6 +1637,26 @@ mod tests {
         let state = UiState::new();
         let lines = super::screen_lines(&state, true);
         assert_eq!(lines[0].split('|').nth(4), Some(""));
+    }
+
+    #[test]
+    fn document_and_status_dirty_areas_select_their_device_side_reasons() {
+        assert_eq!(
+            DirtyArea::PageTurn(PageTone::Monochrome).reason(UiPage::Home),
+            RefreshReason::PageTurn(PageTone::Monochrome)
+        );
+        assert_eq!(
+            DirtyArea::Status.reason(UiPage::Home),
+            RefreshReason::StatusBar
+        );
+        assert_eq!(
+            DirtyArea::Status.reason(UiPage::Details),
+            RefreshReason::Transient
+        );
+        assert_eq!(
+            DirtyArea::Status.merge(DirtyArea::PageTurn(PageTone::Monochrome)),
+            DirtyArea::Full
+        );
     }
 
     #[test]

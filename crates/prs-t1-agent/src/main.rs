@@ -4,6 +4,7 @@ mod display;
 mod framebuffer;
 mod input;
 mod reader;
+mod refresh;
 mod runtime;
 #[cfg(any(target_arch = "arm", test))]
 mod soft_float;

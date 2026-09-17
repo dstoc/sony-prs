@@ -112,9 +112,12 @@ reader; see [`crates/prs-t1-agent/README.md`](crates/prs-t1-agent/README.md)
 for staging and environment overrides. The details page groups the device
 snapshot under Power, Connectivity, System, Storage, and Input and provides
 reboot, power-off, and return actions. The runtime polls status every five
-seconds, uses fast DU updates for transient diagnostics, and promotes an
-unexpected full-frame change to a GC16 refresh. A long menu-button hold forces
-a full EPDC redraw.
+seconds, keeps status-only document redraws inside the status-bar region, and
+uses the device-side refresh policy described in the T1 guide: ordinary text
+page turns use queued DU updates with periodic GC16 cleanup, while pages with
+images or intentional gray paint use synchronous GC16. An unexpected change
+outside a semantic dirty hint is still promoted to GC16 by the damage layer.
+A long menu-button hold forces a full EPDC redraw.
 
 The standalone path is a development ownership experiment, not a boot change.
 It requires root, stops `zygote` and `system_server`, and can make the reader

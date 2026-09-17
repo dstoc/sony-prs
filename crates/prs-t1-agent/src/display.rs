@@ -148,6 +148,23 @@ pub(crate) fn draw_status_bar(canvas: &mut DisplayCanvas<'_>, lines: &[String]) 
     }
 }
 
+/// Draw the T1-owned short-lived interaction message in the breathing room
+/// between the status bar and the Markdown viewport.
+pub(crate) fn draw_reader_feedback(canvas: &mut DisplayCanvas<'_>, text: &str) {
+    if text.is_empty() {
+        return;
+    }
+    draw_text_centered_in_rect(
+        canvas,
+        0,
+        STATUS_BAR_HEIGHT,
+        canvas.width(),
+        CONTENT_TOP.saturating_sub(STATUS_BAR_HEIGHT),
+        text,
+        Rgb565::BLACK,
+    );
+}
+
 fn draw_status_value(
     canvas: &mut DisplayCanvas<'_>,
     left: usize,

@@ -186,6 +186,55 @@ coalesce newer frames while one update is in flight. No EPDC alignment quantum
 has been established yet, so damage padding and alignment default to one pixel
 and remain configurable in the pure damage planner.
 
+### Document refresh policy
+
+MR-17 keeps all waveform and damage decisions in `prs-t1-agent`. The shared
+Markdown reader only supplies a page display list; the T1 adapter classifies
+that list as monochrome or grayscale. A loaded raster image, a non-black/white
+fill or border, or non-extreme syntax/text ink makes a page grayscale. This
+keeps code backgrounds, table header fills, gray syntax spans, and images away
+from the fast one-bit page-turn path without adding device concepts to
+`prs-markdown`.
+
+The selected policy is:
+
+| Event | Dirty region | Policy |
+| --- | --- | --- |
+| First draw, full redraw, details entry/exit, or resume | Full screen | Forced, synchronous GC16 |
+| Monochrome text page turn | Document viewport | Asynchronous DU for four completed turns, then forced synchronous GC16 cleanup |
+| Grayscale/image page turn | Document viewport | Forced, synchronous GC16 |
+| Status-only change while reading | Status bar | Asynchronous DU; the document region is not submitted |
+| Details/status/input diagnostics | Existing details region | Asynchronous DU with pixel damage |
+| Retained link/interaction message | Document viewport | Asynchronous DU with pixel damage |
+
+The first four ordinary text page turns are intentionally queued with DU. The
+fifth waits for the preceding marker and submits a forced GC16 update over the
+document region, which bounds the fast-update run and provides a quality
+cleanup. Any grayscale/image page or forced full redraw resets the counter;
+status and transient updates do not consume it. `NativeDisplay` still compares
+the complete packed frame and promotes a change outside the semantic hint to
+GC16. This keeps unexpected status/document changes from being silently
+omitted.
+
+The policy is stateful only at the display boundary. `ReaderEvent::PageChanged`
+and navigation events update the logical reader page first; choosing DU,
+promoting to GC16, waiting for a marker, or retrying the same rendered frame
+does not call pagination again. A failed submission does not advance the
+cleanup counter.
+
+The available waveform choices were accepted by the tested T1 firmware and
+measured in the earlier marker experiments: DU was about 273 ms for a small
+marker and 377--381 ms for live touch-region updates, GC4 about 614 ms, GC16
+about 700 ms, and A2 about 687 ms. GC16 is therefore used for intentional
+grayscale rather than A2 or GC4 based solely on latency. These tests measured
+driver acceptance and completion time; they did not measure optical ghosting,
+because a framebuffer capture cannot see the panel surface. The four-turn
+cleanup cadence is consequently a conservative starting policy. A hardware
+follow-up should turn pages repeatedly through the checked-in plain-text,
+table/code, and image documents, inspect the panel after each four-turn run,
+and adjust the constant only from that optical observation. No fresh hardware
+was connected in the MR-17 implementation runner.
+
 The input devices are:
 
 | Node | Name | Handlers / role |
