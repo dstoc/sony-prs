@@ -137,15 +137,18 @@ providing a document browser. Stage the checked-in smoke-test document before
 starting the native runtime:
 
 ```sh
-adb shell mkdir -p /data/local/tmp/prs-t1-markdown
-adb push docs/prs-t1/development.md /data/local/tmp/prs-t1-markdown/index.md
+adb push docs/prs-t1/development.md /mnt/sdcard/index.md
 ```
+
+The default document is `/mnt/sdcard/index.md`, which avoids requiring a
+separate staging directory on the development device. The document root and
+file can still be overridden for another layout.
 
 The default configuration is:
 
 | Environment variable | Default | Purpose |
 | --- | --- | --- |
-| `PRS_T1_DOCUMENT_ROOT` | `/data/local/tmp/prs-t1-markdown` | Root for Markdown and relative resources. |
+| `PRS_T1_DOCUMENT_ROOT` | `/mnt/sdcard` | Root for Markdown and relative resources. |
 | `PRS_T1_DOCUMENT` | `index.md` | Root-relative document opened at startup. |
 | `PRS_T1_FONT` | `/system/fonts/DroidSans.ttf` | Required regular TrueType face. |
 | `PRS_T1_FONT_BOLD` | regular face | Optional bold face. |

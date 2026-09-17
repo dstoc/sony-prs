@@ -24,7 +24,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-pub const DEFAULT_DOCUMENT_ROOT: &str = "/data/local/tmp/prs-t1-markdown";
+pub const DEFAULT_DOCUMENT_ROOT: &str = "/mnt/sdcard";
 pub const DEFAULT_DOCUMENT: &str = "index.md";
 pub const DEFAULT_FONT: &str = "/system/fonts/DroidSans.ttf";
 pub const DEFAULT_MONOSPACE_FONT: &str = "/system/fonts/DroidSansMono.ttf";

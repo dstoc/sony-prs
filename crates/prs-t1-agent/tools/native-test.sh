@@ -7,7 +7,7 @@ REMOTE_LOG=${REMOTE_LOG:-/data/local/tmp/prs-t1-native-test.log}
 LOCAL_AGENT=${PRS_T1_AGENT_BINARY:-target/armv5te-unknown-linux-musleabi/release/prs-t1-agent}
 FRAMEBUFFER=${PRS_T1_FRAMEBUFFER:-/dev/graphics/fb0}
 SUSPEND_MODE=${PRS_T1_SUSPEND_MODE:-standby}
-DOCUMENT_ROOT=${PRS_T1_DOCUMENT_ROOT:-/data/local/tmp/prs-t1-markdown}
+DOCUMENT_ROOT=${PRS_T1_DOCUMENT_ROOT:-/mnt/sdcard}
 DOCUMENT=${PRS_T1_DOCUMENT:-index.md}
 
 usage() {
