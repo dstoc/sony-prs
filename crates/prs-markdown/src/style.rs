@@ -142,12 +142,12 @@ pub struct ReaderStyle {
     pub table_min_font_size: u32,
     /// Smallest table line height used by compact and grouped fallback modes.
     pub table_min_line_height: u32,
-    /// Monochrome cell border used for table framing and row separators.
+    /// Monochrome one-pixel grid rule used for table framing and separators.
     pub table_border: BorderStyle,
-    /// A heavier rule distinguishes the header without relying on colour.
+    /// Optional stronger rule for the single header-to-body separator.
     pub table_header_border: BorderStyle,
-    /// Optional light fill behind headers; bold text and the heavier rule are
-    /// the primary header distinction for monochrome displays.
+    /// Optional light fill behind headers; bold text and this fill distinguish
+    /// headers from body rows on monochrome displays.
     pub table_header_fill: FillStyle,
 }
 
@@ -189,7 +189,7 @@ impl Default for ReaderStyle {
             table_min_font_size: 12,
             table_min_line_height: 16,
             table_border: BorderStyle::new(Color::BLACK, 1),
-            table_header_border: BorderStyle::new(Color::BLACK, 2),
+            table_header_border: BorderStyle::new(Color::BLACK, 1),
             table_header_fill: FillStyle::new(Color::rgb(238, 238, 238)),
         }
     }
