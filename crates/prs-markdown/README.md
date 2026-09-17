@@ -139,9 +139,14 @@ footnotes, alerts, and images. Supported local image formats are PNG, JPEG,
 and WebP; missing, corrupt, external, unsupported, or over-budget images use
 visible alt-text fallback.
 
-Fenced code uses a build-generated bounded Syntect bundle for shell/bash, Rust,
-Python, JavaScript, TypeScript, JSON, YAML, TOML, C, C++, Go, HTML, CSS, SQL,
-diff/patch, and Markdown. Unknown languages remain lossless plain monospace.
+Fenced code uses Syntect 5.3.0's bundled upstream syntax definitions with the
+Oniguruma runtime backend. The set contains 75 definitions and embeds the
+368,467-byte `default_newlines.packdump` payload. The application keeps its
+fence aliases: TypeScript aliases use Syntect's JavaScript definition, and
+TOML aliases use its YAML definition because those two definitions are not in
+Syntect's default set. Shell/bash, Rust, Python, JavaScript, TypeScript, JSON,
+YAML, TOML, C, C++, Go, HTML, CSS, SQL, diff/patch, and Markdown remain
+recognized. Unknown languages remain lossless plain monospace.
 Mermaid and other diagram fences therefore show their source. Raw HTML shows
 its source and is never executed. Dollar math, when enabled by caller-supplied
 Comrak options, preserves delimiters as text; there is no equation or browser

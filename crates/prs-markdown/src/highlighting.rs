@@ -1,9 +1,8 @@
 //! Bounded, stateful syntax highlighting for fenced code blocks.
 //!
-//! Syntect is deliberately kept behind this module. The build script filters
-//! a deliberately selected set of small grammars for the languages used most
-//! often in agent output and serializes the linked set; the reader only loads
-//! that generated packdump.
+//! Syntect is deliberately kept behind this module. The reader loads Syntect's
+//! bundled upstream syntax definitions and normalizes the language names used
+//! in Markdown fences before selecting a syntax.
 
 use std::sync::OnceLock;
 
@@ -12,9 +11,6 @@ use syntect::highlighting::{
     Color, FontStyle, Style, StyleModifier, Theme, ThemeItem, ThemeSettings,
 };
 use syntect::parsing::{SyntaxReference, SyntaxSet};
-
-const SYNTAX_BYTES: &[u8] =
-    include_bytes!(concat!(env!("OUT_DIR"), "/prs-markdown-syntaxes.packdump"));
 
 /// The T1 uses grayscale updates for syntax pages. Keep every secondary role
 /// on a dark, explicit level so the code surface does not turn it into a
@@ -105,22 +101,48 @@ const EINK_GRAY_LEVELS: &[u8] = &[0, 16, 32, 48, 64, 80, 96, 112, 128];
 
 /// The deliberately supported language names and common fenced-code aliases.
 pub const SUPPORTED_LANGUAGES: &[&str] = &[
-    "shell/bash",
+    "shell",
+    "bash",
+    "sh",
+    "zsh",
+    "shell-session",
+    "console",
+    "terminal",
     "Rust",
+    "rs",
     "Python",
+    "py",
+    "python3",
     "JavaScript",
+    "js",
+    "jsx",
     "TypeScript",
+    "ts",
+    "tsx",
     "JSON",
+    "jsonc",
     "YAML",
+    "yml",
     "TOML",
     "C",
+    "h",
     "C++",
+    "cpp",
+    "cxx",
+    "cc",
+    "hpp",
     "Go",
+    "golang",
     "HTML",
+    "htm",
+    "xhtml",
     "CSS",
     "SQL",
-    "diff/patch",
+    "diff",
+    "patch",
     "Markdown",
+    "md",
+    "mkdown",
 ];
 
 /// A highlighted source line. Source newlines are represented by the line
@@ -165,7 +187,7 @@ pub trait CodeHighlighter {
     fn highlight(&self, language: Option<&str>, source: &str) -> HighlightedCode;
 }
 
-/// Syntect-backed highlighter using the generated bounded syntax set.
+/// Syntect-backed highlighter using Syntect's bundled upstream syntax set.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SyntectHighlighter;
 
@@ -174,12 +196,7 @@ impl SyntectHighlighter {
         Self
     }
 
-    /// Size of the serialized runtime syntax payload in bytes.
-    pub const fn bundle_size() -> usize {
-        SYNTAX_BYTES.len()
-    }
-
-    /// Number of grammars in the generated runtime set.
+    /// Number of grammars in Syntect's bundled upstream syntax set.
     pub fn syntax_count() -> usize {
         syntax_set().syntaxes().len()
     }
@@ -201,10 +218,7 @@ impl CodeHighlighter for SyntectHighlighter {
 
 fn syntax_set() -> &'static SyntaxSet {
     static SET: OnceLock<SyntaxSet> = OnceLock::new();
-    SET.get_or_init(|| {
-        syntect::dumps::from_uncompressed_data(SYNTAX_BYTES)
-            .expect("prs-markdown generated syntax bundle must be valid")
-    })
+    SET.get_or_init(SyntaxSet::load_defaults_newlines)
 }
 
 fn theme() -> &'static Theme {
@@ -259,10 +273,15 @@ fn normalize_language(language: &str) -> Option<&str> {
         "rust" | "rs" => Some("rs"),
         "python" | "py" | "python3" => Some("py"),
         "javascript" | "js" | "jsx" => Some("js"),
-        "typescript" | "ts" | "tsx" => Some("ts"),
+        // Syntect's default upstream set has no separate TypeScript grammar.
+        // JavaScript is the closest real grammar and handles shared syntax.
+        "typescript" | "ts" | "tsx" => Some("js"),
         "json" | "jsonc" => Some("json"),
         "yaml" | "yml" => Some("yaml"),
-        "toml" => Some("toml"),
+        // Syntect 5.3.0's default upstream set has no TOML grammar. YAML is
+        // the closest bundled data-file grammar and keeps TOML fences styled
+        // with a real upstream definition.
+        "toml" => Some("yaml"),
         "c" | "h" => Some("c"),
         "c++" | "cpp" | "cxx" | "cc" | "hpp" => Some("cpp"),
         "go" | "golang" => Some("go"),
@@ -280,9 +299,9 @@ fn highlight_with_syntax(syntax: &SyntaxReference, source: &str) -> Option<Highl
     let mut lines = Vec::new();
 
     for source_line in source_lines(source) {
-        // The generated grammars were linked with newline-aware matching.
-        // Supplying a newline to the parser while omitting it from the owned
-        // result preserves multiline state without displaying a synthetic byte.
+        // The bundled grammars use newline-aware matching. Supplying a newline
+        // to the parser while omitting it from the owned result preserves
+        // multiline state without displaying a synthetic byte.
         let parser_line = format!("{source_line}\n");
         let highlighted = highlighter
             .highlight_line(&parser_line, syntax_set())
@@ -354,52 +373,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn selected_bundle_is_small_and_contains_required_grammars() {
-        assert!(SyntectHighlighter::bundle_size() < 300_000);
-        assert!(SyntectHighlighter::syntax_count() >= 17);
-        for language in [
-            "bash",
-            "rust",
-            "python",
-            "javascript",
-            "typescript",
-            "json",
-            "yaml",
-            "toml",
-            "c",
-            "cpp",
-            "go",
-            "html",
-            "css",
-            "sql",
-            "diff",
-            "markdown",
-        ] {
-            assert!(normalize_language(language).is_some(), "{language}");
-        }
+    fn bundled_upstream_set_contains_every_advertised_language() {
+        assert!(SyntectHighlighter::syntax_count() > SUPPORTED_LANGUAGES.len());
+        let missing: Vec<_> = SUPPORTED_LANGUAGES
+            .iter()
+            .filter_map(|language| {
+                let token = normalize_language(language).expect("advertised language normalizes");
+                syntax_set()
+                    .find_syntax_by_token(token)
+                    .is_none()
+                    .then_some((language, token))
+            })
+            .collect();
+        assert!(missing.is_empty(), "missing upstream grammars: {missing:?}");
     }
 
     #[test]
     fn every_required_language_uses_the_selected_runtime_set() {
         let highlighter = SyntectHighlighter::new();
-        for language in [
-            "bash",
-            "rust",
-            "python",
-            "javascript",
-            "typescript",
-            "json",
-            "yaml",
-            "toml",
-            "c",
-            "cpp",
-            "go",
-            "html",
-            "css",
-            "sql",
-            "diff",
-            "markdown",
-        ] {
+        for language in SUPPORTED_LANGUAGES {
             assert!(
                 highlighter
                     .highlight(Some(language), "keyword = 1")
@@ -484,5 +476,83 @@ mod tests {
                 style.font_style()
             );
         }
+    }
+
+    #[test]
+    fn complex_language_constructs_are_lossless() {
+        let rust = assert_highlighting_is_lossless(
+            "rust",
+            r####"let raw = r###"contains "# and // text"###;
+/* outer comment
+   /* nested comment */
+   still a comment */
+fn main() {}"####,
+        );
+        assert!(contains_styled_text(&rust, "contains"));
+        assert!(rust.lines[2].spans.iter().all(|span| span.italic));
+
+        let shell = assert_highlighting_is_lossless(
+            "shell",
+            r#"value=$(printf '%s' "${HOME:-/tmp}")
+cat <<EOF
+$value
+EOF"#,
+        );
+        assert!(contains_styled_text(&shell, "printf"));
+        assert!(contains_styled_text(&shell, "EOF"));
+
+        let python = assert_highlighting_is_lossless(
+            "python",
+            r#"doc = """first line
+second line {value}
+"""
+print(doc)"#,
+        );
+        assert!(contains_styled_text(&python, "first line"));
+
+        let javascript = assert_highlighting_is_lossless(
+            "javascript",
+            "const message = `hello ${name}`;\nconst pattern = /a[b-d]+/gi;",
+        );
+        assert!(contains_styled_text(&javascript, "hello"));
+        assert!(contains_styled_text(&javascript, "/"));
+
+        let html = assert_highlighting_is_lossless(
+            "html",
+            "<style>body { color: red; }</style>\n<script>const value = `${name}`;</script>",
+        );
+        assert!(contains_styled_text(&html, "color"));
+        assert!(contains_styled_text(&html, "const"));
+
+        let markdown = assert_highlighting_is_lossless(
+            "markdown",
+            "# Heading\n\n[link](https://example.com) and `inline code`\n\n```rust\nlet value = 1;\n```",
+        );
+        assert!(contains_styled_text(&markdown, "Heading"));
+        assert!(contains_styled_text(&markdown, "rust"));
+    }
+
+    fn assert_highlighting_is_lossless(language: &str, source: &str) -> HighlightedCode {
+        let output = SyntectHighlighter.highlight(Some(language), source);
+        assert!(output.recognized, "{language} should be recognized");
+        let expected_lines = source_lines(source);
+        let actual_lines: Vec<String> = output
+            .lines
+            .iter()
+            .map(|line| line.spans.iter().map(|span| span.text.as_str()).collect())
+            .collect();
+        assert_eq!(
+            actual_lines, expected_lines,
+            "{language} changed source text"
+        );
+        output
+    }
+
+    fn contains_styled_text(code: &HighlightedCode, text: &str) -> bool {
+        code.lines.iter().any(|line| {
+            line.spans
+                .iter()
+                .any(|span| span.text.contains(text) && (span.ink != 0 || span.bold || span.italic))
+        })
     }
 }
