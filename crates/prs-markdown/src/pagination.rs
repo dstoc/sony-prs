@@ -917,7 +917,13 @@ fn add_table_decoration(
         return;
     };
     let border_width = style.table_border.width.max(1);
+    let border_style = if row.header {
+        style.table_header_border
+    } else {
+        style.table_border
+    };
     let mut cell_x = group.x;
+    let multiline = row.line_range.len() > 1;
     for (column_index, column_width) in group.widths.iter().enumerate() {
         let remaining = group
             .width
@@ -942,15 +948,56 @@ fn add_table_decoration(
                 style: style.table_header_fill,
             });
         }
-        page.push_command(DisplayCommand::Border {
-            bounds,
-            style: if row.header {
-                style.table_header_border
-            } else {
-                style.table_border
-            },
-        });
+        if multiline {
+            let line_width = border_style.width.max(1).min(cell_width);
+            let line_height = line.bounds.size.height;
+            let left = Rect::new(
+                Point::new(cell_x, line.bounds.top_left.y),
+                embedded_graphics::geometry::Size::new(line_width, line_height),
+            );
+            let right = Rect::new(
+                Point::new(
+                    cell_x.saturating_add(cell_width.saturating_sub(line_width) as i32),
+                    line.bounds.top_left.y,
+                ),
+                embedded_graphics::geometry::Size::new(line_width, line_height),
+            );
+            page.push_command(DisplayCommand::Rule {
+                bounds: translate(left, page_offset),
+                style: border_style,
+            });
+            page.push_command(DisplayCommand::Rule {
+                bounds: translate(right, page_offset),
+                style: border_style,
+            });
+        } else {
+            page.push_command(DisplayCommand::Border {
+                bounds,
+                style: border_style,
+            });
+        }
         cell_x = cell_x.saturating_add(cell_width as i32);
+    }
+
+    if multiline {
+        let horizontal_height = border_style.width.max(1);
+        let y = if line_index == row.line_range.start {
+            line.bounds.top_left.y
+        } else if line_index + 1 == row.line_range.end {
+            line_bottom(line.bounds).saturating_sub(horizontal_height as i32)
+        } else {
+            return;
+        };
+        page.push_command(DisplayCommand::Rule {
+            bounds: translate(
+                Rect::new(
+                    Point::new(group.x, y),
+                    embedded_graphics::geometry::Size::new(group.width, horizontal_height),
+                ),
+                page_offset,
+            ),
+            style: border_style,
+        });
     }
 }
 
@@ -964,7 +1011,7 @@ fn line_bottom(rectangle: Rect) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::document::{Block, Document, Inline, ListItem};
+    use crate::document::{Block, Document, Inline, ListItem, Table};
     use crate::geometry::Viewport;
     use crate::layout::{LayoutBlock, LayoutBlockKind, LayoutEngine, LayoutLine};
     use crate::style::Insets;
@@ -1452,6 +1499,132 @@ mod tests {
     }
 
     #[test]
+    fn multiline_table_rows_have_only_outer_horizontal_boundaries() {
+        let style = pagination_style();
+        let document = Document::from_blocks(vec![Block::Table(Table {
+            headers: vec![
+                vec![Inline::Text("Key".into())],
+                vec![Inline::Text("Detail".into())],
+            ],
+            rows: vec![vec![
+                vec![Inline::Text("row".into())],
+                vec![Inline::Text(
+                    "A long detail cell wraps across several display lines without changing the logical row."
+                        .into(),
+                )],
+            ]],
+            alignments: Vec::new(),
+        })]);
+        let layout = LayoutEngine::new(style).layout(&document, Viewport::new(120, 200));
+        let table_block = &layout.blocks()[0];
+        let table = table_block.table.as_ref().expect("table metadata");
+        let row = table
+            .rows
+            .iter()
+            .find(|row| !row.header)
+            .expect("data row metadata");
+        assert!(row.line_range.len() > 1);
+        let group = &table.groups[row.group];
+        let pages = Paginator::new(style).paginate(&layout);
+        assert_eq!(pages.len(), 1);
+
+        let horizontal_rules = pages[0]
+            .display_list()
+            .iter()
+            .filter_map(|command| match command {
+                DisplayCommand::Rule {
+                    bounds,
+                    style: rule_style,
+                } if *rule_style == style.table_border && bounds.size.width == group.width => {
+                    Some(*bounds)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let row_start = table_block.lines[row.line_range.start].bounds.top_left.y;
+        let row_end = line_bottom(table_block.lines[row.line_range.end.saturating_sub(1)].bounds)
+            .saturating_sub(style.table_border.width.max(1) as i32);
+
+        assert_eq!(horizontal_rules.len(), 2);
+        assert_eq!(
+            horizontal_rules
+                .iter()
+                .map(|bounds| bounds.top_left.y)
+                .collect::<Vec<_>>(),
+            vec![row_start, row_end]
+        );
+    }
+
+    #[test]
+    fn grouped_multiline_rows_have_only_outer_horizontal_boundaries() {
+        let style = pagination_style();
+        let document = Document::from_blocks(vec![Block::Table(Table {
+            headers: vec![
+                vec![Inline::Text("Key".into())],
+                vec![Inline::Text("State".into())],
+                vec![Inline::Text("Owner".into())],
+                vec![Inline::Text("Detail".into())],
+            ],
+            rows: vec![vec![
+                vec![Inline::Text("row".into())],
+                vec![Inline::Text("ready".into())],
+                vec![Inline::Text("reader".into())],
+                vec![Inline::Text(
+                    "A long grouped continuation cell wraps across several display lines.".into(),
+                )],
+            ]],
+            alignments: Vec::new(),
+        })]);
+        let layout = LayoutEngine::new(style).layout(&document, Viewport::new(50, 600));
+        let table_block = &layout.blocks()[0];
+        let table = table_block.table.as_ref().expect("table metadata");
+        assert_eq!(table.mode, crate::layout::TableLayoutMode::Grouped);
+        assert!(table.groups.len() > 1);
+        assert!(table
+            .rows
+            .iter()
+            .any(|row| !row.header && row.line_range.len() > 1));
+
+        let pages = Paginator::new(style).paginate(&layout);
+        assert_eq!(pages.len(), 1);
+        let expected = table
+            .rows
+            .iter()
+            .filter(|row| !row.header && row.line_range.len() > 1)
+            .flat_map(|row| {
+                let group = &table.groups[row.group];
+                let start = table_block.lines[row.line_range.start].bounds.top_left.y;
+                let end =
+                    line_bottom(table_block.lines[row.line_range.end.saturating_sub(1)].bounds)
+                        .saturating_sub(style.table_border.width.max(1) as i32);
+                [(group.width, start), (group.width, end)]
+            })
+            .collect::<Vec<_>>();
+        let mut actual = pages[0]
+            .display_list()
+            .iter()
+            .filter_map(|command| match command {
+                DisplayCommand::Rule {
+                    bounds,
+                    style: rule_style,
+                } if *rule_style == style.table_border
+                    && table
+                        .groups
+                        .iter()
+                        .any(|group| group.width == bounds.size.width) =>
+                {
+                    Some((bounds.size.width, bounds.top_left.y))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let mut expected = expected;
+        actual.sort_unstable();
+        expected.sort_unstable();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
     fn oversized_table_rows_split_deterministically_after_first_placement() {
         let style = pagination_style();
         let document = Document::from_blocks(vec![Block::Table(crate::Table {
@@ -1473,5 +1646,35 @@ mod tests {
             .all(|page| page.display_list().iter().any(
                 |command| matches!(command, DisplayCommand::Text { text, .. } if text == "Key")
             )));
+
+        let table = layout.blocks()[0].table.as_ref().expect("table metadata");
+        let row = table
+            .rows
+            .iter()
+            .find(|row| !row.header)
+            .expect("oversized row metadata");
+        let group = &table.groups[row.group];
+        let horizontal_rules = first
+            .iter()
+            .flat_map(|page| page.display_list())
+            .filter(|command| {
+                matches!(
+                    command,
+                    DisplayCommand::Rule { bounds, style: rule_style }
+                        if *rule_style == style.table_border && bounds.size.width == group.width
+                )
+            })
+            .count();
+        assert_eq!(horizontal_rules, 2);
+        assert!(first.iter().skip(1).all(|page| {
+            page.display_list().iter().any(|command| {
+                matches!(
+                    command,
+                    DisplayCommand::Rule { bounds, style: rule_style }
+                        if *rule_style == style.table_border
+                            && bounds.size.width == style.table_border.width.max(1)
+                )
+            })
+        }));
     }
 }
