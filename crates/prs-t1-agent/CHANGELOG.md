@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.3.0](https://github.com/dstoc/sony-prs/compare/prs-t1-agent-v0.2.0...prs-t1-agent-v0.3.0) (2026-09-17)
+
+
+### Features
+
+* integrate Markdown reader into T1 UI ([fa16905](https://github.com/dstoc/sony-prs/commit/fa169055a09499f5ee451e48ac280990cd6e68c2))
+
+
+### Bug Fixes
+
+* **release:** update Rust toolchain pin ([73a8c4a](https://github.com/dstoc/sony-prs/commit/73a8c4a1ac343b84b6866d181ae24c2dce587127))
+* **t1:** default reader document to sdcard ([7467402](https://github.com/dstoc/sony-prs/commit/74674029eac92853b6a278df0067d91026035a1e))
+
 ## [0.2.0](https://github.com/dstoc/sony-prs/compare/prs-t1-agent-v0.1.0...prs-t1-agent-v0.2.0) (2026-09-16)
 
 
