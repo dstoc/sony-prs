@@ -124,9 +124,6 @@ pub struct ReaderStyle {
     pub list_item_spacing: u32,
     pub inline_code_background: FillStyle,
     pub code_background: FillStyle,
-    /// A slightly darker fill marks display lines created by wrapping a
-    /// source line, while source-newline lines retain `code_background`.
-    pub code_continuation_background: FillStyle,
     pub thematic_break: BorderStyle,
     /// Horizontal inset applied to each table cell around its text.
     pub table_cell_padding: u32,
@@ -179,7 +176,6 @@ impl Default for ReaderStyle {
             list_item_spacing: 4,
             inline_code_background: FillStyle::new(Color::rgb(242, 242, 242)),
             code_background: FillStyle::new(Color::rgb(248, 248, 248)),
-            code_continuation_background: FillStyle::new(Color::rgb(238, 238, 238)),
             thematic_break: BorderStyle::new(Color::rgb(128, 128, 128), 1),
             table_cell_padding: 3,
             table_cell_vertical_padding: 3,

@@ -433,22 +433,17 @@ mod tests {
             EINK_PALETTE.variable.ink,
         ];
         let style = crate::style::ReaderStyle::default();
-        let backgrounds = [
-            style.code_background.color.red,
-            style.code_continuation_background.color.red,
-        ];
+        let background = style.code_background.color.red;
 
         for (index, ink) in secondary.iter().enumerate() {
             assert!(
                 secondary[..index].iter().all(|previous| previous != ink),
                 "secondary palette roles must keep distinct ink levels"
             );
-            for background in backgrounds {
-                assert!(
-                    background.saturating_sub(*ink) >= 128,
-                    "ink {ink} is too light for code background {background}"
-                );
-            }
+            assert!(
+                background.saturating_sub(*ink) >= 128,
+                "ink {ink} is too light for code background {background}"
+            );
         }
 
         for level in EINK_GRAY_LEVELS {

@@ -764,11 +764,7 @@ fn add_line(
     if code_surface {
         page.push_command(DisplayCommand::Fill {
             bounds: translate(line.bounds, page_offset),
-            style: if line.wrapped {
-                style.code_continuation_background
-            } else {
-                style.code_background
-            },
+            style: style.code_background,
         });
     }
     if kind == LayoutBlockKind::Table {
@@ -1164,17 +1160,16 @@ mod tests {
     }
 
     #[test]
-    fn code_surface_fills_blank_and_wrapped_lines_without_fallback_rules() {
+    fn code_surface_fills_blank_and_wrapped_lines_continuously_without_fallback_rules() {
         let style = ReaderStyle {
             code_block_padding: 4,
             code_background: FillStyle::new(Color::rgb(240, 240, 240)),
-            code_continuation_background: FillStyle::new(Color::rgb(236, 236, 236)),
             ..pagination_style()
         };
         let document = Document::from_blocks(vec![Block::CodeBlock {
             language: None,
             info: None,
-            code: "short\n\nThis deliberately long source line wraps inside the padded code surface and keeps every continuation aligned".into(),
+            code: "short\n\nThis deliberately long source line wraps inside the padded code surface and keeps every continuation aligned\nThis second long source line also wraps so adjacent source lines share one continuous surface".into(),
         }]);
         let layout = LayoutEngine::new(style).layout(&document, Viewport::new(58, 500));
         let code_block = &layout.blocks()[0];
@@ -1193,9 +1188,8 @@ mod tests {
             bounds.top_left.x == style.page_padding.left as i32
                 && bounds.size.width == 58 - style.page_padding.left - style.page_padding.right
         }));
-        assert!(fills
-            .iter()
-            .any(|(_, fill)| *fill == style.code_continuation_background));
+        assert!(fills.iter().all(|(_, fill)| *fill == style.code_background));
+        assert!(code_block.lines.iter().filter(|line| line.wrapped).count() >= 2);
         assert!(!page
             .display_list()
             .iter()
@@ -1224,9 +1218,14 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(fills.len(), quote.lines.len());
-        assert!(fills.iter().zip(&quote.lines).all(|((bounds, _), line)| {
-            bounds.top_left == line.bounds.top_left && bounds.size == line.bounds.size
-        }));
+        assert!(fills
+            .iter()
+            .zip(&quote.lines)
+            .all(|((bounds, fill), line)| {
+                bounds.top_left == line.bounds.top_left
+                    && bounds.size == line.bounds.size
+                    && *fill == style.code_background
+            }));
         assert!(!page.display_list().iter().any(|command| {
             matches!(
                 command,
@@ -1527,6 +1526,17 @@ mod tests {
                     if *style == pagination_style().code_background)
             })
         }));
+        assert!(pages
+            .iter()
+            .flat_map(|page| page.display_list())
+            .all(|command| {
+                !matches!(command, DisplayCommand::Fill { .. })
+                    || matches!(
+                        command,
+                        DisplayCommand::Fill { style, .. }
+                            if *style == pagination_style().code_background
+                    )
+            }));
         assert!(pages.iter().any(|page| {
             page.display_list().iter().any(|command| {
                 matches!(command, DisplayCommand::Rule { style, .. }
