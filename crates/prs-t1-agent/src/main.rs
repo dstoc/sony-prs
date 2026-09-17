@@ -5,6 +5,8 @@ mod framebuffer;
 mod input;
 mod reader;
 mod runtime;
+#[cfg(any(target_arch = "arm", test))]
+mod soft_float;
 mod status;
 
 use crate::framebuffer::WaveformMode;
