@@ -354,11 +354,16 @@ impl<M: TextMeasurer> LayoutEngine<M> {
                     None,
                 )
             }
-            Block::List { ordered, items } => (
+            Block::List {
+                ordered,
+                start,
+                items,
+            } => (
                 LayoutBlockKind::List,
                 None,
                 self.list_lines_with_images(
                     *ordered,
+                    *start,
                     items,
                     start_y,
                     x,
@@ -518,6 +523,7 @@ impl<M: TextMeasurer> LayoutEngine<M> {
     fn list_lines_with_images(
         &self,
         ordered: bool,
+        start: usize,
         items: &[ListItem],
         start_y: i32,
         x: i32,
@@ -528,6 +534,7 @@ impl<M: TextMeasurer> LayoutEngine<M> {
         let mut result = Vec::new();
         self.append_list_lines_with_images(
             ordered,
+            start,
             items,
             start_y,
             x,
@@ -546,6 +553,7 @@ impl<M: TextMeasurer> LayoutEngine<M> {
     fn append_list_lines_with_images(
         &self,
         ordered: bool,
+        start: usize,
         items: &[ListItem],
         start_y: i32,
         x: i32,
@@ -563,7 +571,7 @@ impl<M: TextMeasurer> LayoutEngine<M> {
             let marker = if item.task.is_task() && !ordered {
                 String::new()
             } else {
-                list_marker(ordered, index)
+                list_marker(ordered, start, index)
             };
             let mut spans = Vec::new();
             if !item.task.is_task() {
@@ -1758,9 +1766,10 @@ fn collect_spans(
     }
 }
 
-fn list_marker(ordered: bool, index: usize) -> String {
+fn list_marker(ordered: bool, start: usize, index: usize) -> String {
+    let ordinal = start.saturating_add(index);
     if ordered {
-        format!("{}. ", index + 1)
+        format!("{ordinal}. ")
     } else {
         "• ".to_owned()
     }
@@ -2274,10 +2283,12 @@ mod tests {
         parent.task = TaskState::Checked;
         parent.children.push(Block::List {
             ordered: false,
+            start: 1,
             items: vec![nested],
         });
         let document = Document::from_blocks(vec![Block::List {
             ordered: true,
+            start: 1,
             items: vec![parent],
         }]);
         let layout = LayoutEngine::new(style()).layout(&document, Viewport::new(180, 300));
@@ -2299,6 +2310,45 @@ mod tests {
             .iter()
             .any(|fragment| fragment.bounds.top_left.x > checkbox_x));
         assert!(lines[1].bounds.top_left.x > lines[0].bounds.top_left.x);
+    }
+
+    #[test]
+    fn ordered_list_markers_preserve_source_start_and_increment_items() {
+        let document = Document::from_blocks(vec![Block::List {
+            ordered: true,
+            start: 5,
+            items: vec![
+                ListItem::new(vec![Inline::Text("first".into())]),
+                ListItem::new(vec![Inline::Text("second".into())]),
+            ],
+        }]);
+        let layout = LayoutEngine::new(style()).layout(&document, Viewport::new(180, 300));
+
+        assert_eq!(all_text(&layout.blocks()[0].lines), "5. first6. second");
+    }
+
+    #[test]
+    fn nested_ordered_lists_keep_their_own_source_starts() {
+        let mut outer_item = ListItem::new(vec![Inline::Text("outer".into())]);
+        outer_item.children.push(Block::List {
+            ordered: true,
+            start: 8,
+            items: vec![
+                ListItem::new(vec![Inline::Text("inner".into())]),
+                ListItem::new(vec![Inline::Text("next inner".into())]),
+            ],
+        });
+        let document = Document::from_blocks(vec![Block::List {
+            ordered: true,
+            start: 5,
+            items: vec![outer_item],
+        }]);
+        let layout = LayoutEngine::new(style()).layout(&document, Viewport::new(180, 300));
+
+        let text = all_text(&layout.blocks()[0].lines);
+        assert!(text.contains("5. outer"));
+        assert!(text.contains("8. inner"));
+        assert!(text.contains("9. next inner"));
     }
 
     #[test]

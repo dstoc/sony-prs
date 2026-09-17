@@ -175,6 +175,7 @@ impl Converter {
                     .collect();
                 Some(Block::List {
                     ordered: list.list_type == ListType::Ordered,
+                    start: list.start,
                     items,
                 })
             }
@@ -571,12 +572,42 @@ mod tests {
     #[test]
     fn preserves_ordered_list_semantics() {
         let document = parse("3. First\n4. Second").unwrap();
-        let Block::List { ordered, items, .. } = &document.blocks()[0] else {
+        let Block::List {
+            ordered,
+            start,
+            items,
+        } = &document.blocks()[0]
+        else {
             panic!("expected ordered list")
         };
         assert!(*ordered);
+        assert_eq!(*start, 3);
         assert_eq!(items.len(), 2);
         assert!(items.iter().all(|item| item.task == TaskState::None));
+    }
+
+    #[test]
+    fn preserves_nested_ordered_list_start_ordinals() {
+        let document = parse("5. Outer\n\n   8. Inner\n   9. Next inner\n\n6. Next outer").unwrap();
+        let Block::List {
+            ordered: true,
+            start: outer_start,
+            items: outer_items,
+        } = &document.blocks()[0]
+        else {
+            panic!("expected outer ordered list")
+        };
+        assert_eq!(*outer_start, 5);
+        let Block::List {
+            ordered: true,
+            start: inner_start,
+            items: inner_items,
+        } = &outer_items[0].children[0]
+        else {
+            panic!("expected nested ordered list")
+        };
+        assert_eq!(*inner_start, 8);
+        assert_eq!(inner_items.len(), 2);
     }
 
     #[test]

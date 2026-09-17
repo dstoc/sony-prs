@@ -19,6 +19,7 @@ use std::path::{Path, PathBuf};
 const CORPUS: &str = include_str!("fixtures/regression.md");
 const BOUNDARY: &str = include_str!("fixtures/page-boundary.md");
 const TASK_CONTROLS: &str = include_str!("fixtures/task-controls.md");
+const ORDERED_LIST_START: &str = include_str!("fixtures/ordered-list-start.md");
 const GOLDEN_REGULAR: &[u8] = notosans::REGULAR_TTF;
 const GOLDEN_BOLD: &[u8] = notosans::BOLD_TTF;
 const GOLDEN_ITALIC: &[u8] = notosans::ITALIC_TTF;
@@ -36,6 +37,7 @@ const FIXTURES: &[(&str, &str)] = &[
     ("malformed", include_str!("fixtures/malformed.md")),
     ("modern-gfm", include_str!("fixtures/modern-gfm.md")),
     ("page-boundary", BOUNDARY),
+    ("ordered-list-start", ORDERED_LIST_START),
     ("regression", CORPUS),
     (
         "syntax-highlight",
@@ -426,6 +428,29 @@ fn exact_boundary_fixture_retains_canonical_page_ranges() {
         .unwrap()
         .join(" ")
         .contains("following"));
+}
+
+#[test]
+fn ordered_list_start_fixture_preserves_markers_across_pages() {
+    let reader = HostReader::from_source(ORDERED_LIST_START, ReaderStyle::default(), T1_VIEWPORT)
+        .expect("ordered-list fixture should parse");
+    let visible = reader
+        .pagination()
+        .pages()
+        .iter()
+        .flat_map(|page| page.display_list().iter())
+        .filter_map(|command| match command {
+            DisplayCommand::Text { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("");
+
+    assert!(reader.page_count() > 1);
+    assert!(visible.contains("5. Establish"));
+    assert!(visible.contains("8. Nested"));
+    assert!(visible.contains("9. Nested"));
+    assert!(visible.contains("18. Continue"));
 }
 
 #[test]

@@ -1462,12 +1462,14 @@ mod tests {
         nested.children.push(Block::paragraph("nested detail"));
         let document = Document::from_blocks(vec![Block::List {
             ordered: false,
+            start: 1,
             items: vec![
                 ListItem::new(vec![Inline::Text("first item".into())]),
                 {
                     let mut item = ListItem::new(vec![Inline::Text("second item".into())]);
                     item.children.push(Block::List {
                         ordered: false,
+                        start: 1,
                         items: vec![nested],
                     });
                     item
@@ -1494,6 +1496,37 @@ mod tests {
         assert!(rendered.contains("nested detail"));
         assert!(rendered.contains("third item"));
         assert_eq!(rendered.replace(' ', ""), laid_out.replace(' ', ""));
+    }
+
+    #[test]
+    fn ordered_list_markers_remain_source_numbered_across_pages() {
+        let style = pagination_style();
+        let document = Document::from_blocks(vec![Block::List {
+            ordered: true,
+            start: 5,
+            items: vec![
+                ListItem::new(vec![Inline::Text("first".into())]),
+                ListItem::new(vec![Inline::Text("second".into())]),
+                ListItem::new(vec![Inline::Text("third".into())]),
+            ],
+        }]);
+        let layout = LayoutEngine::new(style).layout(&document, Viewport::new(200, 22));
+        let pages = Paginator::new(style).paginate(&layout);
+
+        let rendered: String = pages
+            .iter()
+            .flat_map(|page| page.display_list().iter())
+            .filter_map(|command| match command {
+                DisplayCommand::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(pages.len(), 2);
+        assert_eq!(pages[0].range.end, DocumentCursor::new(0, 2));
+        assert_eq!(pages[1].range.start, DocumentCursor::new(0, 2));
+        assert!(rendered.contains("5. first"));
+        assert!(rendered.contains("6. second"));
+        assert!(rendered.contains("7. third"));
     }
 
     #[test]

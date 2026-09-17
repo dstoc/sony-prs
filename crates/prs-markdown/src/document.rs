@@ -179,6 +179,9 @@ pub enum Block {
     Paragraph(Vec<Inline>),
     List {
         ordered: bool,
+        /// The source ordinal for the first item. It is `1` for unordered
+        /// lists and for ordered lists without an explicit start value.
+        start: usize,
         items: Vec<ListItem>,
     },
     Quote(Vec<Block>),
