@@ -121,7 +121,10 @@ pub struct ReaderStyle {
     /// Horizontal inset between a fenced-code surface and its text.
     pub code_block_padding: u32,
     pub list_indent: u32,
+    /// Space between item blocks in a loose list, in page-space units.
     pub list_item_spacing: u32,
+    /// Space between item blocks in a tight list, in page-space units.
+    pub tight_list_item_spacing: u32,
     pub inline_code_background: FillStyle,
     pub code_background: FillStyle,
     pub thematic_break: BorderStyle,
@@ -174,6 +177,7 @@ impl Default for ReaderStyle {
             code_block_padding: 8,
             list_indent: 24,
             list_item_spacing: 4,
+            tight_list_item_spacing: 0,
             inline_code_background: FillStyle::new(Color::rgb(242, 242, 242)),
             code_background: FillStyle::new(Color::rgb(248, 248, 248)),
             thematic_break: BorderStyle::new(Color::rgb(128, 128, 128), 1),

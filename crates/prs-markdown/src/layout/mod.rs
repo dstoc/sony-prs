@@ -357,6 +357,7 @@ impl<M: TextMeasurer> LayoutEngine<M> {
             Block::List {
                 ordered,
                 start,
+                tight,
                 items,
             } => (
                 LayoutBlockKind::List,
@@ -364,6 +365,7 @@ impl<M: TextMeasurer> LayoutEngine<M> {
                 self.list_lines_with_images(
                     *ordered,
                     *start,
+                    *tight,
                     items,
                     start_y,
                     x,
@@ -524,6 +526,7 @@ impl<M: TextMeasurer> LayoutEngine<M> {
         &self,
         ordered: bool,
         start: usize,
+        tight: bool,
         items: &[ListItem],
         start_y: i32,
         x: i32,
@@ -535,6 +538,7 @@ impl<M: TextMeasurer> LayoutEngine<M> {
         self.append_list_lines_with_images(
             ordered,
             start,
+            tight,
             items,
             start_y,
             x,
@@ -554,6 +558,7 @@ impl<M: TextMeasurer> LayoutEngine<M> {
         &self,
         ordered: bool,
         start: usize,
+        tight: bool,
         items: &[ListItem],
         start_y: i32,
         x: i32,
@@ -692,17 +697,32 @@ impl<M: TextMeasurer> LayoutEngine<M> {
             // paragraphs, quotes, or another list. Their x origin advances once
             // per nesting level and past the marker column, so later lines stay
             // in the item's text column.
+            if !tight && !item.content.is_empty() && !item.children.is_empty() {
+                y = y.saturating_add(self.style.paragraph_spacing as i32);
+            }
             for child in item.children.iter().skip(first_child.unwrap_or(0)) {
                 y = y.saturating_add(self.spacing_before(child));
                 let (_, _, lines, _) =
                     self.layout_content(child, y, text_x, text_width, image_height, images);
                 y = append_lines(output, lines, y);
-                y = y.saturating_add(self.spacing_after(child));
+                y = y.saturating_add(self.list_child_spacing(tight, child));
             }
-            y = y.saturating_add(self.style.list_item_spacing as i32);
+            y = y.saturating_add(if tight {
+                self.style.tight_list_item_spacing as i32
+            } else {
+                self.style.list_item_spacing as i32
+            });
         }
 
         y
+    }
+
+    fn list_child_spacing(&self, list_tight: bool, child: &Block) -> i32 {
+        if list_tight && !matches!(child, Block::Heading { .. }) {
+            0
+        } else {
+            self.spacing_after(child)
+        }
     }
 
     fn quote_lines(
@@ -2398,11 +2418,13 @@ mod tests {
         parent.children.push(Block::List {
             ordered: false,
             start: 1,
+            tight: true,
             items: vec![nested],
         });
         let document = Document::from_blocks(vec![Block::List {
             ordered: true,
             start: 1,
+            tight: true,
             items: vec![parent],
         }]);
         let layout = LayoutEngine::new(style()).layout(&document, Viewport::new(180, 300));
@@ -2431,6 +2453,7 @@ mod tests {
         let document = Document::from_blocks(vec![Block::List {
             ordered: true,
             start: 5,
+            tight: true,
             items: vec![
                 ListItem::new(vec![Inline::Text("first".into())]),
                 ListItem::new(vec![Inline::Text("second".into())]),
@@ -2447,6 +2470,7 @@ mod tests {
         outer_item.children.push(Block::List {
             ordered: true,
             start: 8,
+            tight: true,
             items: vec![
                 ListItem::new(vec![Inline::Text("inner".into())]),
                 ListItem::new(vec![Inline::Text("next inner".into())]),
@@ -2455,6 +2479,7 @@ mod tests {
         let document = Document::from_blocks(vec![Block::List {
             ordered: true,
             start: 5,
+            tight: true,
             items: vec![outer_item],
         }]);
         let layout = LayoutEngine::new(style()).layout(&document, Viewport::new(180, 300));
@@ -2470,6 +2495,7 @@ mod tests {
         let document = Document::from_blocks(vec![Block::List {
             ordered: false,
             start: 1,
+            tight: true,
             items: vec![ListItem::new(vec![Inline::Text(
                 "wrapped unordered item keeps continuation text under the item text".into(),
             )])],
@@ -2500,6 +2526,7 @@ mod tests {
         let document = Document::from_blocks(vec![Block::List {
             ordered: true,
             start: 1,
+            tight: true,
             items,
         }]);
         let layout = LayoutEngine::new(style()).layout(&document, Viewport::new(220, 500));
@@ -2512,6 +2539,58 @@ mod tests {
             lines[0].fragments[1].bounds.top_left.x,
             lines[9].fragments[1].bounds.top_left.x
         );
+    }
+
+    #[test]
+    fn task_markers_share_the_item_text_column() {
+        let mut unchecked = ListItem::new(vec![Inline::Text(
+            "unchecked task item with a continuation".into(),
+        )]);
+        unchecked.task = TaskState::Unchecked;
+        let mut checked = ListItem::new(vec![Inline::Text("checked task item".into())]);
+        checked.task = TaskState::Checked;
+        let document = Document::from_blocks(vec![Block::List {
+            ordered: false,
+            start: 1,
+            tight: true,
+            items: vec![unchecked, checked],
+        }]);
+        let layout = LayoutEngine::new(style()).layout(&document, Viewport::new(100, 300));
+        let lines = &layout.blocks()[0].lines;
+        let first_item_text_x = lines
+            .iter()
+            .find_map(|line| {
+                line.fragments
+                    .iter()
+                    .find(|fragment| fragment.text.starts_with("unchecked"))
+                    .map(|fragment| fragment.bounds.top_left.x)
+            })
+            .expect("unchecked task should be laid out");
+        let second_item_line = lines
+            .iter()
+            .find(|line| {
+                line.fragments
+                    .iter()
+                    .any(|fragment| fragment.text == "checked")
+            })
+            .expect("checked task should be laid out");
+
+        assert_eq!(
+            lines
+                .iter()
+                .filter_map(|line| line.task)
+                .collect::<Vec<_>>(),
+            vec![TaskState::Unchecked, TaskState::Checked]
+        );
+        assert!(lines.iter().any(|line| line.task_checkbox_x.is_some()));
+        assert_eq!(
+            second_item_line.fragments[0].bounds.top_left.x,
+            first_item_text_x
+        );
+        assert!(lines
+            .iter()
+            .flat_map(|line| line.fragments.iter())
+            .all(|fragment| !fragment.text.contains("[x]") && !fragment.text.contains("[ ]")));
     }
 
     #[test]
@@ -2532,6 +2611,7 @@ mod tests {
         let document = Document::from_blocks(vec![Block::List {
             ordered: false,
             start: 1,
+            tight: true,
             items: vec![ListItem::new(vec![Inline::Text(
                 "this list item wraps across a page boundary so its continuation starts on the next page".into(),
             )])],
@@ -2563,6 +2643,42 @@ mod tests {
             .display_list()
             .iter()
             .any(|command| matches!(command, DisplayCommand::Text { text, .. } if text == "• ")));
+    }
+
+    #[test]
+    fn tight_and_loose_lists_use_distinct_item_spacing() {
+        let style = style();
+        let tight = Block::List {
+            ordered: false,
+            start: 1,
+            tight: true,
+            items: vec![
+                ListItem::new(vec![Inline::Text("tight one".into())]),
+                ListItem::new(vec![Inline::Text("tight two".into())]),
+            ],
+        };
+        let loose = Block::List {
+            ordered: false,
+            start: 1,
+            tight: false,
+            items: vec![
+                ListItem::new(vec![Inline::Text("loose one".into())]),
+                ListItem::new(vec![Inline::Text("loose two".into())]),
+            ],
+        };
+
+        let tight_layout = LayoutEngine::new(style)
+            .layout(&Document::from_blocks(vec![tight]), Viewport::new(180, 300));
+        let loose_layout = LayoutEngine::new(style)
+            .layout(&Document::from_blocks(vec![loose]), Viewport::new(180, 300));
+        let tight_lines = &tight_layout.blocks()[0].lines;
+        let loose_lines = &loose_layout.blocks()[0].lines;
+        let tight_gap = tight_lines[1].bounds.top_left.y - rect_bottom(&tight_lines[0].bounds);
+        let loose_gap = loose_lines[1].bounds.top_left.y - rect_bottom(&loose_lines[0].bounds);
+
+        assert_eq!(tight_gap, style.tight_list_item_spacing as i32);
+        assert_eq!(loose_gap, style.list_item_spacing as i32);
+        assert!(loose_gap > tight_gap);
     }
 
     #[test]

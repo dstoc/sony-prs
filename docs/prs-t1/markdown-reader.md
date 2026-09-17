@@ -360,6 +360,12 @@ words and URLs split at character boundaries, headings use one configured
 style with a compact level-size reduction, images use decoded grayscale rasters
 when available and alt-text fallbacks otherwise,
 and block quotes use a configured vertical rule with e-reader indentation.
+Tight lists use `ReaderStyle::tight_list_item_spacing`, which defaults to zero
+page-space units. Loose lists use `ReaderStyle::list_item_spacing`, which
+defaults to four page-space units between item blocks. Additional paragraph
+blocks inside loose items use the normal `paragraph_spacing` value, which
+defaults to twelve page-space units. Each nested list applies its own tight or
+loose policy, and task-list items use the same spacing as their parent list.
 Tables use a deterministic sizing pass: short tokens retain useful minimum
 widths, while oversized tokens use the same character-wrap fallback as cell
 layout. Preferred widths come from normally wrapped cell content. The
@@ -382,8 +388,9 @@ legibility and bounded host/device layout over HTML/CSS compatibility.
 The parser stage is implemented by `parse::ComrakParser`. It enables the GFM
 extensions used by agent output (tables, task lists, strikethrough, autolinks,
 footnotes, inline footnotes, and GitHub-style alerts), then copies Comrak's
-arena-backed tree into the owned IR. The IR retains fenced-code info strings,
-link/image destinations, task state, footnote definitions and references,
+arena-backed tree into the owned IR. The IR retains list tightness, fenced-code
+info strings, link/image destinations, task state, footnote definitions and
+references,
 alert titles and kinds, table alignment, heading anchors, source text, and
 source spans for top-level blocks. Comrak nodes, arenas, and their lifetimes
 stop at the parser module; layout and later stages consume only
@@ -399,7 +406,7 @@ owned IR and layout still apply the same reader-oriented fallbacks.
 | Construct | Implemented behaviour and fallback |
 | --- | --- |
 | CommonMark basics | Paragraphs, escaped/literal text, soft and hard breaks, inline code, links, images, and thematic rules are parsed into owned IR and laid out as readable page content. Soft breaks collapse to ordinary whitespace; hard breaks remain line boundaries. |
-| Headings, lists, and quotes | ATX/setext headings (levels 1--6), ordered/unordered lists, nested list children, and block quotes are laid out with reader spacing and indentation. Heading text receives deterministic slug anchors; long lists and quotes split at layout-line boundaries. |
+| Headings, lists, and quotes | ATX/setext headings (levels 1--6), ordered/unordered lists, nested list children, and block quotes are laid out with reader spacing and indentation. Tight and loose lists retain distinct item spacing, including for nested and task lists. Heading text receives deterministic slug anchors; long lists and quotes split at layout-line boundaries. |
 | Emphasis and strikethrough | Emphasis and strong text select the configured italic/bold faces. GFM strikethrough remains visible and adds a strike decoration; it does not remove or hide the content. |
 | GFM task lists | Checked and unchecked items render a fixed-size, high-contrast visual checkbox before readable task text. Checked items use a filled box with a white check mark; unchecked items use an outlined box. There is no task toggle action. |
 | Autolinks | URL, `www`, and email autolinks become semantic links. Local targets navigate through the reader; external targets are returned to the host as `ReaderEvent::ExternalUrl`. |

@@ -182,6 +182,9 @@ pub enum Block {
         /// The source ordinal for the first item. It is `1` for unordered
         /// lists and for ordered lists without an explicit start value.
         start: usize,
+        /// Whether the source list is tight. Loose lists preserve paragraph
+        /// separation between item blocks during layout.
+        tight: bool,
         items: Vec<ListItem>,
     },
     Quote(Vec<Block>),

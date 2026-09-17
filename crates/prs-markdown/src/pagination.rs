@@ -1283,11 +1283,13 @@ mod tests {
         parent.children.push(Block::List {
             ordered: false,
             start: 1,
+            tight: true,
             items: vec![nested],
         });
         let document = Document::from_blocks(vec![Block::List {
             ordered: false,
             start: 1,
+            tight: true,
             items: vec![parent],
         }]);
         let layout = crate::LayoutEngine::new(style).layout(&document, Viewport::new(120, 100));
@@ -1465,6 +1467,7 @@ mod tests {
         let document = Document::from_blocks(vec![Block::List {
             ordered: false,
             start: 1,
+            tight: true,
             items: vec![
                 ListItem::new(vec![Inline::Text("first item".into())]),
                 {
@@ -1472,6 +1475,7 @@ mod tests {
                     item.children.push(Block::List {
                         ordered: false,
                         start: 1,
+                        tight: true,
                         items: vec![nested],
                     });
                     item
@@ -1506,6 +1510,7 @@ mod tests {
         let document = Document::from_blocks(vec![Block::List {
             ordered: true,
             start: 5,
+            tight: true,
             items: vec![
                 ListItem::new(vec![Inline::Text("first".into())]),
                 ListItem::new(vec![Inline::Text("second".into())]),

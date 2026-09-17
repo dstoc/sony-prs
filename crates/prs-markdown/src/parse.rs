@@ -176,6 +176,7 @@ impl Converter {
                 Some(Block::List {
                     ordered: list.list_type == ListType::Ordered,
                     start: list.start,
+                    tight: list.tight,
                     items,
                 })
             }
@@ -575,6 +576,7 @@ mod tests {
         let Block::List {
             ordered,
             start,
+            tight,
             items,
         } = &document.blocks()[0]
         else {
@@ -582,6 +584,7 @@ mod tests {
         };
         assert!(*ordered);
         assert_eq!(*start, 3);
+        assert!(*tight);
         assert_eq!(items.len(), 2);
         assert!(items.iter().all(|item| item.task == TaskState::None));
     }
@@ -593,6 +596,7 @@ mod tests {
             ordered: true,
             start: outer_start,
             items: outer_items,
+            ..
         } = &document.blocks()[0]
         else {
             panic!("expected outer ordered list")
@@ -602,12 +606,35 @@ mod tests {
             ordered: true,
             start: inner_start,
             items: inner_items,
+            ..
         } = &outer_items[0].children[0]
         else {
             panic!("expected nested ordered list")
         };
         assert_eq!(*inner_start, 8);
         assert_eq!(inner_items.len(), 2);
+
+        let tight = parse("- [x] Checked\n- [ ] Open").unwrap();
+        let Block::List {
+            tight: is_tight,
+            items,
+            ..
+        } = &tight.blocks()[0]
+        else {
+            panic!("expected tight task list")
+        };
+        assert!(*is_tight);
+        assert_eq!(items[0].task, TaskState::Checked);
+        assert_eq!(items[1].task, TaskState::Unchecked);
+
+        let loose = parse("- [x] Checked\n\n- [ ] Open").unwrap();
+        let Block::List {
+            tight: is_tight, ..
+        } = &loose.blocks()[0]
+        else {
+            panic!("expected loose task list")
+        };
+        assert!(!*is_tight);
     }
 
     #[test]

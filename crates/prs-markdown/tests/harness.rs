@@ -21,6 +21,7 @@ const BOUNDARY: &str = include_str!("fixtures/page-boundary.md");
 const BLOCK_LIST_CONTENT: &str = include_str!("fixtures/list-block-content.md");
 const TASK_CONTROLS: &str = include_str!("fixtures/task-controls.md");
 const ORDERED_LIST_START: &str = include_str!("fixtures/ordered-list-start.md");
+const LIST_SPACING: &str = include_str!("fixtures/list-spacing.md");
 const GOLDEN_REGULAR: &[u8] = notosans::REGULAR_TTF;
 const GOLDEN_BOLD: &[u8] = notosans::BOLD_TTF;
 const GOLDEN_ITALIC: &[u8] = notosans::ITALIC_TTF;
@@ -88,6 +89,29 @@ fn narrow_list_style() -> ReaderStyle {
         list_indent: 18,
         list_item_spacing: 2,
         ..ReaderStyle::default()
+    }
+}
+
+fn collect_list_states(blocks: &[prs_markdown::Block], states: &mut Vec<bool>) {
+    for block in blocks {
+        match block {
+            prs_markdown::Block::List { tight, items, .. } => {
+                states.push(*tight);
+                for item in items {
+                    collect_list_states(&item.children, states);
+                }
+            }
+            prs_markdown::Block::Quote(children)
+            | prs_markdown::Block::Alert {
+                blocks: children, ..
+            }
+            | prs_markdown::Block::FootnoteDefinition {
+                blocks: children, ..
+            } => {
+                collect_list_states(children, states);
+            }
+            _ => {}
+        }
     }
 }
 
@@ -236,6 +260,56 @@ fn modern_gfm_fixture_has_alert_footnote_and_strike_output() {
     assert!(visible.contains("policy:"));
     assert!(visible.contains("[^reader]:"));
     assert!(visible.contains("flowchart"));
+}
+
+#[test]
+fn list_spacing_fixture_preserves_states_and_matches_narrow_png_goldens() {
+    let viewport = Viewport::new(240, 260);
+    let font_engine = golden_font_engine();
+    let reader = HostReader::from_source_with_measurer(
+        LIST_SPACING,
+        ReaderStyle::default(),
+        viewport,
+        font_engine.clone(),
+    )
+    .expect("list spacing fixture should parse");
+    let mut lists = Vec::new();
+    collect_list_states(reader.document().blocks(), &mut lists);
+    assert_eq!(
+        lists,
+        [true, false, true, false, true, false, true, true, false, false]
+    );
+    let task_list = reader
+        .document()
+        .blocks()
+        .iter()
+        .filter_map(|block| match block {
+            prs_markdown::Block::List { items, .. } => Some(items),
+            _ => None,
+        })
+        .nth(4)
+        .expect("tight task list should be present");
+    assert_eq!(task_list[0].task, prs_markdown::TaskState::Checked);
+    assert_eq!(task_list[1].task, prs_markdown::TaskState::Unchecked);
+
+    let mut renderer = prs_markdown::EmbeddedGraphicsRenderer::new(font_engine);
+    for (page_index, page) in reader.pagination().pages().iter().enumerate() {
+        let image = render_page(page, &mut renderer);
+        assert_eq!(image.width(), viewport.width);
+        assert_eq!(image.height(), viewport.height);
+        assert_png_golden_at(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join(format!(
+                "tests/goldens/list-spacing-narrow-page-{:03}.png",
+                page_index + 1
+            )),
+            Path::new(env!("CARGO_MANIFEST_DIR")).join(format!(
+                "../../target/prs-markdown-golden-failures/list-spacing-narrow-page-{:03}.png",
+                page_index + 1
+            )),
+            &format!("list spacing narrow page {}", page_index + 1),
+            &image,
+        );
+    }
 }
 
 #[test]
