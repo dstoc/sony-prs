@@ -147,6 +147,13 @@ its source and is never executed. Dollar math, when enabled by caller-supplied
 Comrak options, preserves delimiters as text; there is no equation or browser
 layout engine. See the support matrix for the exact fallback contract.
 
+Syntax-highlighted code keeps the monospace face for all metrics. When a
+highlighted span is italic, the renderer applies a deterministic one-pixel per
+four-row shear to glyph coverage. The text bounds clip the shear, and the
+advance width and line metrics remain unchanged, so wrapping and pagination are
+stable. Bold code keeps its bounded one-pixel second pass; bold-italic code
+uses both transforms.
+
 ## Tests, fixtures, and goldens
 
 Run the focused library tests while changing the reader:

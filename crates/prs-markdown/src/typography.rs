@@ -770,6 +770,25 @@ mod tests {
     }
 
     #[test]
+    fn code_emphasis_uses_one_monospace_measurement() {
+        let engine = engine(8);
+        let measurements = [(false, false), (true, false), (false, true), (true, true)]
+            .into_iter()
+            .map(|(bold, italic)| {
+                let style = ReaderTextStyle {
+                    bold,
+                    italic,
+                    code: true,
+                    ..ReaderTextStyle::new(20, 24)
+                };
+                TextMeasurer::measure(&engine, "comment", &style)
+            })
+            .collect::<Vec<_>>();
+
+        assert!(measurements.windows(2).all(|pair| pair[0] == pair[1]));
+    }
+
+    #[test]
     fn line_height_and_baseline_are_consistent() {
         let engine = engine(8);
         let layout = engine.wrap(&[TextRun::new("Hello", TextStyle::regular(20))], 200);

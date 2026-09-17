@@ -433,6 +433,13 @@ existing `layout::TextMeasurer` boundary, so a caller can pass it to
 `LayoutEngine::with_measurer` and make document wrapping use the same font
 advances.
 
+Fenced code uses the monospace face for regular, bold, and italic metrics. The
+renderer applies a deterministic one-pixel per four-row shear to italic code
+coverage. The text bounds clip the shear. The transform does not change glyph
+advances or line metrics, so code wrapping and pagination remain stable. Bold
+code uses the existing bounded one-pixel second pass, and bold-italic code uses
+both transforms.
+
 Rasterized glyphs are held in an explicitly bounded least-recently-used cache;
 `cache_capacity`, `cached_glyphs`, and the rasterization counters are exposed
 for host instrumentation. The cache is bounded by entry count, and a capacity

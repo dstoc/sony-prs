@@ -254,6 +254,11 @@ fn syntax_highlighting_is_eink_styled_lossless_and_wraps_code() {
         .flat_map(|block| &block.lines)
         .flat_map(|line| &line.fragments)
         .any(|fragment| fragment.style.bold));
+    assert!(code_layouts
+        .iter()
+        .flat_map(|block| &block.lines)
+        .flat_map(|line| &line.fragments)
+        .any(|fragment| fragment.style.italic));
 
     let unknown = code_layouts
         .iter()
