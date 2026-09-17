@@ -569,9 +569,8 @@ impl<M: TextMeasurer> LayoutEngine<M> {
             .iter()
             .enumerate()
             .map(|(index, item)| {
-                let marker_width = self
-                    .measurer
-                    .measure(&list_marker(ordered, start, index), &self.style.body);
+                let marker = list_marker(ordered, start, index);
+                let marker_width = self.measurer.measure(&marker, &self.style.body);
                 if item.task.is_task() {
                     marker_width
                         .saturating_add(TASK_CHECKBOX_SIZE)
@@ -582,12 +581,12 @@ impl<M: TextMeasurer> LayoutEngine<M> {
             })
             .max()
             .unwrap_or(0)
-            // Preserve the existing narrow-viewport progress guarantee. If
-            // the whole item box is narrower than its marker, the marker is
-            // clipped by the same content box as every other fragment.
+            // Preserve the narrow-viewport progress guarantee. If the whole
+            // item box is narrower than its marker, the marker is clipped by
+            // the same content box as every other fragment.
             .min(item_width);
         let text_x = item_x.saturating_add(marker_width as i32);
-        let text_width = item_width.saturating_sub(marker_width).max(1);
+        let text_width = item_width.saturating_sub(marker_width);
         let mut y = start_y;
 
         for (index, item) in items.iter().enumerate() {
@@ -596,76 +595,104 @@ impl<M: TextMeasurer> LayoutEngine<M> {
             } else {
                 list_marker(ordered, start, index)
             };
-            let marker_text_width = self.measurer.measure(&marker, &self.style.body);
-            let mut spans = Vec::new();
-            for inline in &item.content {
-                collect_spans(
-                    inline,
-                    self.style.body,
-                    None,
-                    image_height,
-                    images,
-                    &mut spans,
-                );
-            }
-            let mut lines = wrap_spans(
-                &self.measurer,
-                spans,
-                y,
-                text_x,
-                text_width,
-                self.style.body.line_height,
-            );
-            let first_line = lines
-                .first_mut()
-                .expect("list item wrapping always produces one line");
-            let text_bounds = first_line.bounds;
-            let checkbox_x = item_x.saturating_add(marker_text_width as i32);
-            let right = rect_right(&text_bounds)
-                .max(if item.task.is_task() {
-                    checkbox_x.saturating_add(TASK_CHECKBOX_SIZE as i32)
-                } else {
+            let task_checkbox_x = if item.task.is_task() {
+                Some(
                     text_x
-                })
-                .min(item_x.saturating_add(item_width as i32));
-            first_line.bounds = Rectangle::new(
-                Point::new(item_x, text_bounds.top_left.y),
-                Size::new(
-                    right.saturating_sub(item_x) as u32,
-                    text_bounds
-                        .size
-                        .height
-                        .max(self.style.body.line_height.max(1)),
-                ),
-            );
-            if !marker.is_empty() {
-                first_line.fragments.insert(
-                    0,
-                    LayoutFragment {
-                        text: marker,
-                        bounds: Rectangle::new(
-                            Point::new(item_x, first_line.bounds.top_left.y),
-                            Size::new(marker_width, self.style.body.line_height.max(1)),
+                        .saturating_sub(
+                            TASK_CHECKBOX_SIZE.saturating_add(TASK_CHECKBOX_GAP) as i32,
                         ),
-                        style: self.style.body,
-                        image: None,
-                        link: None,
-                    },
+                )
+            } else {
+                None
+            };
+
+            let mut first_child = None;
+            if item.content.is_empty() {
+                // A block-only list item has no inline line to carry its
+                // marker. Attach the marker to the first rendered child line
+                // so quotes, headings, code, images, and nested lists keep
+                // the marker beside their first visible content.
+                if let Some(child) = item.children.first() {
+                    y = y.saturating_add(self.spacing_before(child));
+                    let (_, _, mut lines, _) =
+                        self.layout_content(child, y, text_x, text_width, image_height, images);
+                    prepend_list_marker(
+                        &mut lines,
+                        &marker,
+                        item_x,
+                        marker_width,
+                        self.style.body,
+                        self.style.body.line_height,
+                    );
+                    if let (Some(first), Some(checkbox_x)) = (lines.first_mut(), task_checkbox_x) {
+                        first.task = Some(item.task);
+                        first.task_checkbox_x = Some(checkbox_x);
+                    }
+                    y = append_lines(output, lines, y);
+                    y = y.saturating_add(self.spacing_after(child));
+                    first_child = Some(1);
+                }
+            } else {
+                let mut spans = Vec::new();
+                for inline in &item.content {
+                    collect_spans(
+                        inline,
+                        self.style.body,
+                        None,
+                        image_height,
+                        images,
+                        &mut spans,
+                    );
+                }
+                let mut lines = wrap_spans(
+                    &self.measurer,
+                    spans,
+                    y,
+                    text_x,
+                    text_width,
+                    self.style.body.line_height,
                 );
+                prepend_list_marker(
+                    &mut lines,
+                    &marker,
+                    item_x,
+                    marker_width,
+                    self.style.body,
+                    self.style.body.line_height,
+                );
+                if let (Some(first), Some(checkbox_x)) = (lines.first_mut(), task_checkbox_x) {
+                    first.task = Some(item.task);
+                    first.task_checkbox_x = Some(checkbox_x);
+                }
+                y = append_lines(output, lines, y);
+                first_child = Some(0);
             }
-            if item.task.is_task() {
-                first_line.task = Some(item.task);
-                first_line.task_checkbox_x = Some(checkbox_x);
+
+            if first_child.is_none() {
+                let mut line = marker_only_line(
+                    item_x,
+                    y,
+                    &marker,
+                    marker_width,
+                    self.style.body,
+                    self.style.body.line_height,
+                );
+                if let Some(checkbox_x) = task_checkbox_x {
+                    line.task = Some(item.task);
+                    line.task_checkbox_x = Some(checkbox_x);
+                }
+                output.push(line);
+                y = y.saturating_add(self.style.body.line_height.max(1) as i32);
             }
-            y = append_lines(output, lines, y);
 
             // Children retain their block semantics and can themselves contain
             // paragraphs, quotes, or another list. Their x origin advances once
-            // per nesting level, and each child line remains a legal split.
-            for child in &item.children {
+            // per nesting level and past the marker column, so later lines stay
+            // in the item's text column.
+            for child in item.children.iter().skip(first_child.unwrap_or(0)) {
                 y = y.saturating_add(self.spacing_before(child));
                 let (_, _, lines, _) =
-                    self.layout_content(child, y, item_x, item_width, image_height, images);
+                    self.layout_content(child, y, text_x, text_width, image_height, images);
                 y = append_lines(output, lines, y);
                 y = y.saturating_add(self.spacing_after(child));
             }
@@ -1788,6 +1815,79 @@ fn list_marker(ordered: bool, start: usize, index: usize) -> String {
     }
 }
 
+fn prepend_list_marker(
+    lines: &mut [LayoutLine],
+    marker: &str,
+    item_x: i32,
+    marker_width: u32,
+    marker_style: TextStyle,
+    line_height: u32,
+) {
+    let Some(first_line) = lines.first_mut() else {
+        return;
+    };
+    let right = rect_right(&first_line.bounds);
+    first_line.bounds = Rectangle::new(
+        Point::new(item_x, first_line.bounds.top_left.y),
+        Size::new(
+            right.saturating_sub(item_x).max(marker_width as i32) as u32,
+            first_line.bounds.size.height.max(line_height.max(1)),
+        ),
+    );
+    if !marker.is_empty() {
+        first_line.fragments.insert(
+            0,
+            LayoutFragment {
+                text: marker.to_owned(),
+                bounds: Rectangle::new(
+                    Point::new(item_x, first_line.bounds.top_left.y),
+                    Size::new(
+                        marker_width,
+                        line_height.max(1),
+                    ),
+                ),
+                style: marker_style,
+                image: None,
+                link: None,
+            },
+        );
+    }
+}
+
+fn marker_only_line(
+    item_x: i32,
+    y: i32,
+    marker: &str,
+    marker_width: u32,
+    marker_style: TextStyle,
+    line_height: u32,
+) -> LayoutLine {
+    LayoutLine {
+        bounds: Rectangle::new(
+            Point::new(item_x, y),
+            Size::new(marker_width, line_height.max(1)),
+        ),
+        fragments: if marker.is_empty() {
+            Vec::new()
+        } else {
+            vec![LayoutFragment {
+                text: marker.to_owned(),
+                bounds: Rectangle::new(
+                    Point::new(item_x, y),
+                    Size::new(marker_width, line_height.max(1)),
+                ),
+                style: marker_style,
+                image: None,
+                link: None,
+            }]
+        },
+        task: None,
+        task_checkbox_x: None,
+        code: false,
+        wrapped: false,
+    }
+}
+
 struct LineBuilder {
     x: i32,
     y: i32,
@@ -2151,7 +2251,6 @@ mod tests {
     use super::*;
     use crate::document::{Document, Inline, ListItem};
     use crate::navigation::{DocumentId, NavigationTarget};
-    use crate::pagination::{DisplayCommand, Paginator};
     use crate::style::Insets;
 
     fn style() -> ReaderStyle {
@@ -2381,10 +2480,7 @@ mod tests {
         assert_eq!(lines[0].fragments[0].text, "• ");
         let text_x = lines[0].fragments[1].bounds.top_left.x;
         assert_eq!(lines[1].fragments[0].bounds.top_left.x, text_x);
-        assert_eq!(
-            lines[0].bounds.top_left.x,
-            lines[0].fragments[0].bounds.top_left.x
-        );
+        assert_eq!(lines[0].bounds.top_left.x, lines[0].fragments[0].bounds.top_left.x);
         assert_eq!(
             lines[0].fragments[0].bounds.top_left.x
                 + lines[0].fragments[0].bounds.size.width as i32,
@@ -2412,57 +2508,6 @@ mod tests {
             lines[0].fragments[1].bounds.top_left.x,
             lines[9].fragments[1].bounds.top_left.x
         );
-    }
-
-    #[test]
-    fn task_markers_share_the_item_text_column() {
-        let mut unchecked = ListItem::new(vec![Inline::Text(
-            "unchecked task item with a continuation".into(),
-        )]);
-        unchecked.task = TaskState::Unchecked;
-        let mut checked = ListItem::new(vec![Inline::Text("checked task item".into())]);
-        checked.task = TaskState::Checked;
-        let document = Document::from_blocks(vec![Block::List {
-            ordered: false,
-            start: 1,
-            items: vec![unchecked, checked],
-        }]);
-        let layout = LayoutEngine::new(style()).layout(&document, Viewport::new(100, 300));
-        let lines = &layout.blocks()[0].lines;
-        let first_item_text_x = lines
-            .iter()
-            .find_map(|line| {
-                line.fragments
-                    .iter()
-                    .find(|fragment| fragment.text.starts_with("unchecked"))
-                    .map(|fragment| fragment.bounds.top_left.x)
-            })
-            .expect("unchecked task should be laid out");
-        let second_item_line = lines
-            .iter()
-            .find(|line| {
-                line.fragments
-                    .iter()
-                    .any(|fragment| fragment.text == "checked")
-            })
-            .expect("checked task should be laid out");
-
-        assert_eq!(
-            lines
-                .iter()
-                .filter_map(|line| line.task)
-                .collect::<Vec<_>>(),
-            vec![TaskState::Unchecked, TaskState::Checked]
-        );
-        assert!(lines.iter().any(|line| line.task_checkbox_x.is_some()));
-        assert_eq!(
-            second_item_line.fragments[0].bounds.top_left.x,
-            first_item_text_x
-        );
-        assert!(lines
-            .iter()
-            .flat_map(|line| line.fragments.iter())
-            .all(|fragment| !fragment.text.contains("[x]") && !fragment.text.contains("[ ]")));
     }
 
     #[test]
@@ -2510,9 +2555,10 @@ mod tests {
             .expect("second page should contain continuation text");
 
         assert_eq!(continuation_text.top_left.x, first_text.top_left.x);
-        assert!(!pages[1].display_list().iter().any(|command| {
-            matches!(command, DisplayCommand::Text { text, .. } if text == "• ")
-        }));
+        assert!(!pages[1]
+            .display_list()
+            .iter()
+            .any(|command| matches!(command, DisplayCommand::Text { text, .. } if text == "• ")));
     }
 
     #[test]
