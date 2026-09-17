@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.4.0](https://github.com/dstoc/sony-prs/compare/prs-t1-agent-v0.3.0...prs-t1-agent-v0.4.0) (2026-09-17)
+
+
+### Features
+
+* **t1:** tune document refresh policy ([191d344](https://github.com/dstoc/sony-prs/commit/191d3441dadc5ed50a1d30f1bcdd3cf05391c904))
+* **t1:** wire reader controls and navigation ([abcfa31](https://github.com/dstoc/sony-prs/commit/abcfa31d4c3590f275598f042dd3e7a29d1fae09))
+
+
+### Bug Fixes
+
+* **t1:** provide soft-float math compatibility symbols ([85678d6](https://github.com/dstoc/sony-prs/commit/85678d66c4c03e2d41732dbf6df41cd1aea8d6db))
+
 ## [0.3.0](https://github.com/dstoc/sony-prs/compare/prs-t1-agent-v0.2.0...prs-t1-agent-v0.3.0) (2026-09-17)
 
 
