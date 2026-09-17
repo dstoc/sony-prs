@@ -348,6 +348,7 @@ fn command_requires_grayscale(command: &DisplayCommand) -> bool {
         DisplayCommand::Border { style, .. } | DisplayCommand::Rule { style, .. } => {
             color_requires_grayscale(style.color)
         }
+        DisplayCommand::TaskCheckbox { .. } => false,
         DisplayCommand::Image { .. } => true,
         DisplayCommand::ImagePlaceholder { .. } => false,
     }

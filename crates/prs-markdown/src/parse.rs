@@ -351,11 +351,7 @@ impl Converter {
                 name: reference.name,
                 number: reference.ref_num,
             }],
-            NodeValue::TaskItem(task) => vec![Inline::Text(if task.symbol.is_some() {
-                "[x] ".to_owned()
-            } else {
-                "[ ] ".to_owned()
-            })],
+            NodeValue::TaskItem(_) => self.convert_inlines(node),
             _ => self.convert_inlines(node),
         }
     }

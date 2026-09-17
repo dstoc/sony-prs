@@ -121,6 +121,9 @@ where
         DisplayCommand::Border { bounds, style } => {
             draw_border(target, translate(*bounds, origin), *style)
         }
+        DisplayCommand::TaskCheckbox { bounds, checked } => {
+            draw_task_checkbox(target, translate(*bounds, origin), *checked)
+        }
         DisplayCommand::Rule { bounds, style } => {
             fill_rect(target, translate(*bounds, origin), style.color)
         }
@@ -208,6 +211,45 @@ where
         ),
         color,
     )
+}
+
+fn draw_task_checkbox<T>(target: &mut T, rectangle: Rect, checked: bool) -> Result<(), T::Error>
+where
+    T: DrawTarget<Color = Rgb888>,
+{
+    if rectangle.size.width == 0 || rectangle.size.height == 0 {
+        return Ok(());
+    }
+
+    if checked {
+        fill_rect(target, rectangle, Color::BLACK)?;
+        let left = rectangle.top_left.x;
+        let top = rectangle.top_left.y;
+        for step in 0..4 {
+            fill_rect(
+                target,
+                Rect::new(
+                    Point::new(left.saturating_add(2 + step), top.saturating_add(4 + step)),
+                    Size::new(2, 2),
+                ),
+                Color::WHITE,
+            )?;
+        }
+        for step in 0..6 {
+            fill_rect(
+                target,
+                Rect::new(
+                    Point::new(left.saturating_add(5 + step), top.saturating_add(7 - step)),
+                    Size::new(2, 2),
+                ),
+                Color::WHITE,
+            )?;
+        }
+        Ok(())
+    } else {
+        fill_rect(target, rectangle, Color::WHITE)?;
+        draw_border(target, rectangle, BorderStyle::new(Color::BLACK, 2))
+    }
 }
 
 fn draw_text<T, E>(
@@ -472,6 +514,37 @@ mod tests {
         assert_eq!(display.get_pixel(Point::new(8, 4)), Some(Rgb888::BLACK));
         assert_eq!(display.get_pixel(Point::new(7, 4)), Some(Rgb888::WHITE));
         assert_eq!(renderer.text_engine().rasterizations, 1);
+    }
+
+    #[test]
+    fn renders_unchecked_and_checked_task_controls_in_high_contrast() {
+        let page = PageLayout {
+            number: 1,
+            viewport: crate::geometry::Viewport::new(32, 16),
+            range: crate::pagination::DocumentRange::default(),
+            commands: DisplayList::from([
+                DisplayCommand::TaskCheckbox {
+                    bounds: Rect::new(Point::new(1, 1), Size::new(12, 12)),
+                    checked: false,
+                },
+                DisplayCommand::TaskCheckbox {
+                    bounds: Rect::new(Point::new(18, 1), Size::new(12, 12)),
+                    checked: true,
+                },
+            ]),
+            hit_regions: Vec::new(),
+        };
+        let mut renderer = EmbeddedGraphicsRenderer::new(TestTextEngine::default());
+        let mut display = MockDisplay::<Rgb888>::new();
+        display.set_allow_overdraw(true);
+
+        renderer.render(&page, &mut display).unwrap();
+
+        assert_eq!(display.get_pixel(Point::new(1, 1)), Some(Rgb888::BLACK));
+        assert_eq!(display.get_pixel(Point::new(4, 4)), Some(Rgb888::WHITE));
+        assert_eq!(display.get_pixel(Point::new(18, 1)), Some(Rgb888::BLACK));
+        assert_eq!(display.get_pixel(Point::new(20, 5)), Some(Rgb888::WHITE));
+        assert_eq!(display.get_pixel(Point::new(24, 8)), Some(Rgb888::WHITE));
     }
 
     #[test]

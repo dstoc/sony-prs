@@ -22,6 +22,12 @@ pub struct Viewport {
 /// The visible PRS-T1 framebuffer used by the host reader profile.
 pub const T1_VIEWPORT: Viewport = Viewport::new(600, 800);
 
+/// The fixed page-space size of a rendered GFM task checkbox.
+pub const TASK_CHECKBOX_SIZE: u32 = 12;
+
+/// The gap between a task checkbox and the task text.
+pub const TASK_CHECKBOX_GAP: u32 = 4;
+
 impl Viewport {
     pub const fn new(width: u32, height: u32) -> Self {
         Self { width, height }

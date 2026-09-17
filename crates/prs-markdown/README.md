@@ -144,6 +144,10 @@ footnotes, alerts, and images. Supported local image formats are PNG, JPEG,
 and WebP; missing, corrupt, external, unsupported, or over-budget images use
 visible alt-text fallback.
 
+GFM task lists render fixed-size, high-contrast checkbox controls before their
+task text. Checked controls use a filled box with a white check mark; unchecked
+controls use an outlined box. The controls are visual only and do not toggle.
+
 Fenced code uses Syntect 5.3.0's bundled upstream syntax definitions with the
 Oniguruma runtime backend. The set contains 75 definitions and embeds the
 368,467-byte `default_newlines.packdump` payload. The application keeps its

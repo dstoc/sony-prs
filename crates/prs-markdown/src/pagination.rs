@@ -5,7 +5,7 @@
 //! Markdown or device concepts. The same page can consequently be rendered
 //! by a framebuffer adapter, a host test target, or another renderer.
 
-use crate::geometry::{translate, Rect, Viewport};
+use crate::geometry::{translate, Rect, Viewport, TASK_CHECKBOX_SIZE};
 use crate::image::RasterImage;
 use crate::layout::{DocumentLayout, LayoutBlockKind, LayoutLine, TableLayout, TableRowLayout};
 use crate::navigation::NavigationTarget;
@@ -339,6 +339,8 @@ pub enum DisplayCommand {
     Fill { bounds: Rect, style: FillStyle },
     /// A rectangular border; the interior is left unchanged.
     Border { bounds: Rect, style: BorderStyle },
+    /// A fixed-size, visual-only GFM task checkbox.
+    TaskCheckbox { bounds: Rect, checked: bool },
     /// A horizontal or vertical rule represented as a stroked rectangle.
     Rule { bounds: Rect, style: BorderStyle },
     /// A deterministic fallback for unavailable image data.
@@ -362,6 +364,7 @@ impl DisplayCommand {
             Self::Text { bounds, .. }
             | Self::Fill { bounds, .. }
             | Self::Border { bounds, .. }
+            | Self::TaskCheckbox { bounds, .. }
             | Self::Rule { bounds, .. }
             | Self::ImagePlaceholder { bounds, .. }
             | Self::Image { bounds, .. } => *bounds,
@@ -377,6 +380,7 @@ impl DisplayCommand {
             },
             Self::Fill { style, .. } => Self::Fill { bounds, style },
             Self::Border { style, .. } => Self::Border { bounds, style },
+            Self::TaskCheckbox { checked, .. } => Self::TaskCheckbox { bounds, checked },
             Self::Rule { style, .. } => Self::Rule { bounds, style },
             Self::ImagePlaceholder { source, alt, .. } => Self::ImagePlaceholder {
                 bounds,
@@ -770,6 +774,22 @@ fn add_line(
     if kind == LayoutBlockKind::Table {
         add_table_decoration(page, line, page_offset, style, table, line_index);
     }
+    if let (Some(task), Some(task_checkbox_x)) = (line.task, line.task_checkbox_x) {
+        let checkbox_y =
+            line.bounds.top_left.y.saturating_add(
+                line.bounds.size.height.saturating_sub(TASK_CHECKBOX_SIZE) as i32 / 2,
+            );
+        page.push_command(DisplayCommand::TaskCheckbox {
+            bounds: translate(
+                Rect::new(
+                    Point::new(task_checkbox_x, checkbox_y),
+                    embedded_graphics::geometry::Size::new(TASK_CHECKBOX_SIZE, TASK_CHECKBOX_SIZE),
+                ),
+                page_offset,
+            ),
+            checked: task.is_checked(),
+        });
+    }
     for fragment in &line.fragments {
         let bounds = translate(fragment.bounds, page_offset);
         if let Some(image) = &fragment.image {
@@ -1011,7 +1031,7 @@ fn line_bottom(rectangle: Rect) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::document::{Block, Document, Inline, ListItem, Table};
+    use crate::document::{Block, Document, Inline, ListItem, Table, TaskState};
     use crate::geometry::Viewport;
     use crate::layout::{LayoutBlock, LayoutBlockKind, LayoutEngine, LayoutLine};
     use crate::style::Insets;
@@ -1254,6 +1274,56 @@ mod tests {
     }
 
     #[test]
+    fn task_lists_emit_fixed_visual_checkbox_commands_for_nested_items() {
+        let style = pagination_style();
+        let mut nested = ListItem::new(vec![Inline::Text("nested task".into())]);
+        nested.task = TaskState::Unchecked;
+        let mut parent = ListItem::new(vec![Inline::Text("completed task".into())]);
+        parent.task = TaskState::Checked;
+        parent.children.push(Block::List {
+            ordered: false,
+            items: vec![nested],
+        });
+        let document = Document::from_blocks(vec![Block::List {
+            ordered: false,
+            items: vec![parent],
+        }]);
+        let layout = crate::LayoutEngine::new(style).layout(&document, Viewport::new(120, 100));
+        let page = Paginator::new(style).paginate(&layout).remove(0);
+        let controls = page
+            .display_list()
+            .iter()
+            .filter_map(|command| match command {
+                DisplayCommand::TaskCheckbox {
+                    bounds, checked, ..
+                } => Some((*bounds, *checked)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(controls.len(), 2);
+        assert_eq!(
+            controls[0].0.size,
+            Size::new(TASK_CHECKBOX_SIZE, TASK_CHECKBOX_SIZE)
+        );
+        assert_eq!(
+            controls[1].0.size,
+            Size::new(TASK_CHECKBOX_SIZE, TASK_CHECKBOX_SIZE)
+        );
+        assert_eq!(
+            controls
+                .iter()
+                .map(|(_, checked)| *checked)
+                .collect::<Vec<_>>(),
+            vec![true, false]
+        );
+        assert!(page.hit_regions.is_empty());
+        assert!(page.display_list().iter().all(|command| {
+            !matches!(command, DisplayCommand::Text { text, .. } if text.contains("[x]") || text.contains("[ ]"))
+        }));
+    }
+
+    #[test]
     fn paginator_translates_each_page_to_viewport_coordinates() {
         let viewport = Viewport::new(100, 30);
         let style = ReaderStyle {
@@ -1280,6 +1350,8 @@ mod tests {
                             image: None,
                             link: None,
                         }],
+                        task: None,
+                        task_checkbox_x: None,
                         code: false,
                         wrapped: false,
                     }],
@@ -1298,6 +1370,8 @@ mod tests {
                             image: None,
                             link: None,
                         }],
+                        task: None,
+                        task_checkbox_x: None,
                         code: false,
                         wrapped: false,
                     }],

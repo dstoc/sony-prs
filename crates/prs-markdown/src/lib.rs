@@ -32,7 +32,9 @@ pub use document::{
     AlertKind, Block, BlockMetadata, Document, Inline, ListItem, NodeId, SourcePosition,
     SourceSpan, Table, TableAlignment, TaskState,
 };
-pub use geometry::{intersection, translate, Rect, Viewport, T1_VIEWPORT};
+pub use geometry::{
+    intersection, translate, Rect, Viewport, T1_VIEWPORT, TASK_CHECKBOX_GAP, TASK_CHECKBOX_SIZE,
+};
 pub use harness::{render_page, HostImage, HostReader};
 pub use highlighting::{
     CodeHighlighter, HighlightSpan, HighlightedCode, HighlightedLine, SyntectHighlighter,

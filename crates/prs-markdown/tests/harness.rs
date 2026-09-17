@@ -18,6 +18,7 @@ use std::path::{Path, PathBuf};
 
 const CORPUS: &str = include_str!("fixtures/regression.md");
 const BOUNDARY: &str = include_str!("fixtures/page-boundary.md");
+const TASK_CONTROLS: &str = include_str!("fixtures/task-controls.md");
 const GOLDEN_REGULAR: &[u8] = notosans::REGULAR_TTF;
 const GOLDEN_BOLD: &[u8] = notosans::BOLD_TTF;
 const GOLDEN_ITALIC: &[u8] = notosans::ITALIC_TTF;
@@ -432,6 +433,30 @@ fn every_checked_in_fixture_matches_png_goldens() {
     for (name, source) in FIXTURES {
         assert_fixture_goldens(name, source);
     }
+}
+
+#[test]
+fn task_controls_match_the_narrow_viewport_golden() {
+    let viewport = Viewport::new(160, 120);
+    let font_engine = golden_font_engine();
+    let reader = HostReader::from_source_with_measurer(
+        TASK_CONTROLS,
+        structural_style(),
+        viewport,
+        font_engine.clone(),
+    )
+    .expect("task controls fixture should parse");
+    assert_eq!(reader.page_count(), 1);
+    let mut renderer = prs_markdown::EmbeddedGraphicsRenderer::new(font_engine);
+    let image = render_page(reader.page(0).expect("task controls page"), &mut renderer);
+    assert_eq!(image.width(), viewport.width);
+    assert_eq!(image.height(), viewport.height);
+    assert_png_golden_at(
+        golden_path("task-controls-narrow", 1),
+        golden_failure_path("task-controls-narrow", 1),
+        "task controls narrow viewport",
+        &image,
+    );
 }
 
 fn assert_fixture_goldens(name: &str, source: &str) {
