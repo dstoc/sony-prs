@@ -572,9 +572,12 @@ impl<M: TextMeasurer> LayoutEngine<M> {
                 let marker = list_marker(ordered, start, index);
                 let marker_width = self.measurer.measure(&marker, &self.style.body);
                 if item.task.is_task() {
-                    marker_width
-                        .saturating_add(TASK_CHECKBOX_SIZE)
-                        .saturating_add(TASK_CHECKBOX_GAP)
+                    let checkbox_width = TASK_CHECKBOX_SIZE.saturating_add(TASK_CHECKBOX_GAP);
+                    if ordered {
+                        marker_width.saturating_add(checkbox_width)
+                    } else {
+                        marker_width.max(checkbox_width)
+                    }
                 } else {
                     marker_width
                 }
@@ -1841,10 +1844,7 @@ fn prepend_list_marker(
                 text: marker.to_owned(),
                 bounds: Rectangle::new(
                     Point::new(item_x, first_line.bounds.top_left.y),
-                    Size::new(
-                        marker_width,
-                        line_height.max(1),
-                    ),
+                    Size::new(marker_width, line_height.max(1)),
                 ),
                 style: marker_style,
                 image: None,
@@ -2251,6 +2251,7 @@ mod tests {
     use super::*;
     use crate::document::{Document, Inline, ListItem};
     use crate::navigation::{DocumentId, NavigationTarget};
+    use crate::pagination::{DisplayCommand, Paginator};
     use crate::style::Insets;
 
     fn style() -> ReaderStyle {
@@ -2480,7 +2481,10 @@ mod tests {
         assert_eq!(lines[0].fragments[0].text, "• ");
         let text_x = lines[0].fragments[1].bounds.top_left.x;
         assert_eq!(lines[1].fragments[0].bounds.top_left.x, text_x);
-        assert_eq!(lines[0].bounds.top_left.x, lines[0].fragments[0].bounds.top_left.x);
+        assert_eq!(
+            lines[0].bounds.top_left.x,
+            lines[0].fragments[0].bounds.top_left.x
+        );
         assert_eq!(
             lines[0].fragments[0].bounds.top_left.x
                 + lines[0].fragments[0].bounds.size.width as i32,
