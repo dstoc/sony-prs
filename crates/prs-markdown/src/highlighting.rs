@@ -16,6 +16,93 @@ use syntect::parsing::{SyntaxReference, SyntaxSet};
 const SYNTAX_BYTES: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/prs-markdown-syntaxes.packdump"));
 
+/// The T1 uses grayscale updates for syntax pages. Keep every secondary role
+/// on a dark, explicit level so the code surface does not turn it into a
+/// near-white mark.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct EinkTokenStyle {
+    ink: u8,
+    bold: bool,
+    italic: bool,
+}
+
+impl EinkTokenStyle {
+    fn font_style(self) -> Option<FontStyle> {
+        match (self.bold, self.italic) {
+            (false, false) => None,
+            (true, false) => Some(FontStyle::BOLD),
+            (false, true) => Some(FontStyle::ITALIC),
+            (true, true) => Some(FontStyle::BOLD | FontStyle::ITALIC),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct EinkPalette {
+    comment: EinkTokenStyle,
+    string: EinkTokenStyle,
+    constant: EinkTokenStyle,
+    keyword: EinkTokenStyle,
+    storage: EinkTokenStyle,
+    entity: EinkTokenStyle,
+    support: EinkTokenStyle,
+    variable: EinkTokenStyle,
+    invalid: EinkTokenStyle,
+}
+
+const EINK_PALETTE: EinkPalette = EinkPalette {
+    comment: EinkTokenStyle {
+        ink: 96,
+        bold: false,
+        italic: true,
+    },
+    string: EinkTokenStyle {
+        ink: 16,
+        bold: false,
+        italic: false,
+    },
+    constant: EinkTokenStyle {
+        ink: 48,
+        bold: false,
+        italic: false,
+    },
+    keyword: EinkTokenStyle {
+        ink: 0,
+        bold: true,
+        italic: false,
+    },
+    storage: EinkTokenStyle {
+        ink: 0,
+        bold: true,
+        italic: false,
+    },
+    entity: EinkTokenStyle {
+        ink: 32,
+        bold: true,
+        italic: false,
+    },
+    support: EinkTokenStyle {
+        ink: 80,
+        bold: false,
+        italic: false,
+    },
+    variable: EinkTokenStyle {
+        ink: 32,
+        bold: false,
+        italic: false,
+    },
+    invalid: EinkTokenStyle {
+        ink: 0,
+        bold: true,
+        italic: false,
+    },
+};
+
+// These are the levels used by the explicit role palette. The nearest-level
+// conversion still handles any non-gray Syntect color without returning a
+// washed-out value that is not part of the reader's contrast policy.
+const EINK_GRAY_LEVELS: &[u8] = &[0, 16, 32, 48, 64, 80, 96, 112, 128];
+
 /// The deliberately supported language names and common fenced-code aliases.
 pub const SUPPORTED_LANGUAGES: &[&str] = &[
     "shell/bash",
@@ -131,15 +218,15 @@ fn theme() -> &'static Theme {
             ..ThemeSettings::default()
         },
         scopes: vec![
-            theme_item("comment", gray(128), Some(FontStyle::ITALIC)),
-            theme_item("string", gray(64), None),
-            theme_item("constant", gray(96), None),
-            theme_item("keyword", gray(0), Some(FontStyle::BOLD)),
-            theme_item("storage", gray(0), Some(FontStyle::BOLD)),
-            theme_item("entity", gray(32), Some(FontStyle::BOLD)),
-            theme_item("support", gray(64), None),
-            theme_item("variable", gray(32), None),
-            theme_item("invalid", gray(0), Some(FontStyle::BOLD)),
+            theme_item("comment", EINK_PALETTE.comment),
+            theme_item("string", EINK_PALETTE.string),
+            theme_item("constant", EINK_PALETTE.constant),
+            theme_item("keyword", EINK_PALETTE.keyword),
+            theme_item("storage", EINK_PALETTE.storage),
+            theme_item("entity", EINK_PALETTE.entity),
+            theme_item("support", EINK_PALETTE.support),
+            theme_item("variable", EINK_PALETTE.variable),
+            theme_item("invalid", EINK_PALETTE.invalid),
         ],
     })
 }
@@ -153,13 +240,13 @@ const fn gray(value: u8) -> Color {
     }
 }
 
-fn theme_item(scope: &str, foreground: Color, font_style: Option<FontStyle>) -> ThemeItem {
+fn theme_item(scope: &str, style: EinkTokenStyle) -> ThemeItem {
     ThemeItem {
         scope: scope.parse().expect("built-in theme scope is valid"),
         style: StyleModifier {
-            foreground: Some(foreground),
+            foreground: Some(gray(style.ink)),
             background: None,
-            font_style,
+            font_style: style.font_style(),
         },
     }
 }
@@ -239,12 +326,11 @@ fn highlighted_span(style: Style, text: &str) -> HighlightSpan {
 fn e_ink_gray(color: Color) -> u8 {
     let luminance =
         (u32::from(color.r) * 2126 + u32::from(color.g) * 7152 + u32::from(color.b) * 722) / 10_000;
-    match luminance {
-        0..=48 => 0,
-        49..=128 => 96,
-        129..=200 => 160,
-        _ => 208,
-    }
+    EINK_GRAY_LEVELS
+        .iter()
+        .copied()
+        .min_by_key(|level| u32::from(*level).abs_diff(luminance))
+        .expect("the e-ink palette must contain one grayscale level")
 }
 
 fn plain_code(source: &str) -> HighlightedCode {
@@ -343,5 +429,60 @@ mod tests {
         assert!(output.recognized);
         assert_eq!(output.lines.len(), 2);
         assert!(output.lines[1].spans.iter().any(|span| span.ink != 0));
+    }
+
+    #[test]
+    fn eink_palette_separates_secondary_roles_and_stays_dark_on_code_surfaces() {
+        let secondary = [
+            EINK_PALETTE.comment.ink,
+            EINK_PALETTE.string.ink,
+            EINK_PALETTE.constant.ink,
+            EINK_PALETTE.support.ink,
+            EINK_PALETTE.variable.ink,
+        ];
+        let style = crate::style::ReaderStyle::default();
+        let backgrounds = [
+            style.code_background.color.red,
+            style.code_continuation_background.color.red,
+        ];
+
+        for (index, ink) in secondary.iter().enumerate() {
+            assert!(
+                secondary[..index].iter().all(|previous| previous != ink),
+                "secondary palette roles must keep distinct ink levels"
+            );
+            for background in backgrounds {
+                assert!(
+                    background.saturating_sub(*ink) >= 128,
+                    "ink {ink} is too light for code background {background}"
+                );
+            }
+        }
+
+        for level in EINK_GRAY_LEVELS {
+            assert_eq!(e_ink_gray(gray(*level)), *level);
+        }
+        assert_ne!(e_ink_gray(gray(64)), e_ink_gray(gray(96)));
+        assert_ne!(e_ink_gray(gray(96)), e_ink_gray(gray(128)));
+
+        // Bold remains the non-color cue for structural roles that share the
+        // darkest end of the palette.
+        assert_eq!(EINK_PALETTE.keyword.ink, EINK_PALETTE.invalid.ink);
+        assert_eq!(
+            theme_item("comment", EINK_PALETTE.comment).style.font_style,
+            Some(FontStyle::ITALIC)
+        );
+        for style in [
+            EINK_PALETTE.keyword,
+            EINK_PALETTE.storage,
+            EINK_PALETTE.entity,
+            EINK_PALETTE.invalid,
+        ] {
+            assert!(style.bold);
+            assert_eq!(
+                theme_item("test", style).style.font_style,
+                style.font_style()
+            );
+        }
     }
 }
