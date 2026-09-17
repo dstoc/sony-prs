@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/dstoc/sony-prs/compare/prs-t1-agent-v0.5.0...prs-t1-agent-v0.6.0) (2026-09-17)
+
+
+### Features
+
+* **prs-markdown:** render task list checkboxes ([bc3d5e5](https://github.com/dstoc/sony-prs/commit/bc3d5e542a19f1401a96535cc021b45c00f89ed1))
+
 ## [0.5.0](https://github.com/dstoc/sony-prs/compare/prs-t1-agent-v0.4.3...prs-t1-agent-v0.5.0) (2026-09-17)
 
 
