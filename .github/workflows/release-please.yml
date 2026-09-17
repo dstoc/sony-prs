@@ -22,6 +22,12 @@ jobs:
     steps:
       - name: Check out workflow source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+
+      - name: Ensure internal prs-markdown release boundaries
+        if: ${{ github.event_name == 'push' }}
+        run: tools/ensure-release-please-tags.sh --push origin
 
       - name: Run Release Please
         id: release

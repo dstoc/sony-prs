@@ -14,6 +14,7 @@
     "crates/prs-markdown": {
       "release-type": "rust",
       "component": "prs-markdown",
+      "include-component-in-tag": true,
       "skip-github-release": true,
       "skip-changelog": true
     }
