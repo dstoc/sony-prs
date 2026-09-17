@@ -90,6 +90,9 @@ build() {
   mkdir -p "$(dirname -- "$build_log")"
 
   set +e
+  # Force onig_sys to compile its bundled source instead of probing a host
+  # Oniguruma installation; the production reader must remain self-contained.
+  RUSTONIG_SYSTEM_LIBONIG=0 \
   RUSTFLAGS='-C target-cpu=arm926ej-s -C link-arg=-mcpu=arm926ej-s' \
     cargo +"$RUST_TOOLCHAIN" zigbuild \
     --manifest-path "$MANIFEST" \
