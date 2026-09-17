@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.1](https://github.com/dstoc/sony-prs/compare/prs-markdown-v0.6.0...prs-markdown-v0.6.1) (2026-09-17)
+
+
+### Bug Fixes
+
+* **prs-markdown:** normalize table cell line spacing ([400bdcc](https://github.com/dstoc/sony-prs/commit/400bdccb1871d1d58eeae92b3ec9c1da4e7cda14))
+
 ## [0.6.0](https://github.com/dstoc/sony-prs/compare/prs-markdown-v0.5.0...prs-markdown-v0.6.0) (2026-09-17)
 
 
