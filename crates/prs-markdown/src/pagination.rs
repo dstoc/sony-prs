@@ -1282,10 +1282,12 @@ mod tests {
         parent.task = TaskState::Checked;
         parent.children.push(Block::List {
             ordered: false,
+            start: 1,
             items: vec![nested],
         });
         let document = Document::from_blocks(vec![Block::List {
             ordered: false,
+            start: 1,
             items: vec![parent],
         }]);
         let layout = crate::LayoutEngine::new(style).layout(&document, Viewport::new(120, 100));
