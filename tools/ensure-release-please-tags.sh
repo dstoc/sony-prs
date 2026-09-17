@@ -65,6 +65,30 @@ cargo_version_at() {
 
 created=0
 checked=0
+
+push_tag() {
+  local tag=$1
+  local commit=$2
+
+  if git push "$push_remote" "refs/tags/$tag"; then
+    return 0
+  fi
+
+  # Another release workflow may have created the same boundary between our
+  # local check and push. Treat that as success only when the remote tag is
+  # exactly the boundary we intended; a different target remains an error.
+  local remote_commit=''
+  remote_commit=$(git ls-remote "$push_remote" "refs/tags/$tag" | awk 'NR == 1 { print $1 }') || true
+  if [[ "$remote_commit" == "$commit" ]]; then
+    printf 'another workflow already pushed %s at %s\n' "$tag" "$commit"
+    return 0
+  fi
+
+  printf 'failed to push %s; remote target is %s, expected %s\n' \
+    "$tag" "${remote_commit:-missing}" "$commit" >&2
+  return 1
+}
+
 while IFS= read -r commit; do
   if ! parent=$(git rev-parse "$commit^" 2>/dev/null); then
     continue
@@ -95,7 +119,7 @@ while IFS= read -r commit; do
 
   git tag "$tag" "$commit"
   if [[ -n "$push_remote" ]]; then
-    git push "$push_remote" "refs/tags/$tag"
+    push_tag "$tag" "$commit"
   fi
   printf 'created %s at %s\n' "$tag" "$commit"
   created=$((created + 1))

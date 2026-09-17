@@ -13,6 +13,8 @@ grep -Fq 'description: Existing prs-t1-agent release tag to build/upload' "$work
 grep -Fq 'required: true' "$workflow"
 grep -Fq 'type: string' "$workflow"
 grep -Fq 'rust-version = "1.98"' "$manifest"
+grep -Fq 'group: release-please-main' "$workflow"
+grep -Fq 'cancel-in-progress: false' "$workflow"
 grep -Fq "if: \${{ github.event_name == 'push' }}" "$workflow"
 grep -Fq 'fetch-depth: 0' "$workflow"
 grep -Fq 'Ensure internal prs-markdown release boundaries' "$workflow"
@@ -130,10 +132,14 @@ if jq -e --arg path "$unrelated_commit_paths" '
 fi
 
 # Exercise the release boundary itself. This is deliberately a local git
-# fixture so it can run without GitHub credentials or an npm download while
-# still modeling the Release Please sequence: a tagged released version, a
-# conventional source commit, the applied release commit, and the next
-# calculation from the new component tag.
+# fixture so it can run without GitHub credentials or an npm download. It
+# models the local inputs Release Please uses for candidate detection and
+# cargo-workspace propagation: a tagged released version, a conventional
+# source commit, the applied release commit, and the next calculation from
+# the new component tag. It is not a literal second Release Please CLI call;
+# the action's real calculation requires its GitHub API client. The important
+# regression here is the boundary invariant: after application and tagging,
+# the same source commits must not be eligible again.
 release_fixture="$(mktemp -d)"
 trap 'rm -rf "$fixture_repo" "$release_fixture"' EXIT
 git -C "$release_fixture" init -q
@@ -206,12 +212,17 @@ apply_fixture_release() {
   (cd "$release_fixture" && tools/ensure-release-please-tags.sh)
 }
 
+fixture_tag_count() {
+  git -C "$release_fixture" tag --list 'prs-markdown-v*' | wc -l | tr -d ' '
+}
+
 printf '%s\n' 'first markdown fix' > "$release_fixture/crates/prs-markdown/src/lib.rs"
 git -C "$release_fixture" add crates/prs-markdown/src/lib.rs
 git -C "$release_fixture" commit -q -m 'fix(markdown): first released fix'
 test "$(fixture_candidate_count)" = 1
 test "$(fixture_application_candidate_count)" = 1
 apply_fixture_release 0.1.1 0.1.1
+test "$(fixture_tag_count)" = 2
 test "$(git -C "$release_fixture" show -s --format='%H' prs-markdown-v0.1.1)" = \
   "$(git -C "$release_fixture" rev-parse HEAD)"
 test "$(fixture_candidate_count)" = 0
@@ -225,6 +236,7 @@ test "$(fixture_candidate_count)" = 1
 test "$(fixture_agent_direct_candidate_count)" = 0
 test "$(fixture_application_candidate_count)" = 1
 apply_fixture_release 0.1.2 0.1.2
+test "$(fixture_tag_count)" = 3
 test "$(git -C "$release_fixture" show -s --format='%H' prs-markdown-v0.1.2)" = \
   "$(git -C "$release_fixture" rev-parse HEAD)"
 test "$(fixture_candidate_count)" = 0
