@@ -756,7 +756,7 @@ impl<M: TextMeasurer> LayoutEngine<M> {
 
         for (mode, text_style) in stages {
             let columns = self.table_columns(table, column_count, text_style, image_height, images);
-            if let Some(widths) = self
+            let Some(widths) = self
                 .allocate_table_widths(
                     &all_columns,
                     &columns,
@@ -764,7 +764,11 @@ impl<M: TextMeasurer> LayoutEngine<M> {
                     mode == TableLayoutMode::Aggressive,
                 )
                 .filter(|widths| self.table_widths_are_readable(widths, text_style))
-            {
+            else {
+                continue;
+            };
+
+            if self.table_widths_are_useful(&columns, &widths, width) {
                 let groups = vec![TableColumnGroup {
                     columns: all_columns,
                     width: table_group_width(
@@ -793,6 +797,21 @@ impl<M: TextMeasurer> LayoutEngine<M> {
                     images,
                 );
             }
+
+            // A readable minimum is not sufficient when one prose column is
+            // compressed to a few words per line. Continue the table in
+            // preferred-width groups before trying a smaller font.
+            return self.render_grouped_table(
+                table,
+                start_y,
+                width,
+                x,
+                text_style,
+                columns,
+                false,
+                image_height,
+                images,
+            );
         }
 
         // Even character-level wrapping cannot make a table with more cells
@@ -802,34 +821,88 @@ impl<M: TextMeasurer> LayoutEngine<M> {
         // visible while reading a continuation group.
         let text_style = self.table_text_style(true, true);
         let columns = self.table_columns(table, column_count, text_style, image_height, images);
+        self.render_grouped_table(
+            table,
+            start_y,
+            width,
+            x,
+            text_style,
+            columns,
+            true,
+            image_height,
+            images,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn render_grouped_table(
+        &self,
+        table: &Table,
+        start_y: i32,
+        width: u32,
+        x: i32,
+        text_style: TextStyle,
+        columns: Vec<TableColumnLayout>,
+        aggressive_minimums: bool,
+        image_height: u32,
+        images: &ImageResources,
+    ) -> (Vec<LayoutLine>, TableLayout) {
+        let column_count = columns.len();
         let mut groups = Vec::new();
         let mut pending = vec![0];
         for index in 1..column_count {
             let mut candidate = pending.clone();
             candidate.push(index);
-            if self
-                .allocate_table_widths(&candidate, &columns, width, true)
+            let fits_preferred_budget = self.group_preferred_width(&candidate, &columns, width)
+                <= width.saturating_sub(table_group_overhead(
+                    candidate.len(),
+                    self.style.table_cell_padding,
+                    self.style.table_border.width.max(1),
+                ));
+            let fits_minimum_width = self
+                .allocate_table_widths(&candidate, &columns, width, aggressive_minimums)
                 .filter(|widths| self.table_widths_are_readable(widths, text_style))
-                .is_some()
-            {
+                .is_some();
+            if fits_preferred_budget && fits_minimum_width {
                 pending = candidate;
             } else {
-                groups.push(self.make_table_group(&pending, &columns, width, x, text_style));
+                groups.push(self.make_table_group(
+                    &pending,
+                    &columns,
+                    width,
+                    x,
+                    text_style,
+                    aggressive_minimums,
+                ));
                 pending = vec![0, index];
                 if self
-                    .allocate_table_widths(&pending, &columns, width, true)
+                    .allocate_table_widths(&pending, &columns, width, aggressive_minimums)
                     .filter(|widths| self.table_widths_are_readable(widths, text_style))
                     .is_none()
                 {
                     // At an exceptionally narrow viewport, preserve progress
                     // even when duplicating the key column is impossible.
-                    groups.push(self.make_table_group(&[index], &columns, width, x, text_style));
+                    groups.push(self.make_table_group(
+                        &[index],
+                        &columns,
+                        width,
+                        x,
+                        text_style,
+                        true,
+                    ));
                     pending = vec![0];
                 }
             }
         }
         if pending.len() > 1 || groups.is_empty() {
-            groups.push(self.make_table_group(&pending, &columns, width, x, text_style));
+            groups.push(self.make_table_group(
+                &pending,
+                &columns,
+                width,
+                x,
+                text_style,
+                aggressive_minimums,
+            ));
         }
 
         self.render_table(
@@ -975,11 +1048,15 @@ impl<M: TextMeasurer> LayoutEngine<M> {
         if available < indexes.len() as u32 {
             return None;
         }
-        let minimums = indexes
+        let mut minimums = indexes
             .iter()
             .map(|index| {
                 if aggressive {
-                    1
+                    self.style
+                        .body
+                        .font_size
+                        .max(self.style.table_min_font_size)
+                        .saturating_add(8)
                 } else {
                     columns[*index].minimum_width.max(1)
                 }
@@ -992,30 +1069,63 @@ impl<M: TextMeasurer> LayoutEngine<M> {
             .collect::<Vec<_>>();
         let minimum_total = minimums.iter().copied().sum::<u32>();
         if minimum_total > available {
-            return None;
+            if !aggressive {
+                return None;
+            }
+            // Preserve the old last-resort progress guarantee when even the
+            // readable floor cannot fit. The grouped fallback still keeps
+            // each column framed and repeats the key where possible.
+            minimums.fill(1);
         }
 
-        if aggressive {
-            let even_width = available / indexes.len() as u32;
-            let remainder = available % indexes.len() as u32;
-            return Some(
-                (0..indexes.len())
-                    .map(|index| even_width + if (index as u32) < remainder { 1 } else { 0 })
-                    .collect(),
-            );
+        let minimum_total = minimums.iter().copied().sum::<u32>();
+        if minimum_total > available {
+            return None;
         }
 
         let mut widths = minimums;
         let mut remaining = available - minimum_total;
-        // First grow toward normally laid-out widths. Iterating source order
-        // makes the result stable and gives earlier/key columns precedence.
-        for (width, preferred) in widths.iter_mut().zip(preferreds.iter()) {
-            let growth = preferred.saturating_sub(*width).min(remaining);
-            *width += growth;
-            remaining -= growth;
+
+        // Grow toward preferred content widths in proportion to each column's
+        // remaining demand. This reserves every usable minimum first and
+        // prevents source order from consuming spare width before a later
+        // prose or detail column can use it.
+        while remaining > 0 {
+            let deficits = widths
+                .iter()
+                .zip(preferreds.iter())
+                .map(|(width, preferred)| preferred.saturating_sub(*width))
+                .collect::<Vec<_>>();
+            let total_deficit = deficits.iter().copied().sum::<u32>();
+            if total_deficit == 0 {
+                break;
+            }
+
+            let mut distributed: u32 = 0;
+            for (index, deficit) in deficits.iter().copied().enumerate() {
+                if deficit == 0 {
+                    continue;
+                }
+                let growth = ((remaining as u64 * deficit as u64) / total_deficit as u64)
+                    .min(deficit as u64) as u32;
+                widths[index] = widths[index].saturating_add(growth);
+                distributed = distributed.saturating_add(growth);
+            }
+            if distributed == 0 {
+                let index = deficits
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, deficit)| **deficit > 0)
+                    .max_by_key(|(index, deficit)| (**deficit, std::cmp::Reverse(*index)))
+                    .map(|(index, _)| index)
+                    .expect("a positive total deficit has a positive member");
+                widths[index] = widths[index].saturating_add(1);
+                distributed = 1;
+            }
+            remaining -= distributed;
         }
-        // Any spare space is distributed one pixel at a time. This avoids
-        // rounding-dependent results and keeps narrow columns usable.
+        // Any spare space after all preferred widths are met is distributed
+        // one pixel at a time. This keeps the result deterministic.
         let mut index = 0;
         while remaining > 0 && !widths.is_empty() {
             widths[index] = widths[index].saturating_add(1);
@@ -1037,6 +1147,61 @@ impl<M: TextMeasurer> LayoutEngine<M> {
             })
     }
 
+    fn table_widths_are_useful(
+        &self,
+        columns: &[TableColumnLayout],
+        widths: &[u32],
+        table_width: u32,
+    ) -> bool {
+        if columns.len() < 6 {
+            return true;
+        }
+        let available = table_width.saturating_sub(table_group_overhead(
+            columns.len(),
+            self.style.table_cell_padding,
+            self.style.table_border.width.max(1),
+        ));
+        let preferred_total = columns
+            .iter()
+            .map(|column| column.preferred_width)
+            .fold(0, u32::saturating_add);
+        let has_severely_compressed_column = columns
+            .iter()
+            .zip(widths.iter())
+            .any(|(column, width)| column.preferred_width > width.saturating_mul(3));
+        let has_excess_preferred_demand = preferred_total > available.saturating_mul(2);
+        !(has_excess_preferred_demand || has_severely_compressed_column)
+    }
+
+    fn group_preferred_width(
+        &self,
+        indexes: &[usize],
+        columns: &[TableColumnLayout],
+        table_width: u32,
+    ) -> u32 {
+        let available = table_width.saturating_sub(table_group_overhead(
+            indexes.len(),
+            self.style.table_cell_padding,
+            self.style.table_border.width.max(1),
+        ));
+        let key_width = indexes
+            .iter()
+            .find(|index| **index == 0)
+            .map(|index| columns[*index].minimum_width.max(1).min(available))
+            .unwrap_or(0);
+        indexes
+            .iter()
+            .map(|index| {
+                let preferred = columns[*index].preferred_width.max(1);
+                if *index == 0 {
+                    preferred.min(available)
+                } else {
+                    preferred.min(available.saturating_sub(key_width))
+                }
+            })
+            .fold(0, u32::saturating_add)
+    }
+
     fn make_table_group(
         &self,
         indexes: &[usize],
@@ -1044,9 +1209,10 @@ impl<M: TextMeasurer> LayoutEngine<M> {
         width: u32,
         x: i32,
         text_style: TextStyle,
+        aggressive: bool,
     ) -> TableColumnGroup {
         let widths = self
-            .allocate_table_widths(indexes, columns, width, true)
+            .allocate_table_widths(indexes, columns, width, aggressive)
             .filter(|widths| self.table_widths_are_readable(widths, text_style))
             .unwrap_or_else(|| vec![1; indexes.len()]);
         TableColumnGroup {
@@ -2085,7 +2251,7 @@ mod tests {
     }
 
     #[test]
-    fn tables_keep_normal_typography_and_clearance_at_t1_width() {
+    fn tables_use_content_aware_grouping_at_t1_width() {
         let document = crate::parse::parse(include_str!("../../tests/fixtures/table-layout.md"))
             .expect("table fixture should parse");
         let style = ReaderStyle::default();
@@ -2098,7 +2264,21 @@ mod tests {
 
         assert_eq!(tables.len(), 2);
         assert_eq!(tables[0].mode, TableLayoutMode::Normal);
-        assert_eq!(tables[1].mode, TableLayoutMode::Normal);
+        assert_eq!(tables[1].mode, TableLayoutMode::Grouped);
+        let detail_group = tables[1]
+            .groups
+            .iter()
+            .find(|group| group.columns.contains(&7))
+            .expect("wide table should retain a detail continuation group");
+        let detail_width = detail_group
+            .columns
+            .iter()
+            .position(|column| *column == 7)
+            .map(|index| detail_group.widths[index])
+            .expect("detail group should include its detail width");
+        assert!(detail_group.columns.contains(&0));
+        assert!(detail_width > tables[1].columns[7].minimum_width);
+        assert!(detail_width > tables[1].groups[0].widths.iter().copied().max().unwrap());
 
         for block in layout
             .blocks()
