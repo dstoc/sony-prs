@@ -46,6 +46,18 @@ jobs:
           rustup run "${{ steps.build-pins.outputs.rust_toolchain }}" rustc --version
           rustup run "${{ steps.build-pins.outputs.rust_toolchain }}" cargo --version
 
+      - name: Cache host Rust dependencies
+        uses: Swatinem/rust-cache@63fed3e2fecf6f7b51dc6f043341b79ef82a9ae7 # v2.9.2
+        with:
+          shared-key: prs-workspace-host
+          add-job-id-key: false
+          key: >-
+            host-rust-${{ steps.build-pins.outputs.rust_toolchain }}-
+            manifests-${{ hashFiles('**/Cargo.toml', '**/Cargo.lock') }}
+          cache-targets: true
+          cache-all-crates: true
+          cache-bin: true
+
       - name: Check formatting
         run: cargo +"${{ steps.build-pins.outputs.rust_toolchain }}" fmt --all --check
 
@@ -78,11 +90,33 @@ jobs:
         with:
           version: "${{ steps.build-pins.outputs.zig_version }}"
 
+      - name: Cache ARM Rust dependencies and tooling
+        uses: Swatinem/rust-cache@63fed3e2fecf6f7b51dc6f043341b79ef82a9ae7 # v2.9.2
+        with:
+          shared-key: prs-t1-armv5te
+          add-job-id-key: false
+          key: >-
+            arm-rust-${{ steps.build-pins.outputs.rust_toolchain }}-
+            target-${{ steps.build-pins.outputs.target }}-
+            zig-${{ steps.build-pins.outputs.zig_version }}-
+            cargo-zigbuild-${{ steps.build-pins.outputs.cargo_zigbuild_version }}-
+            build-${{ steps.build-pins.outputs.build_config_hash }}-
+            manifests-${{ hashFiles('**/Cargo.toml', '**/Cargo.lock') }}
+          cache-targets: true
+          cache-all-crates: true
+          cache-bin: true
+
       - name: Install pinned cargo-zigbuild
         run: |
-          cargo +"${{ steps.build-pins.outputs.rust_toolchain }}" install cargo-zigbuild \
-            --version "${{ steps.build-pins.outputs.cargo_zigbuild_version }}" \
-            --locked
+          cargo_zigbuild_bin="${CARGO_HOME:-$HOME/.cargo}/bin/cargo-zigbuild"
+          expected_version="cargo-zigbuild ${{ steps.build-pins.outputs.cargo_zigbuild_version }}"
+          if [[ ! -x "$cargo_zigbuild_bin" ]] ||
+            [[ "$("$cargo_zigbuild_bin" --version 2>/dev/null)" != "$expected_version" ]]; then
+            cargo +"${{ steps.build-pins.outputs.rust_toolchain }}" install cargo-zigbuild \
+              --version "${{ steps.build-pins.outputs.cargo_zigbuild_version }}" \
+              --locked
+          fi
+          "$cargo_zigbuild_bin" --version
           zig version
 
       - name: Build and verify the production executable

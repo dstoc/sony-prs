@@ -30,6 +30,16 @@ if ! awk '
   exit 1
 fi
 grep -Fq 'version: "${{ steps.build-pins.outputs.zig_version }}"' "$workflow"
+grep -Fq 'uses: Swatinem/rust-cache@63fed3e2fecf6f7b51dc6f043341b79ef82a9ae7 # v2.9.2' "$workflow"
+grep -Fq 'shared-key: prs-t1-armv5te' "$workflow"
+grep -Fq 'add-job-id-key: false' "$workflow"
+grep -Fq 'cache-targets: true' "$workflow"
+grep -Fq 'cache-all-crates: true' "$workflow"
+grep -Fq 'cache-bin: true' "$workflow"
+grep -Fq "manifests-\${{ hashFiles('**/Cargo.toml', '**/Cargo.lock') }}" "$workflow"
+grep -Fq 'build-${{ steps.build-pins.outputs.build_config_hash }}' "$workflow"
+grep -Fq 'if [[ ! -x "$cargo_zigbuild_bin" ]]' "$workflow"
+grep -Fq 'build_config_hash=' "$build_script"
 grep -Fq 'readonly RUST_TOOLCHAIN="1.98.1"' "$build_script"
 grep -Fq 'readonly ZIG_VERSION="0.16.0"' "$build_script"
 grep -Fq 'readonly CARGO_ZIGBUILD_VERSION="0.23.4"' "$build_script"
@@ -53,5 +63,7 @@ test "$("$build_script" print rust-toolchain)" = '1.98.1'
 test "$("$build_script" print zig-version)" = '0.16.0'
 test "$("$build_script" print cargo-zigbuild-version)" = '0.23.4'
 test "$("$build_script" print target)" = 'armv5te-unknown-linux-musleabi'
+test "$("$build_script" print-github-actions | sed -n '/^build_config_hash=/p')" = \
+  "build_config_hash=$(sha256sum "$build_script" | cut -d ' ' -f1)"
 
 printf '%s\n' 'release-please workflow regression checks passed'

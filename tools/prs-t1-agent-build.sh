@@ -52,10 +52,15 @@ print_pin() {
 }
 
 print_github_actions() {
+  local build_config_hash
+
+  build_config_hash=$(sha256sum "$script_dir/prs-t1-agent-build.sh" | cut -d ' ' -f1)
+
   printf 'rust_toolchain=%s\n' "$RUST_TOOLCHAIN"
   printf 'zig_version=%s\n' "$ZIG_VERSION"
   printf 'cargo_zigbuild_version=%s\n' "$CARGO_ZIGBUILD_VERSION"
   printf 'target=%s\n' "$TARGET"
+  printf 'build_config_hash=%s\n' "$build_config_hash"
 }
 
 check_installed_toolchain() {
