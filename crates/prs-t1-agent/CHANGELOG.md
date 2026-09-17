@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/dstoc/sony-prs/compare/prs-t1-agent-v0.4.3...prs-t1-agent-v0.5.0) (2026-09-17)
+
+
+### Features
+
+* **prs-markdown:** use real monospace style faces ([522aa3a](https://github.com/dstoc/sony-prs/commit/522aa3a881aa4ece7fcf3a56997fdcec764c1eb4))
+
 ## [0.4.3](https://github.com/dstoc/sony-prs/compare/prs-t1-agent-v0.4.2...prs-t1-agent-v0.4.3) (2026-09-17)
 
 ## [0.4.2](https://github.com/dstoc/sony-prs/compare/prs-t1-agent-v0.4.1...prs-t1-agent-v0.4.2) (2026-09-17)
