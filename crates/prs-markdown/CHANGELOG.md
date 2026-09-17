@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.6.0](https://github.com/dstoc/sony-prs/compare/prs-markdown-v0.5.0...prs-markdown-v0.6.0) (2026-09-17)
+
+
+### Features
+
+* **prs-markdown:** render task list checkboxes ([bc3d5e5](https://github.com/dstoc/sony-prs/commit/bc3d5e542a19f1401a96535cc021b45c00f89ed1))
+
+
+### Bug Fixes
+
+* **markdown:** preserve ordered list start numbers ([49d0923](https://github.com/dstoc/sony-prs/commit/49d0923333d185cc8ee97039de4a4c1f90a94a48))
+* **prs-markdown:** stabilize list marker columns ([5484d5a](https://github.com/dstoc/sony-prs/commit/5484d5a9cd8078815701cfb424870bfe1f66c812))
+* **prs-markdown:** use one fill for wrapped code lines ([0682530](https://github.com/dstoc/sony-prs/commit/068253022414fb93ad833d253629b6143ecc5d25))
+
 ## [0.5.0](https://github.com/dstoc/sony-prs/compare/prs-markdown-v0.4.0...prs-markdown-v0.5.0) (2026-09-17)
 
 
