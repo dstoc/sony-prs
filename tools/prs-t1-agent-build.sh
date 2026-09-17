@@ -78,13 +78,30 @@ check_installed_toolchain() {
 }
 
 build() {
-  check_installed_toolchain
+  local build_log="target/prs-t1-agent-build.log"
+  local build_status
 
+  check_installed_toolchain
+  mkdir -p "$(dirname -- "$build_log")"
+
+  set +e
   RUSTFLAGS='-C target-cpu=arm926ej-s -C link-arg=-mcpu=arm926ej-s' \
     cargo +"$RUST_TOOLCHAIN" zigbuild \
     --manifest-path "$MANIFEST" \
     --release \
-    --target "$TARGET"
+    --target "$TARGET" 2>&1 | tee "$build_log"
+  build_status=${PIPESTATUS[0]}
+  set -e
+
+  if (( build_status != 0 )); then
+    while IFS= read -r line; do
+      line=${line//'%'/'%25'}
+      line=${line//$'\r'/'%0D'}
+      line=${line//$'\n'/'%0A'}
+      printf '::error file=tools/prs-t1-agent-build.sh::%s\n' "$line"
+    done < <(tail -n 20 "$build_log")
+    return "$build_status"
+  fi
 }
 
 verify() {
