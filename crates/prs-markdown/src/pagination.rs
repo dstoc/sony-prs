@@ -740,6 +740,7 @@ fn add_line(
     table: Option<&TableLayout>,
     line_index: usize,
 ) {
+    let code_surface = kind == LayoutBlockKind::Code || line.code;
     if matches!(kind, LayoutBlockKind::Quote | LayoutBlockKind::Alert) {
         let border_x = line.bounds.top_left.x.saturating_sub(
             style
@@ -760,7 +761,7 @@ fn add_line(
             style: style.block_quote_border,
         });
     }
-    if kind == LayoutBlockKind::Code {
+    if code_surface {
         page.push_command(DisplayCommand::Fill {
             bounds: translate(line.bounds, page_offset),
             style: if line.wrapped {
@@ -787,7 +788,7 @@ fn add_line(
             }
             continue;
         }
-        if fragment.style.code && kind != LayoutBlockKind::Code {
+        if fragment.style.code && !code_surface {
             page.push_command(DisplayCommand::Fill {
                 bounds,
                 style: style.inline_code_background,
@@ -817,7 +818,7 @@ fn add_line(
             page.add_hit_region(HitRegion::new(bounds, target.clone()));
         }
     }
-    if line.fragments.is_empty() {
+    if line.fragments.is_empty() && !code_surface {
         let bounds = translate(line.bounds, page_offset);
         match kind {
             LayoutBlockKind::Rule => page.push_command(DisplayCommand::Rule {
@@ -1202,6 +1203,40 @@ mod tests {
     }
 
     #[test]
+    fn nested_code_surface_keeps_blank_and_text_lines_decorated() {
+        let style = pagination_style();
+        let document = crate::parse::parse("> ```rust\n> \n> let value = 1;\n> ```\n")
+            .expect("nested code fence should parse");
+        let layout = LayoutEngine::new(style).layout(&document, Viewport::new(100, 100));
+        let quote = &layout.blocks()[0];
+        assert_eq!(quote.kind, LayoutBlockKind::Quote);
+        assert!(quote.lines.iter().all(|line| line.code));
+        assert!(quote.lines.iter().any(|line| line.fragments.is_empty()));
+
+        let page = Paginator::new(style).paginate(&layout).remove(0);
+        let fills = page
+            .display_list()
+            .iter()
+            .filter_map(|command| match command {
+                DisplayCommand::Fill { bounds, style } => Some((*bounds, *style)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(fills.len(), quote.lines.len());
+        assert!(fills.iter().zip(&quote.lines).all(|((bounds, _), line)| {
+            bounds.top_left == line.bounds.top_left && bounds.size == line.bounds.size
+        }));
+        assert!(!page.display_list().iter().any(|command| {
+            matches!(
+                command,
+                DisplayCommand::Rule { style, .. }
+                    if *style == BorderStyle::new(Color::BLACK, 1)
+            )
+        }));
+    }
+
+    #[test]
     fn strikethrough_fragments_get_a_visible_decoration() {
         let style = pagination_style();
         let document =
@@ -1246,6 +1281,7 @@ mod tests {
                             image: None,
                             link: None,
                         }],
+                        code: false,
                         wrapped: false,
                     }],
                     anchor: None,
@@ -1263,6 +1299,7 @@ mod tests {
                             image: None,
                             link: None,
                         }],
+                        code: false,
                         wrapped: false,
                     }],
                     anchor: None,

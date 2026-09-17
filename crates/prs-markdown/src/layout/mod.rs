@@ -59,6 +59,9 @@ pub struct LayoutBlock {
 pub struct LayoutLine {
     pub bounds: Rectangle,
     pub fragments: Vec<LayoutFragment>,
+    /// True when this line belongs to a fenced code block, including when
+    /// that block is nested inside a quote, list, alert, or footnote.
+    pub code: bool,
     /// True when this displayed line is a continuation produced by wrapping
     /// one source line of a fenced code block.
     pub wrapped: bool,
@@ -406,6 +409,7 @@ impl<M: TextMeasurer> LayoutEngine<M> {
                             image: Some(LayoutImage::new(image, source, alt)),
                             link: None,
                         }],
+                        code: false,
                         wrapped: false,
                     }]
                 } else {
@@ -430,6 +434,7 @@ impl<M: TextMeasurer> LayoutEngine<M> {
                         Size::new(width, self.style.body.line_height.max(1)),
                     ),
                     fragments: Vec::new(),
+                    code: false,
                     wrapped: false,
                 }],
                 None,
@@ -1387,6 +1392,7 @@ impl<M: TextMeasurer> LayoutEngine<M> {
                     ),
                 ),
                 fragments,
+                code: false,
                 wrapped: false,
             });
             row_y = row_y
@@ -1451,6 +1457,7 @@ impl<M: TextMeasurer> LayoutEngine<M> {
                 self.style.code.line_height,
             );
             for (line_index, line) in lines.iter_mut().enumerate() {
+                line.code = true;
                 line.wrapped = line_index > 0;
                 // `LineBuilder` uses used text width for ordinary prose.
                 // Code lines instead expose the stable block surface to
@@ -1476,6 +1483,7 @@ impl<M: TextMeasurer> LayoutEngine<M> {
                     Size::new(surface_width, self.style.code.line_height.max(1)),
                 ),
                 fragments: Vec::new(),
+                code: true,
                 wrapped: false,
             });
         }
@@ -1780,6 +1788,7 @@ impl LineBuilder {
                 Size::new(self.used, self.height),
             ),
             fragments: self.fragments,
+            code: false,
             wrapped: false,
         }
     }
@@ -2012,6 +2021,7 @@ fn empty_line(x: i32, y: i32, line_height: u32) -> LayoutLine {
     LayoutLine {
         bounds: Rectangle::new(Point::new(x, y), Size::new(0, line_height.max(1))),
         fragments: Vec::new(),
+        code: false,
         wrapped: false,
     }
 }
