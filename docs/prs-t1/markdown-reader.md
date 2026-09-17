@@ -135,13 +135,19 @@ renderer about Markdown blocks. Conversely, renderer code depends only on
 `PageLayout` and these generic styles, geometry, and raster types.
 
 Fenced code is highlighted before layout by `highlighting::SyntectHighlighter`.
-The build script serializes 16 selected language grammars plus plain text into
-a 7,551-byte packdump in the current build; the runtime does not parse grammar
-source files or load Syntect's unrestricted defaults. One Syntect state is kept
-through all source lines in a block, including lines that later land on
-different pages. `LayoutLine::wrapped` marks display continuations, and the
-paginator uses a separate light-gray continuation fill while retaining normal
-monospace text bounds and line-level page breaks.
+The runtime loads Syntect 5.3.0's bundled upstream definitions through
+`SyntaxSet::load_defaults_newlines()`. The set contains 75 definitions and the
+embedded `default_newlines.packdump` payload is 368,467 bytes in the 5.3.0
+crate. The runtime uses Oniguruma; it does not enable `regex-fancy`. One
+Syntect state is kept through all source lines in a block, including lines that
+later land on different pages. `LayoutLine::wrapped` marks display
+continuations, and the paginator uses a separate light-gray continuation fill
+while retaining normal monospace text bounds and line-level page breaks.
+
+Application fence normalization remains in place. Syntect 5.3.0 has no separate
+TypeScript or TOML default definition, so TypeScript aliases use JavaScript and
+TOML aliases use YAML. Both mappings select real upstream definitions and keep
+the existing visible, lossless behavior.
 
 ## Deterministic pagination rules
 
@@ -197,10 +203,11 @@ unsupported, or over-budget images remain visible through their alt-text
 fallback. `ImageResources` retains no decoded source image.
 
 `FontdueTextEngine` keeps an LRU glyph cache bounded both by entry count and by
-256 KiB of coverage bytes. The selected Syntect runtime bundle is a static
-7,551-byte packdump in the current build and its grammar set is initialized
-once. Highlighting is performed once per code block while layout is built; it
-is not repeated on page turns.
+256 KiB of coverage bytes. The selected Syntect runtime bundle is the static
+368,467-byte upstream `default_newlines.packdump` payload in Syntect 5.3.0,
+and its 75-definition grammar set is initialized once. Highlighting is
+performed once per code block while layout is built; it is not repeated on page
+turns.
 
 The bounded reader retains the complete owned document and document-coordinate
 layout needed to rebuild pages, plus a compact page directory of logical ranges
@@ -398,7 +405,7 @@ owned IR and layout still apply the same reader-oriented fallbacks.
 | Autolinks | URL, `www`, and email autolinks become semantic links. Local targets navigate through the reader; external targets are returned to the host as `ReaderEvent::ExternalUrl`. |
 | Internal links and anchors | Fragment links (`#anchor`), root-relative `.md`/`.markdown` documents, and document-plus-anchor references are resolved relative to the containing document and root boundary. Back restores the prior document, page, and logical cursor. Missing documents or anchors return a reader error. |
 | GFM tables | Headers, body rows, left/center/right alignment, readable normal/compact/aggressive font fallback, horizontal and vertical cell padding, continuous wrapped-row rules, repeated continuation headers, and deterministic vertical column groups are implemented. Rows normally paginate atomically; an oversized row splits at its displayed lines. |
-| Fenced code and syntax | Fenced source is preserved, highlighted in one stateful pass, and paginated at displayed-line boundaries. The bundled grammars cover shell/bash, Rust, Python, JavaScript, TypeScript, JSON, YAML, TOML, C, C++, Go, HTML, CSS, SQL, diff/patch, and Markdown, plus plain text. Unknown or absent languages remain lossless plain monospace. |
+| Fenced code and syntax | Fenced source is preserved, highlighted in one stateful pass, and paginated at displayed-line boundaries. Syntect's upstream definitions cover shell/bash, Rust, Python, JavaScript, JSON, YAML, C, C++, Go, HTML, CSS, SQL, diff/patch, and Markdown. TypeScript aliases use JavaScript, and TOML aliases use YAML because Syntect 5.3.0 does not bundle separate definitions for them. Unknown or absent languages remain lossless plain monospace. |
 | Images | Local PNG, JPEG, and WebP references are decoded, alpha-composited onto white, proportionally fitted to the content/page bounds, converted to bounded grayscale, and rendered as display-list rasters. Standalone images are atomic pagination units; inline images participate in their line. |
 | Missing or unsupported images | Missing, external, corrupt, over-budget, and unsupported image formats do not abort the document. The image's alt text is rendered as `[image: ...]`, or `[image unavailable]` when no alt text exists. Encoded reads, decoder allocation, retained bytes, and image-entry count are bounded. |
 | Footnotes | GFM footnote and inline-footnote references render as `[1]` (or `[^name]` when no number is supplied). Definitions render as ordinary splittable `[^name]: ...` content. There is no browser-style back-link action. |

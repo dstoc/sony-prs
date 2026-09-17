@@ -5,21 +5,16 @@ edition = "2021"
 description = "Hardware-independent Markdown reading primitives for Sony PRS readers"
 license = "MIT OR Apache-2.0"
 publish = false
-build = "build.rs"
 
 [dependencies]
 comrak = { version = "0.55.0", default-features = false }
 embedded-graphics = { version = "0.8.2", default-features = false }
 fontdue = "0.9.4"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
-# Runtime syntax regexes are compiled by the bundled Oniguruma C backend; the
-# reader must not depend on a system-provided regex library.
-syntect = { version = "5.3.0", default-features = false, features = ["parsing", "regex-onig", "dump-load"] }
-
-[build-dependencies]
-# Build-time YAML loading creates the small selected grammar packdump. The
-# unrestricted default syntax package is never linked or embedded.
-syntect = { version = "5.3.0", default-features = false, features = ["parsing", "regex-fancy", "yaml-load", "dump-create"] }
+# Syntect's bundled upstream syntax definitions are loaded directly at runtime.
+# Runtime regexes use the bundled Oniguruma C backend; the reader must not
+# depend on a system-provided regex library.
+syntect = { version = "5.3.0", default-features = false, features = ["default-syntaxes", "regex-onig"] }
 
 [dev-dependencies]
 notosans = "0.1.0"
