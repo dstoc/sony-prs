@@ -627,6 +627,7 @@ mod tests {
                 bounds,
                 text: "x".into(),
                 style,
+                background: Color::WHITE,
             }]),
             hit_regions: Vec::new(),
         };
