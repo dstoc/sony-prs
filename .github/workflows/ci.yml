@@ -61,6 +61,9 @@ jobs:
       - name: Check formatting
         run: cargo +"${{ steps.build-pins.outputs.rust_toolchain }}" fmt --all --check
 
+      - name: Check Release Please workspace configuration
+        run: tools/test-release-please-workflow.sh
+
       - name: Run workspace tests
         run: cargo +"${{ steps.build-pins.outputs.rust_toolchain }}" test --workspace
 

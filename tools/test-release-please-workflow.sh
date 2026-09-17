@@ -4,6 +4,8 @@ set -euo pipefail
 workflow="${1:-.github/workflows/release-please.yml}"
 manifest="${2:-crates/prs-t1-agent/Cargo.toml}"
 build_script="${3:-tools/prs-t1-agent-build.sh}"
+release_config="${4:-release-please-config.json}"
+release_manifest="${5:-.release-please-manifest.json}"
 
 grep -Fq 'workflow_dispatch:' "$workflow"
 grep -Fq 'description: Existing prs-t1-agent release tag to build/upload' "$workflow"
@@ -66,4 +68,55 @@ test "$("$build_script" print target)" = 'armv5te-unknown-linux-musleabi'
 test "$("$build_script" print-github-actions | sed -n '/^build_config_hash=/p')" = \
   "build_config_hash=$(sha256sum "$build_script" | cut -d ' ' -f1)"
 
-printf '%s\n' 'release-please workflow regression checks passed'
+jq -e '
+  any(.plugins[]?; .type == "cargo-workspace")
+  and (.packages["crates/prs-t1-agent"]["release-type"] == "rust")
+  and (.packages["crates/prs-t1-agent"].component == "prs-t1-agent")
+  and (.packages["crates/prs-t1-agent"]["include-component-in-tag"] == true)
+  and (.packages["crates/prs-markdown"]["release-type"] == "rust")
+  and (.packages["crates/prs-markdown"].component == "prs-markdown")
+  and (.packages["crates/prs-markdown"]["skip-github-release"] == true)
+  and (.packages["crates/prs-markdown"]["skip-changelog"] == true)
+' "$release_config" >/dev/null
+
+agent_version="$(cargo metadata --no-deps --format-version 1 |
+  jq -r '.packages[] | select(.name == "prs-t1-agent") | .version')"
+markdown_version="$(cargo metadata --no-deps --format-version 1 |
+  jq -r '.packages[] | select(.name == "prs-markdown") | .version')"
+test "$(jq -r '."crates/prs-t1-agent"' "$release_manifest")" = "$agent_version"
+test "$(jq -r '."crates/prs-markdown"' "$release_manifest")" = "$markdown_version"
+grep -Fq 'prs-markdown = { path = "../prs-markdown" }' "$manifest"
+
+# Keep a local markdown-only Conventional Commit fixture here so changes to
+# this regression check cannot accidentally stop exercising path collection.
+fixture_repo="$(mktemp -d)"
+trap 'rm -rf "$fixture_repo"' EXIT
+git -C "$fixture_repo" init -q
+git -C "$fixture_repo" config user.email release-test@example.invalid
+git -C "$fixture_repo" config user.name release-test
+mkdir -p "$fixture_repo/crates/prs-markdown/src" "$fixture_repo/crates/scsi-transport/src"
+printf '%s\n' 'initial markdown source' > "$fixture_repo/crates/prs-markdown/src/lib.rs"
+printf '%s\n' 'initial unrelated source' > "$fixture_repo/crates/scsi-transport/src/lib.rs"
+git -C "$fixture_repo" add .
+git -C "$fixture_repo" commit -q -m 'chore: seed release scope fixture'
+printf '%s\n' 'markdown-only release candidate' > "$fixture_repo/crates/prs-markdown/src/lib.rs"
+git -C "$fixture_repo" add crates/prs-markdown/src/lib.rs
+git -C "$fixture_repo" commit -q -m 'fix(markdown): exercise workspace release scope'
+markdown_commit_paths="$(git -C "$fixture_repo" diff-tree --no-commit-id --name-only -r HEAD)"
+test "$markdown_commit_paths" = 'crates/prs-markdown/src/lib.rs'
+printf '%s\n' 'unrelated workspace change' > "$fixture_repo/crates/scsi-transport/src/lib.rs"
+git -C "$fixture_repo" add crates/scsi-transport/src/lib.rs
+git -C "$fixture_repo" commit -q -m 'fix(scsi): remain outside application release scope'
+unrelated_commit_paths="$(git -C "$fixture_repo" diff-tree --no-commit-id --name-only -r HEAD)"
+test "$unrelated_commit_paths" = 'crates/scsi-transport/src/lib.rs'
+if jq -e --arg path "$unrelated_commit_paths" '
+  .packages
+  | keys
+  | any(.[]; . as $package |
+      ($path == $package or ($path | startswith($package + "/"))))
+' "$release_config" >/dev/null; then
+  printf '%s\n' 'unrelated workspace paths must not be configured release package roots' >&2
+  exit 1
+fi
+
+printf '%s\n' 'release-please workspace and workflow regression checks passed'

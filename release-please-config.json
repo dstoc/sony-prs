@@ -1,10 +1,21 @@
 {
   "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "plugins": [
+    {
+      "type": "cargo-workspace"
+    }
+  ],
   "packages": {
     "crates/prs-t1-agent": {
       "release-type": "rust",
       "component": "prs-t1-agent",
       "include-component-in-tag": true
+    },
+    "crates/prs-markdown": {
+      "release-type": "rust",
+      "component": "prs-markdown",
+      "skip-github-release": true,
+      "skip-changelog": true
     }
   }
 }

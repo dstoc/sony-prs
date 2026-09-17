@@ -4,6 +4,7 @@ set -euo pipefail
 workflow="${1:-.github/workflows/ci.yml}"
 
 grep -Fq 'pull_request:' "$workflow"
+grep -Fq 'tools/test-release-please-workflow.sh' "$workflow"
 grep -Fq 'branches:' "$workflow"
 grep -Fq -- '- main' "$workflow"
 grep -Fq 'name: GitHub Actions workflow syntax' "$workflow"
@@ -29,7 +30,8 @@ grep -Fq "manifests-\${{ hashFiles('**/Cargo.toml', '**/Cargo.lock') }}" "$workf
 grep -Fq 'build-${{ steps.build-pins.outputs.build_config_hash }}' "$workflow"
 grep -Fq 'if [[ ! -x "$cargo_zigbuild_bin" ]]' "$workflow"
 
-if grep -Eq 'release-please|gh release|workflow_dispatch|release upload' "$workflow"; then
+if grep -vF 'tools/test-release-please-workflow.sh' "$workflow" |
+  grep -Eq 'release-please|gh release|workflow_dispatch|release upload'; then
   printf '%s\n' 'CI workflow contains release operations' >&2
   exit 1
 fi
