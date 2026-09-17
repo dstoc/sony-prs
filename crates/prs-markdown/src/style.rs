@@ -133,10 +133,10 @@ pub struct ReaderStyle {
     pub thematic_break: BorderStyle,
     /// Horizontal inset applied to each table cell around its text.
     pub table_cell_padding: u32,
-    /// Vertical inset applied to each displayed line in a table cell.
+    /// Vertical inset applied around the displayed lines in a table cell.
     ///
-    /// Table borders frame each displayed line. This inset keeps glyph bounds
-    /// away from those borders, including when a cell wraps.
+    /// The inset keeps the first and last glyph bounds away from the row
+    /// borders. Wrapped lines retain the configured text line height.
     pub table_cell_vertical_padding: u32,
     /// Smallest table font size used by compact and grouped fallback modes.
     pub table_min_font_size: u32,

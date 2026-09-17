@@ -1498,16 +1498,24 @@ impl<M: TextMeasurer> LayoutEngine<M> {
             )
             .collect::<Vec<_>>();
         let row_height = cell_lines.iter().map(Vec::len).max().unwrap_or(1);
+        let line_heights = (0..row_height)
+            .map(|line_index| {
+                cell_lines
+                    .iter()
+                    .filter_map(|lines| lines.get(line_index))
+                    .map(|line| line.bounds.size.height)
+                    .max()
+                    .unwrap_or(text_style.line_height.max(1))
+            })
+            .collect::<Vec<_>>();
         let row_start = output.len();
-        let mut row_y = start_y;
-        for line_index in 0..row_height {
+        let mut content_y = start_y.saturating_add(vertical_padding as i32);
+        let mut line_y = start_y;
+        for (line_index, height) in line_heights.iter().copied().enumerate() {
             let mut fragments = Vec::new();
-            let mut height = text_style.line_height.max(1);
             for lines in &cell_lines {
                 if let Some(line) = lines.get(line_index) {
-                    height = height.max(line.bounds.size.height);
-                    let target_y = row_y.saturating_add(vertical_padding as i32);
-                    let y_offset = target_y.saturating_sub(line.bounds.top_left.y);
+                    let y_offset = content_y.saturating_sub(line.bounds.top_left.y);
                     fragments.extend(line.fragments.iter().cloned().map(|mut fragment| {
                         fragment.bounds = Rectangle::new(
                             Point::new(
@@ -1520,12 +1528,20 @@ impl<M: TextMeasurer> LayoutEngine<M> {
                     }));
                 }
             }
+            let top_padding = if line_index == 0 { vertical_padding } else { 0 };
+            let bottom_padding = if line_index + 1 == row_height {
+                vertical_padding
+            } else {
+                0
+            };
             output.push(LayoutLine {
                 bounds: Rectangle::new(
-                    Point::new(group.x, row_y),
+                    Point::new(group.x, line_y),
                     Size::new(
                         group.width,
-                        height.saturating_add(vertical_padding.saturating_mul(2)),
+                        height
+                            .saturating_add(top_padding)
+                            .saturating_add(bottom_padding),
                     ),
                 ),
                 fragments,
@@ -1534,15 +1550,15 @@ impl<M: TextMeasurer> LayoutEngine<M> {
                 code: false,
                 wrapped: false,
             });
-            row_y = row_y
-                .saturating_add(height.saturating_add(vertical_padding.saturating_mul(2)) as i32);
+            content_y = content_y.saturating_add(height as i32);
+            line_y = content_y;
         }
         rows.push(TableRowLayout {
             line_range: row_start..output.len(),
             group: group_index,
             header,
         });
-        row_y
+        content_y.saturating_add(vertical_padding as i32)
     }
 
     fn code_lines(
@@ -2726,6 +2742,61 @@ mod tests {
     }
 
     #[test]
+    fn wrapped_table_cells_keep_regular_paragraph_line_spacing() {
+        let style = style();
+        let text = "A table cell wraps this text across several lines while keeping the regular paragraph rhythm.";
+        let document = Document::from_blocks(vec![
+            Block::paragraph(text),
+            Block::Table(Table {
+                headers: Vec::new(),
+                rows: vec![vec![vec![Inline::Text(text.into())]]],
+                alignments: Vec::new(),
+            }),
+        ]);
+        let layout = LayoutEngine::new(style).layout(&document, Viewport::new(60, 300));
+        let paragraph = &layout.blocks()[0].lines;
+        let table_block = &layout.blocks()[1];
+        let table = table_block.table.as_ref().expect("table metadata");
+        let row = &table.rows[0];
+        let table_lines = &table_block.lines[row.line_range.clone()];
+        let paragraph_y = paragraph
+            .iter()
+            .filter_map(|line| {
+                line.fragments
+                    .first()
+                    .map(|fragment| fragment.bounds.top_left.y)
+            })
+            .collect::<Vec<_>>();
+        let table_y = table_lines
+            .iter()
+            .filter_map(|line| {
+                line.fragments
+                    .first()
+                    .map(|fragment| fragment.bounds.top_left.y)
+            })
+            .collect::<Vec<_>>();
+
+        assert!(paragraph_y.len() >= 2);
+        assert!(table_y.len() >= 2);
+        assert!(paragraph_y
+            .windows(2)
+            .all(|pair| pair[1] - pair[0] == style.body.line_height as i32));
+        assert!(table_y
+            .windows(2)
+            .all(|pair| { pair[1] - pair[0] == style.body.line_height as i32 }));
+        assert_eq!(
+            table_y[0] - table_lines[0].bounds.top_left.y,
+            style.table_cell_vertical_padding as i32
+        );
+        assert_eq!(
+            rect_bottom(&table_lines[table_lines.len() - 1].bounds)
+                - table_y[table_y.len() - 1]
+                - style.body.line_height as i32,
+            style.table_cell_vertical_padding as i32
+        );
+    }
+
+    #[test]
     fn tables_allocate_columns_and_keep_cell_content_separate() {
         let table = Table {
             headers: vec![
@@ -2811,14 +2882,23 @@ mod tests {
             .iter()
             .filter(|block| block.kind == LayoutBlockKind::Table)
         {
-            for line in &block.lines {
-                for fragment in &line.fragments {
-                    assert!(fragment.style.font_size >= style.table_min_font_size);
-                    assert_eq!(
-                        fragment.bounds.top_left.y - line.bounds.top_left.y,
-                        style.table_cell_vertical_padding as i32
-                    );
-                    assert!(rect_bottom(&fragment.bounds) < rect_bottom(&line.bounds));
+            let table = block.table.as_ref().expect("table metadata");
+            for row in &table.rows {
+                for (line_index, line) in block.lines[row.line_range.clone()].iter().enumerate() {
+                    for fragment in &line.fragments {
+                        assert!(fragment.style.font_size >= style.table_min_font_size);
+                        if line_index == 0 {
+                            assert_eq!(
+                                fragment.bounds.top_left.y - line.bounds.top_left.y,
+                                style.table_cell_vertical_padding as i32
+                            );
+                        } else {
+                            assert_eq!(fragment.bounds.top_left.y, line.bounds.top_left.y);
+                        }
+                        if line_index + 1 == row.line_range.len() {
+                            assert!(rect_bottom(&fragment.bounds) < rect_bottom(&line.bounds));
+                        }
+                    }
                 }
             }
         }

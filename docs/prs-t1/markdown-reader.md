@@ -372,7 +372,7 @@ widths, while oversized tokens use the same character-wrap fallback as cell
 layout. Preferred widths come from normally wrapped cell content. The
 available width is allocated in
 source-column order, with GFM left/center/right alignment, 3 page-space units
-of horizontal and vertical cell padding by default, borders, and a
+of horizontal and row-edge vertical cell padding by default, borders, and a
 bold/heavier-rule header treatment. Normal body typography is retained for
 ordinary tables when their columns fit. Compact and grouped fallback modes use
 a minimum 12-pixel font and 16-pixel line height. Wrapped rows use continuous
@@ -412,7 +412,7 @@ owned IR and layout still apply the same reader-oriented fallbacks.
 | GFM task lists | Checked and unchecked items render a fixed-size, high-contrast visual checkbox before readable task text. Checked items use a filled box with a white check mark; unchecked items use an outlined box. There is no task toggle action. |
 | Autolinks | URL, `www`, and email autolinks become semantic links. Local targets navigate through the reader; external targets are returned to the host as `ReaderEvent::ExternalUrl`. |
 | Internal links and anchors | Fragment links (`#anchor`), root-relative `.md`/`.markdown` documents, and document-plus-anchor references are resolved relative to the containing document and root boundary. Back restores the prior document, page, and logical cursor. Missing documents or anchors return a reader error. |
-| GFM tables | Headers, body rows, left/center/right alignment, readable normal/compact/aggressive font fallback, horizontal and vertical cell padding, continuous wrapped-row rules, repeated continuation headers, and deterministic vertical column groups are implemented. Rows normally paginate atomically; an oversized row splits at its displayed lines. |
+| GFM tables | Headers, body rows, left/center/right alignment, readable normal/compact/aggressive font fallback, horizontal and row-edge vertical cell padding, regular line spacing within wrapped cells, continuous wrapped-row rules, repeated continuation headers, and deterministic vertical column groups are implemented. Rows normally paginate atomically; an oversized row splits at its displayed lines. |
 | Fenced code and syntax | Fenced source is preserved, highlighted in one stateful pass, and paginated at displayed-line boundaries. Syntect's upstream definitions cover shell/bash, Rust, Python, JavaScript, JSON, YAML, C, C++, Go, HTML, CSS, SQL, diff/patch, and Markdown. TypeScript aliases use JavaScript, and TOML aliases use YAML because Syntect 5.3.0 does not bundle separate definitions for them. Unknown or absent languages remain lossless plain monospace. |
 | Images | Local PNG, JPEG, and WebP references are decoded, alpha-composited onto white, proportionally fitted to the content/page bounds, converted to bounded grayscale, and rendered as display-list rasters. Standalone images are atomic pagination units; inline images participate in their line. |
 | Missing or unsupported images | Missing, external, corrupt, over-budget, and unsupported image formats do not abort the document. The image's alt text is rendered as `[image: ...]`, or `[image unavailable]` when no alt text exists. Encoded reads, decoder allocation, retained bytes, and image-entry count are bounded. |
