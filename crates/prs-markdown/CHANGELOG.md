@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/dstoc/sony-prs/compare/prs-markdown-v0.3.0...prs-markdown-v0.4.0) (2026-09-17)
+
+
+### Features
+
+* bound reader memory and page caches ([b080b19](https://github.com/dstoc/sony-prs/commit/b080b19e03a0f2eaac6fb3a2236513e0e7e8a16e))
+
 ## [0.3.0](https://github.com/dstoc/sony-prs/compare/prs-markdown-v0.2.0...prs-markdown-v0.3.0) (2026-09-17)
 
 
