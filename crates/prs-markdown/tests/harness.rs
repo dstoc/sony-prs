@@ -285,6 +285,70 @@ fn syntax_highlighting_is_eink_styled_lossless_and_wraps_code() {
 }
 
 #[test]
+fn highlighted_code_renders_with_real_monospace_style_faces() {
+    let regular = fs::read("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf").expect("host font");
+    let monospace =
+        fs::read("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf").expect("monospace font");
+    let monospace_bold = fs::read("/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf")
+        .expect("monospace bold font");
+    let monospace_italic = fs::read("/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Oblique.ttf")
+        .expect("monospace italic font");
+    let monospace_bold_italic =
+        fs::read("/usr/share/fonts/truetype/dejavu/DejaVuSansMono-BoldOblique.ttf")
+            .expect("monospace bold-italic font");
+    let font_engine = FontdueTextEngine::new(
+        FontConfig::from_faces_with_monospace(
+            &regular,
+            &regular,
+            &regular,
+            &regular,
+            &monospace,
+            &monospace_bold,
+            &monospace_italic,
+            &monospace_bold_italic,
+        ),
+        128,
+    )
+    .expect("complete monospace family should parse");
+    let source =
+        "```rust\n// italic comment\nfn main() { let ready = true; }\n```\n\nThe combined code is ***`let ready`***.";
+    let reader = HostReader::from_source_with_measurer(
+        source,
+        structural_style(),
+        Viewport::new(240, 160),
+        font_engine.clone(),
+    )
+    .expect("highlighted code should parse");
+    let code_fragments = reader
+        .layout()
+        .blocks()
+        .iter()
+        .filter(|block| block.kind == prs_markdown::layout::LayoutBlockKind::Code)
+        .flat_map(|block| &block.lines)
+        .flat_map(|line| &line.fragments)
+        .collect::<Vec<_>>();
+    let all_code_fragments = reader
+        .layout()
+        .blocks()
+        .iter()
+        .flat_map(|block| &block.lines)
+        .flat_map(|line| &line.fragments)
+        .filter(|fragment| fragment.style.code)
+        .collect::<Vec<_>>();
+    assert!(code_fragments.iter().any(|fragment| fragment.style.bold));
+    assert!(code_fragments.iter().any(|fragment| fragment.style.italic));
+    assert!(all_code_fragments
+        .iter()
+        .any(|fragment| fragment.style.bold && fragment.style.italic));
+
+    let mut renderer = prs_markdown::EmbeddedGraphicsRenderer::new(font_engine);
+    for page in reader.pagination().pages() {
+        let image = render_page(page, &mut renderer);
+        assert!(image.pixels().iter().any(|pixel| *pixel < 255));
+    }
+}
+
+#[test]
 fn table_fixture_exposes_rows_headers_and_link_hit_regions() {
     let reader = HostReader::from_source(
         include_str!("fixtures/table-layout.md"),

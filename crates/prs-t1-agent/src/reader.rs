@@ -32,7 +32,11 @@ use std::path::{Path, PathBuf};
 pub const DEFAULT_DOCUMENT_ROOT: &str = "/mnt/sdcard";
 pub const DEFAULT_DOCUMENT: &str = "index.md";
 pub const DEFAULT_FONT: &str = "/system/fonts/DroidSans.ttf";
-pub const DEFAULT_MONOSPACE_FONT: &str = "/system/fonts/DroidSansMono.ttf";
+pub const DEFAULT_MONOSPACE_FONT: &str = "/system/fonts/HelveticaMonospacedW1G-Rg.otf";
+pub const DEFAULT_MONOSPACE_BOLD_FONT: &str = "/system/fonts/HelveticaMonospacedW1G-Bd.otf";
+pub const DEFAULT_MONOSPACE_ITALIC_FONT: &str = "/system/fonts/HelveticaMonospacedW1G-It.otf";
+pub const DEFAULT_MONOSPACE_BOLD_ITALIC_FONT: &str =
+    "/system/fonts/HelveticaMonospacedW1G-BdIt.otf";
 pub const PAGE_BOTTOM_MARGIN: u32 = 16;
 const GLYPH_CACHE_CAPACITY: usize = 256;
 
@@ -50,6 +54,9 @@ pub struct ReaderConfig {
     pub italic_font: PathBuf,
     pub bold_italic_font: PathBuf,
     pub monospace_font: PathBuf,
+    pub monospace_bold_font: PathBuf,
+    pub monospace_italic_font: PathBuf,
+    pub monospace_bold_italic_font: PathBuf,
 }
 
 impl ReaderConfig {
@@ -62,6 +69,18 @@ impl ReaderConfig {
             italic_font: environment_path("PRS_T1_FONT_ITALIC", regular_font.as_os_str()),
             bold_italic_font: environment_path("PRS_T1_FONT_BOLD_ITALIC", regular_font.as_os_str()),
             monospace_font: environment_path("PRS_T1_FONT_MONOSPACE", DEFAULT_MONOSPACE_FONT),
+            monospace_bold_font: environment_path(
+                "PRS_T1_FONT_MONOSPACE_BOLD",
+                DEFAULT_MONOSPACE_BOLD_FONT,
+            ),
+            monospace_italic_font: environment_path(
+                "PRS_T1_FONT_MONOSPACE_ITALIC",
+                DEFAULT_MONOSPACE_ITALIC_FONT,
+            ),
+            monospace_bold_italic_font: environment_path(
+                "PRS_T1_FONT_MONOSPACE_BOLD_ITALIC",
+                DEFAULT_MONOSPACE_BOLD_ITALIC_FONT,
+            ),
             regular_font,
         }
     }
@@ -285,12 +304,18 @@ fn load_fonts(config: &ReaderConfig) -> io::Result<FontConfig> {
     let italic = read_optional_face(&config.italic_font, &regular);
     let bold_italic = read_optional_face(&config.bold_italic_font, &regular);
     let monospace = read_optional_face(&config.monospace_font, &regular);
-    Ok(FontConfig::from_faces(
+    let monospace_bold = read_optional_face(&config.monospace_bold_font, &monospace);
+    let monospace_italic = read_optional_face(&config.monospace_italic_font, &monospace);
+    let monospace_bold_italic = read_optional_face(&config.monospace_bold_italic_font, &monospace);
+    Ok(FontConfig::from_faces_with_monospace(
         regular,
         bold,
         italic,
         bold_italic,
         monospace,
+        monospace_bold,
+        monospace_italic,
+        monospace_bold_italic,
     ))
 }
 
@@ -338,12 +363,19 @@ fn color_requires_grayscale(color: Color) -> bool {
 mod tests {
     use super::*;
     use embedded_graphics::geometry::Point;
+    use prs_markdown::typography::{FontFace, TextEngine, TextRun, TextStyle as TypographyStyle};
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn fixture_config(root: &Path) -> ReaderConfig {
         let font = PathBuf::from("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf");
         let monospace = PathBuf::from("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf");
+        let monospace_bold =
+            PathBuf::from("/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf");
+        let monospace_italic =
+            PathBuf::from("/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Oblique.ttf");
+        let monospace_bold_italic =
+            PathBuf::from("/usr/share/fonts/truetype/dejavu/DejaVuSansMono-BoldOblique.ttf");
         ReaderConfig {
             document_root: root.to_owned(),
             document: PathBuf::from("index.md"),
@@ -352,6 +384,9 @@ mod tests {
             italic_font: font.clone(),
             bold_italic_font: font,
             monospace_font: monospace,
+            monospace_bold_font: monospace_bold,
+            monospace_italic_font: monospace_italic,
+            monospace_bold_italic_font: monospace_bold_italic,
         }
     }
 
@@ -364,6 +399,49 @@ mod tests {
         fs::create_dir_all(&root).expect("create reader fixture root");
         fs::write(root.join("index.md"), source).expect("write reader fixture");
         root
+    }
+
+    fn raster_for_face(engine: &mut FontdueTextEngine, face: FontFace) -> Vec<u8> {
+        let layout = engine.layout(&[TextRun::new("Ag", TypographyStyle::new(face, 20))], 100);
+        TextEngine::rasterize_glyph(engine, &layout.glyphs[0]).alpha
+    }
+
+    #[test]
+    fn configured_monospace_faces_load_and_missing_variants_use_monospace_regular() {
+        let root = fixture_root("```rust\nfn main() {}\n```");
+        let config = fixture_config(&root);
+        let mut engine =
+            FontdueTextEngine::new(load_fonts(&config).expect("load fixture fonts"), 16)
+                .expect("fixture fonts should parse");
+        let faces = [
+            FontFace::Monospace,
+            FontFace::MonospaceBold,
+            FontFace::MonospaceItalic,
+            FontFace::MonospaceBoldItalic,
+        ];
+        let rasters = faces
+            .into_iter()
+            .map(|face| raster_for_face(&mut engine, face))
+            .collect::<Vec<_>>();
+        for (index, raster) in rasters.iter().enumerate() {
+            assert!(
+                rasters[..index].iter().all(|previous| previous != raster),
+                "configured monospace face {index} should be distinct"
+            );
+        }
+
+        let mut fallback_config = config;
+        fallback_config.monospace_bold_font = root.join("missing-monospace-bold.ttf");
+        let mut fallback_engine = FontdueTextEngine::new(
+            load_fonts(&fallback_config).expect("fallback fonts should load"),
+            16,
+        )
+        .expect("fallback fonts should parse");
+        assert_eq!(
+            raster_for_face(&mut fallback_engine, FontFace::Monospace),
+            raster_for_face(&mut fallback_engine, FontFace::MonospaceBold)
+        );
+        fs::remove_dir_all(root).expect("remove reader fixture root");
     }
 
     #[test]

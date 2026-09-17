@@ -427,10 +427,13 @@ moving T1 hardware policy into the library.
 
 `prs-markdown::typography` exposes the `TextEngine` trait and the backend-neutral
 types used by it. `FontdueTextEngine` loads caller-supplied bytes through
-`FontConfig` for regular, bold, italic, bold-italic, and monospace faces. A
-harness can use one family for every face with `FontConfig::from_regular`, or
-provide independent bytes with `FontConfig::from_faces`; the reader never
-hard-codes a licensed font family.
+`FontConfig` for regular, bold, italic, bold-italic, monospace,
+monospace-bold, monospace-italic, and monospace-bold-italic faces. A harness
+can use one family for every face with `FontConfig::from_regular`, use
+`FontConfig::from_faces` for proportional faces plus one regular monospace
+fallback, or provide a complete set with
+`FontConfig::from_faces_with_monospace`; the reader never hard-codes a licensed
+font family.
 
 `TextEngine::measure` returns proportional run metrics. `TextEngine::wrap`
 returns line metrics and positioned glyphs, retaining an optional application
@@ -440,12 +443,12 @@ existing `layout::TextMeasurer` boundary, so a caller can pass it to
 `LayoutEngine::with_measurer` and make document wrapping use the same font
 advances.
 
-Fenced code uses the monospace face for regular, bold, and italic metrics. The
-renderer applies a deterministic one-pixel per four-row shear to italic code
-coverage. The text bounds clip the shear. The transform does not change glyph
-advances or line metrics, so code wrapping and pagination remain stable. Bold
-code uses the existing bounded one-pixel second pass, and bold-italic code uses
-both transforms.
+Fenced code selects a face from the complete monospace family. Normal, bold,
+italic, and bold-italic code select `Monospace`, `MonospaceBold`,
+`MonospaceItalic`, and `MonospaceBoldItalic`. The selected face supplies the
+metrics and glyph raster. The renderer draws each glyph once and does not
+apply synthetic bold or italic transforms, so code keeps the configured
+monospace metrics while highlighted styles retain their intended shape.
 
 Rasterized glyphs are held in an explicitly bounded least-recently-used cache;
 `cache_capacity`, `cached_glyphs`, and the rasterization counters are exposed

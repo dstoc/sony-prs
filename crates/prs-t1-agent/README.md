@@ -156,15 +156,28 @@ The default configuration is:
 | `PRS_T1_FONT_BOLD` | regular face | Optional bold face. |
 | `PRS_T1_FONT_ITALIC` | regular face | Optional italic face. |
 | `PRS_T1_FONT_BOLD_ITALIC` | regular face | Optional bold-italic face. |
-| `PRS_T1_FONT_MONOSPACE` | `/system/fonts/DroidSansMono.ttf` | Optional code face; falls back to regular if absent. |
+| `PRS_T1_FONT_MONOSPACE` | `/system/fonts/HelveticaMonospacedW1G-Rg.otf` | Optional regular code face; falls back to the regular proportional face if absent. |
+| `PRS_T1_FONT_MONOSPACE_BOLD` | `/system/fonts/HelveticaMonospacedW1G-Bd.otf` | Optional bold code face; falls back to the regular monospace face if absent. |
+| `PRS_T1_FONT_MONOSPACE_ITALIC` | `/system/fonts/HelveticaMonospacedW1G-It.otf` | Optional italic code face; falls back to the regular monospace face if absent. |
+| `PRS_T1_FONT_MONOSPACE_BOLD_ITALIC` | `/system/fonts/HelveticaMonospacedW1G-BdIt.otf` | Optional bold-italic code face; falls back to the regular monospace face if absent. |
 
-The three optional proportional faces and the optional monospace face fall
-back to the regular font bytes when their configured files are unavailable. To
-read another staged document from the helper workflow, set
+The three optional proportional faces fall back to the regular proportional
+font bytes when their configured files are unavailable. The optional regular
+monospace face keeps the existing fallback to the regular proportional font.
+Each optional monospace style face falls back to the loaded regular monospace
+bytes. The default T1 monospace family is the complete
+`HelveticaMonospacedW1G` family under `/system/fonts`. To read another staged
+document from the helper workflow, set
 `PRS_T1_DOCUMENT_ROOT` and `PRS_T1_DOCUMENT` in the environment used to launch
 the agent. Relative links are resolved by the shared
 `FileSystemResourceProvider` inside that root; the provider rejects references
 that escape the configured root.
+
+For the real-device font check, stage
+[`docs/prs-t1/monospace-font-validation.md`](../../docs/prs-t1/monospace-font-validation.md)
+as the startup document. The validation case uses syntax-highlighted Rust
+code and records the face, alignment, and visual-quality checks needed on a
+PRS-T1.
 
 The reader handles link activation through `prs-markdown` first. A tap on an
 otherwise empty page area advances on the right half and goes back on the left

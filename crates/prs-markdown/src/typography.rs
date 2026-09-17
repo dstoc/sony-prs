@@ -24,6 +24,9 @@ pub enum FontFace {
     Italic,
     BoldItalic,
     Monospace,
+    MonospaceBold,
+    MonospaceItalic,
+    MonospaceBoldItalic,
 }
 
 impl FontFace {
@@ -34,6 +37,9 @@ impl FontFace {
             Self::Italic => 2,
             Self::BoldItalic => 3,
             Self::Monospace => 4,
+            Self::MonospaceBold => 5,
+            Self::MonospaceItalic => 6,
+            Self::MonospaceBoldItalic => 7,
         }
     }
 
@@ -43,7 +49,24 @@ impl FontFace {
             1 => Self::Bold,
             2 => Self::Italic,
             3 => Self::BoldItalic,
-            _ => Self::Monospace,
+            4 => Self::Monospace,
+            5 => Self::MonospaceBold,
+            6 => Self::MonospaceItalic,
+            _ => Self::MonospaceBoldItalic,
+        }
+    }
+
+    /// Select a proportional or monospace face from the reader style flags.
+    pub const fn from_flags(code: bool, bold: bool, italic: bool) -> Self {
+        match (code, bold, italic) {
+            (true, false, false) => Self::Monospace,
+            (true, true, false) => Self::MonospaceBold,
+            (true, false, true) => Self::MonospaceItalic,
+            (true, true, true) => Self::MonospaceBoldItalic,
+            (false, false, false) => Self::Regular,
+            (false, true, false) => Self::Bold,
+            (false, false, true) => Self::Italic,
+            (false, true, true) => Self::BoldItalic,
         }
     }
 }
@@ -78,6 +101,18 @@ impl TextStyle {
 
     pub const fn monospace(font_size: u32) -> Self {
         Self::new(FontFace::Monospace, font_size)
+    }
+
+    pub const fn monospace_bold(font_size: u32) -> Self {
+        Self::new(FontFace::MonospaceBold, font_size)
+    }
+
+    pub const fn monospace_italic(font_size: u32) -> Self {
+        Self::new(FontFace::MonospaceItalic, font_size)
+    }
+
+    pub const fn monospace_bold_italic(font_size: u32) -> Self {
+        Self::new(FontFace::MonospaceBoldItalic, font_size)
     }
 }
 
@@ -262,7 +297,8 @@ impl Default for FontLoadConfig {
     }
 }
 
-/// Caller-supplied font bytes for the five reader faces.
+/// Caller-supplied font bytes for the four proportional and four monospace
+/// reader faces.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FontConfig {
     regular: Vec<u8>,
@@ -270,6 +306,9 @@ pub struct FontConfig {
     italic: Vec<u8>,
     bold_italic: Vec<u8>,
     monospace: Vec<u8>,
+    monospace_bold: Vec<u8>,
+    monospace_italic: Vec<u8>,
+    monospace_bold_italic: Vec<u8>,
 }
 
 impl FontConfig {
@@ -283,11 +322,18 @@ impl FontConfig {
             bold: bytes.clone(),
             italic: bytes.clone(),
             bold_italic: bytes.clone(),
-            monospace: bytes,
+            monospace: bytes.clone(),
+            monospace_bold: bytes.clone(),
+            monospace_italic: bytes.clone(),
+            monospace_bold_italic: bytes,
         }
     }
 
-    /// Supply independent bytes for every supported face.
+    /// Supply independent proportional bytes and one monospace family.
+    ///
+    /// The monospace style variants use the supplied regular monospace bytes.
+    /// Use [`Self::from_faces_with_monospace`] when separate monospace files
+    /// are available.
     pub fn from_faces(
         regular: impl AsRef<[u8]>,
         bold: impl AsRef<[u8]>,
@@ -301,6 +347,33 @@ impl FontConfig {
             italic: italic.as_ref().to_vec(),
             bold_italic: bold_italic.as_ref().to_vec(),
             monospace: monospace.as_ref().to_vec(),
+            monospace_bold: monospace.as_ref().to_vec(),
+            monospace_italic: monospace.as_ref().to_vec(),
+            monospace_bold_italic: monospace.as_ref().to_vec(),
+        }
+    }
+
+    /// Supply independent bytes for every supported face.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_faces_with_monospace(
+        regular: impl AsRef<[u8]>,
+        bold: impl AsRef<[u8]>,
+        italic: impl AsRef<[u8]>,
+        bold_italic: impl AsRef<[u8]>,
+        monospace: impl AsRef<[u8]>,
+        monospace_bold: impl AsRef<[u8]>,
+        monospace_italic: impl AsRef<[u8]>,
+        monospace_bold_italic: impl AsRef<[u8]>,
+    ) -> Self {
+        Self {
+            regular: regular.as_ref().to_vec(),
+            bold: bold.as_ref().to_vec(),
+            italic: italic.as_ref().to_vec(),
+            bold_italic: bold_italic.as_ref().to_vec(),
+            monospace: monospace.as_ref().to_vec(),
+            monospace_bold: monospace_bold.as_ref().to_vec(),
+            monospace_italic: monospace_italic.as_ref().to_vec(),
+            monospace_bold_italic: monospace_bold_italic.as_ref().to_vec(),
         }
     }
 
@@ -311,6 +384,9 @@ impl FontConfig {
             FontFace::Italic => &self.italic,
             FontFace::BoldItalic => &self.bold_italic,
             FontFace::Monospace => &self.monospace,
+            FontFace::MonospaceBold => &self.monospace_bold,
+            FontFace::MonospaceItalic => &self.monospace_italic,
+            FontFace::MonospaceBoldItalic => &self.monospace_bold_italic,
         }
     }
 }
@@ -406,14 +482,14 @@ pub const DEFAULT_GLYPH_CACHE_BYTES: usize = 256 * 1024;
 /// Fontdue-backed implementation of [`TextEngine`].
 #[derive(Clone, Debug)]
 pub struct FontdueTextEngine {
-    fonts: [fontdue::Font; 5],
+    fonts: [fontdue::Font; 8],
     cache: GlyphCache,
     cache_hits: u64,
     rasterizations: u64,
 }
 
 impl FontdueTextEngine {
-    /// Load all five faces and reserve at most `cache_capacity` rasterized
+    /// Load all eight faces and reserve at most `cache_capacity` rasterized
     /// glyphs. A capacity of zero disables reuse but remains bounded.
     pub fn new(config: FontConfig, cache_capacity: usize) -> Result<Self, FontError> {
         Self::with_cache_limits(config, cache_capacity, DEFAULT_GLYPH_CACHE_BYTES)
@@ -469,6 +545,21 @@ impl FontdueTextEngine {
             load_font(
                 FontFace::Monospace,
                 config.bytes(FontFace::Monospace),
+                settings,
+            )?,
+            load_font(
+                FontFace::MonospaceBold,
+                config.bytes(FontFace::MonospaceBold),
+                settings,
+            )?,
+            load_font(
+                FontFace::MonospaceItalic,
+                config.bytes(FontFace::MonospaceItalic),
+                settings,
+            )?,
+            load_font(
+                FontFace::MonospaceBoldItalic,
+                config.bytes(FontFace::MonospaceBoldItalic),
                 settings,
             )?,
         ];
@@ -682,17 +773,7 @@ impl TextEngine for FontdueTextEngine {
 
 impl TextMeasurer for FontdueTextEngine {
     fn measure(&self, text: &str, style: &ReaderTextStyle) -> u32 {
-        let face = if style.code {
-            FontFace::Monospace
-        } else if style.bold && style.italic {
-            FontFace::BoldItalic
-        } else if style.bold {
-            FontFace::Bold
-        } else if style.italic {
-            FontFace::Italic
-        } else {
-            FontFace::Regular
-        };
+        let face = FontFace::from_flags(style.code, style.bold, style.italic);
         self.measure_text(text, TextStyle::new(face, style.font_size))
             .width
     }
@@ -715,6 +796,19 @@ mod tests {
     fn monospace_bytes() -> Vec<u8> {
         std::fs::read("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf")
             .expect("host typography tests need a system monospace TrueType font")
+    }
+
+    fn monospace_face_bytes() -> [Vec<u8>; 4] {
+        [
+            "DejaVuSansMono.ttf",
+            "DejaVuSansMono-Bold.ttf",
+            "DejaVuSansMono-Oblique.ttf",
+            "DejaVuSansMono-BoldOblique.ttf",
+        ]
+        .map(|name| {
+            std::fs::read(format!("/usr/share/fonts/truetype/dejavu/{name}"))
+                .expect("host typography tests need a complete monospace family")
+        })
     }
 
     fn engine(cache_capacity: usize) -> FontdueTextEngine {
@@ -770,7 +864,7 @@ mod tests {
     }
 
     #[test]
-    fn code_emphasis_uses_one_monospace_measurement() {
+    fn code_emphasis_keeps_monospace_metrics_across_real_faces() {
         let engine = engine(8);
         let measurements = [(false, false), (true, false), (false, true), (true, true)]
             .into_iter()
@@ -786,6 +880,68 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert!(measurements.windows(2).all(|pair| pair[0] == pair[1]));
+    }
+
+    #[test]
+    fn code_style_flags_select_all_monospace_faces() {
+        assert_eq!(
+            FontFace::from_flags(true, false, false),
+            FontFace::Monospace
+        );
+        assert_eq!(
+            FontFace::from_flags(true, true, false),
+            FontFace::MonospaceBold
+        );
+        assert_eq!(
+            FontFace::from_flags(true, false, true),
+            FontFace::MonospaceItalic
+        );
+        assert_eq!(
+            FontFace::from_flags(true, true, true),
+            FontFace::MonospaceBoldItalic
+        );
+    }
+
+    #[test]
+    fn independent_monospace_faces_are_loaded_and_rasterized() {
+        let regular = font_bytes();
+        let [monospace, monospace_bold, monospace_italic, monospace_bold_italic] =
+            monospace_face_bytes();
+        let mut engine = FontdueTextEngine::new(
+            FontConfig::from_faces_with_monospace(
+                &regular,
+                &regular,
+                &regular,
+                &regular,
+                &monospace,
+                &monospace_bold,
+                &monospace_italic,
+                &monospace_bold_italic,
+            ),
+            16,
+        )
+        .expect("complete monospace family should parse");
+        let faces = [
+            FontFace::Monospace,
+            FontFace::MonospaceBold,
+            FontFace::MonospaceItalic,
+            FontFace::MonospaceBoldItalic,
+        ];
+        let rasters = faces
+            .into_iter()
+            .map(|face| {
+                let layout = engine.layout(&[TextRun::new("Ag", TextStyle::new(face, 20))], 100);
+                assert_eq!(layout.glyphs[0].face, face);
+                engine.rasterize_glyph(&layout.glyphs[0]).alpha
+            })
+            .collect::<Vec<_>>();
+
+        for (index, raster) in rasters.iter().enumerate() {
+            assert!(
+                rasters[..index].iter().all(|previous| previous != raster),
+                "monospace face {index} should have distinct glyph coverage"
+            );
+        }
     }
 
     #[test]

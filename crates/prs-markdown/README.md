@@ -83,6 +83,11 @@ reader.back()?;
 constructor for callers that need a complete `Pagination`; new device and
 host integrations should use the component constructor.
 
+`FontConfig::from_regular` supplies one family for all faces. Keep
+`FontConfig::from_faces` for a separate proportional family and one regular
+monospace fallback. Use `FontConfig::from_faces_with_monospace` when the
+monospace regular, bold, italic, and bold-italic files are available.
+
 The important operations are:
 
 - `open` or `open_document` starts a reading session;
@@ -152,12 +157,11 @@ its source and is never executed. Dollar math, when enabled by caller-supplied
 Comrak options, preserves delimiters as text; there is no equation or browser
 layout engine. See the support matrix for the exact fallback contract.
 
-Syntax-highlighted code keeps the monospace face for all metrics. When a
-highlighted span is italic, the renderer applies a deterministic one-pixel per
-four-row shear to glyph coverage. The text bounds clip the shear, and the
-advance width and line metrics remain unchanged, so wrapping and pagination are
-stable. Bold code keeps its bounded one-pixel second pass; bold-italic code
-uses both transforms.
+Syntax-highlighted code selects `Monospace`, `MonospaceBold`,
+`MonospaceItalic`, or `MonospaceBoldItalic` from the code span's normal, bold,
+italic, and bold-italic flags. The selected face supplies both the metrics and
+the rasterized glyph. The renderer performs one draw pass per glyph, so real
+bold and italic faces do not smear or close counters with synthetic transforms.
 
 ## Tests, fixtures, and goldens
 
@@ -171,8 +175,10 @@ cargo test -p prs-markdown --test harness
 The fixtures under `tests/fixtures/` cover agent Markdown, headings, inline
 styles, nested/task lists, quotes, alerts, footnotes, autolinks,
 strikethrough, links and anchors, cross-file navigation, tables, fenced
-syntax, raw HTML, images, malformed input, and font-face selection. The image
-fixture derives deterministic PNG, JPEG, and WebP inputs from
+syntax, raw HTML, images, malformed input, and font-face selection. The
+typography tests load four independent monospace faces and verify their
+metrics and raster output. The image fixture derives deterministic PNG, JPEG,
+and WebP inputs from
 `tests/fixtures/assets/observatory.png` and checks readable image goldens plus
 missing/corrupt fallbacks.
 

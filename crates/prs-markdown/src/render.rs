@@ -238,40 +238,14 @@ where
             bounds.top_left.y.saturating_add(glyph.y),
             &bitmap,
             style.ink,
-            style.code && style.italic,
         )?;
-        // FontConfig intentionally has one monospace face. A one-pixel
-        // second pass provides a bounded synthetic bold for highlighted code
-        // while keeping all code glyphs on the monospace metrics. Italic code
-        // uses the same face and applies the same deterministic shear pass to
-        // its coverage; both transforms are clipped to the text bounds.
-        if style.code && style.bold {
-            draw_glyph(
-                &mut text_target,
-                bounds.top_left.x.saturating_add(glyph.x).saturating_add(1),
-                bounds.top_left.y.saturating_add(glyph.y),
-                &bitmap,
-                style.ink,
-                style.italic,
-            )?;
-        }
     }
 
     Ok(())
 }
 
 fn font_face(style: &ReaderTextStyle) -> FontFace {
-    if style.code {
-        FontFace::Monospace
-    } else if style.bold && style.italic {
-        FontFace::BoldItalic
-    } else if style.bold {
-        FontFace::Bold
-    } else if style.italic {
-        FontFace::Italic
-    } else {
-        FontFace::Regular
-    }
+    FontFace::from_flags(style.code, style.bold, style.italic)
 }
 
 fn draw_glyph<T>(
@@ -280,7 +254,6 @@ fn draw_glyph<T>(
     y: i32,
     bitmap: &GlyphBitmap,
     ink: u8,
-    italic: bool,
 ) -> Result<(), T::Error>
 where
     T: DrawTarget<Color = Rgb888>,
@@ -296,11 +269,6 @@ where
         .take(bitmap.height as usize)
         .enumerate()
         .flat_map(|(row, alphas)| {
-            let italic_offset = if italic {
-                synthetic_italic_offset(row, bitmap.height)
-            } else {
-                0
-            };
             alphas
                 .iter()
                 .enumerate()
@@ -308,8 +276,7 @@ where
                 .map(move |(column, alpha)| {
                     Pixel(
                         Point::new(
-                            x.saturating_add(column as i32)
-                                .saturating_add(italic_offset),
+                            x.saturating_add(column as i32),
                             y.saturating_add(row as i32),
                         ),
                         coverage_color(ink, *alpha),
@@ -318,17 +285,6 @@ where
         });
 
     target.draw_iter(pixels)
-}
-
-/// Return the integer x offset for the synthetic italic transform.
-///
-/// The bottom bitmap row is the baseline side of the glyph and stays in
-/// place. Rows above it move right at a fixed one-pixel-per-four-row slope.
-/// The transform changes coverage only; code advances and line metrics remain
-/// those of the monospace face used by layout.
-fn synthetic_italic_offset(row: usize, height: u32) -> i32 {
-    let rows_above_baseline = (height as usize).saturating_sub(row.saturating_add(1));
-    rows_above_baseline.saturating_add(3) as i32 / 4
 }
 
 fn draw_image_placeholder<T>(target: &mut T, rectangle: Rect) -> Result<(), T::Error>
@@ -582,61 +538,47 @@ mod tests {
     }
 
     #[test]
-    fn code_emphasis_keeps_the_monospace_face_for_stable_metrics() {
-        for (bold, italic) in [(false, false), (true, false), (false, true), (true, true)] {
+    fn code_emphasis_selects_the_matching_monospace_face() {
+        let expected = [
+            (false, false, FontFace::Monospace),
+            (true, false, FontFace::MonospaceBold),
+            (false, true, FontFace::MonospaceItalic),
+            (true, true, FontFace::MonospaceBoldItalic),
+        ];
+        for (bold, italic, expected_face) in expected {
             let style = ReaderTextStyle {
                 code: true,
                 bold,
                 italic,
                 ..ReaderTextStyle::new(12, 14)
             };
-            assert_eq!(font_face(&style), FontFace::Monospace);
+            assert_eq!(font_face(&style), expected_face);
         }
     }
 
     #[test]
-    fn synthetic_italic_slants_coverage_but_keeps_the_baseline_row() {
-        let bitmap = GlyphBitmap {
-            width: 1,
-            height: 8,
-            left: 0,
-            top: 0,
-            advance_width: 1.0,
-            alpha: vec![u8::MAX; 8],
-        };
-        let mut regular = MockDisplay::<Rgb888>::new();
-        let mut italic = MockDisplay::<Rgb888>::new();
-
-        draw_glyph(&mut regular, 0, 0, &bitmap, 0, false).unwrap();
-        draw_glyph(&mut italic, 0, 0, &bitmap, 0, true).unwrap();
-
-        assert_eq!(regular.get_pixel(Point::new(0, 0)), Some(Rgb888::BLACK));
-        assert_eq!(italic.get_pixel(Point::new(0, 0)), None);
-        assert_eq!(italic.get_pixel(Point::new(2, 0)), Some(Rgb888::BLACK));
-        assert_eq!(italic.get_pixel(Point::new(0, 3)), None);
-        assert_eq!(italic.get_pixel(Point::new(1, 3)), Some(Rgb888::BLACK));
-        assert_eq!(italic.get_pixel(Point::new(0, 7)), Some(Rgb888::BLACK));
-    }
-
-    #[test]
-    fn synthetic_italic_coverage_stays_inside_text_bounds() {
+    fn bold_code_draws_each_glyph_once_without_offset_double_draw() {
         let mut display = MockDisplay::<Rgb888>::new();
+        display.set_allow_overdraw(true);
+        display.clear(Rgb888::WHITE).unwrap();
         let style = ReaderTextStyle {
+            bold: true,
             code: true,
-            italic: true,
             ..ReaderTextStyle::new(12, 14)
         };
+        let mut text_engine = TestTextEngine::default();
 
         draw_text(
             &mut display,
-            Rect::new(Point::zero(), Size::new(2, 2)),
+            Rect::new(Point::zero(), Size::new(4, 1)),
             "x",
             &style,
-            &mut TestTextEngine::default(),
+            &mut text_engine,
         )
         .unwrap();
 
+        assert_eq!(display.get_pixel(Point::new(0, 0)), Some(Rgb888::BLACK));
         assert_eq!(display.get_pixel(Point::new(1, 0)), Some(Rgb888::BLACK));
-        assert_eq!(display.get_pixel(Point::new(2, 0)), None);
+        assert_eq!(display.get_pixel(Point::new(2, 0)), Some(Rgb888::WHITE));
     }
 }

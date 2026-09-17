@@ -17,6 +17,7 @@
 - [T1 analysis](prs-t1/analysis.md)
 - [Markdown reader architecture and support matrix](prs-t1/markdown-reader.md)
 - [Development reader smoke-test document](prs-t1/development.md)
+- [PRS-T1 monospace font validation](prs-t1/monospace-font-validation.md)
 - [`prs-markdown` library and host harness](../crates/prs-markdown/README.md)
 - [Native UI and Markdown-reader integration guide](../crates/prs-t1-agent/README.md)
 - [Build and deployment guide](../crates/prs-t1-agent/build.md)
