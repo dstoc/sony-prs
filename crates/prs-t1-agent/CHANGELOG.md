@@ -1,5 +1,7 @@
 # Changelog
 
+## [0.4.2](https://github.com/dstoc/sony-prs/compare/prs-t1-agent-v0.4.1...prs-t1-agent-v0.4.2) (2026-09-17)
+
 ## [0.4.1](https://github.com/dstoc/sony-prs/compare/prs-t1-agent-v0.4.0...prs-t1-agent-v0.4.1) (2026-09-17)
 
 ## [0.4.0](https://github.com/dstoc/sony-prs/compare/prs-t1-agent-v0.3.0...prs-t1-agent-v0.4.0) (2026-09-17)

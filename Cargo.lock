@@ -473,7 +473,7 @@ dependencies = [
 
 [[package]]
 name = "prs-markdown"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "comrak",
  "embedded-graphics",
@@ -485,7 +485,7 @@ dependencies = [
 
 [[package]]
 name = "prs-t1-agent"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "embedded-graphics",
  "prs-markdown",
