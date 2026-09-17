@@ -366,9 +366,9 @@ vertical edges and logical top/bottom rules, which keeps glyphs away from
 internal rules. If the frame still cannot hold all columns, the table is
 continued vertically in deterministic column groups; the first key column is
 repeated in each group where the viewport can hold it. Wider diagnostic tables
-use the readable compact floor to keep long detail cells from consuming a full
-page. These choices favor legibility and bounded host/device layout over
-HTML/CSS compatibility.
+use the same sizing policy: compact and aggressive modes are used only when
+the normal pass cannot fit readable column widths. These choices favor
+legibility and bounded host/device layout over HTML/CSS compatibility.
 
 ## Parser and owned document IR
 

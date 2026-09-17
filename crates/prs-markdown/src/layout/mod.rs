@@ -746,21 +746,13 @@ impl<M: TextMeasurer> LayoutEngine<M> {
         let normal = self.table_text_style(false, false);
         let compact = self.table_text_style(true, false);
         let aggressive = self.table_text_style(true, true);
-        // A small ordinary table retains body typography. Wider tables use
-        // the readable compact floor so the diagnostic columns remain useful
-        // without turning each long detail cell into a page-sized row.
-        let stages = if column_count > 4 {
-            vec![
-                (TableLayoutMode::Compact, compact),
-                (TableLayoutMode::Aggressive, aggressive),
-            ]
-        } else {
-            vec![
-                (TableLayoutMode::Normal, normal),
-                (TableLayoutMode::Compact, compact),
-                (TableLayoutMode::Aggressive, aggressive),
-            ]
-        };
+        // Fit ordinary tables at body typography first. Compact and
+        // aggressive modes are fallbacks for tables that need more space.
+        let stages = vec![
+            (TableLayoutMode::Normal, normal),
+            (TableLayoutMode::Compact, compact),
+            (TableLayoutMode::Aggressive, aggressive),
+        ];
 
         for (mode, text_style) in stages {
             let columns = self.table_columns(table, column_count, text_style, image_height, images);
@@ -2106,10 +2098,7 @@ mod tests {
 
         assert_eq!(tables.len(), 2);
         assert_eq!(tables[0].mode, TableLayoutMode::Normal);
-        assert!(matches!(
-            tables[1].mode,
-            TableLayoutMode::Compact | TableLayoutMode::Aggressive
-        ));
+        assert_eq!(tables[1].mode, TableLayoutMode::Normal);
 
         for block in layout
             .blocks()
@@ -2141,6 +2130,40 @@ mod tests {
                 .line_height
                 .saturating_add(style.table_cell_vertical_padding.saturating_mul(2))
         );
+    }
+
+    #[test]
+    fn fitting_five_column_table_keeps_normal_typography() {
+        let style = ReaderStyle::default();
+        let document = Document::from_blocks(vec![Block::Table(Table {
+            headers: (1..=5)
+                .map(|index| vec![Inline::Text(format!("H{index}"))])
+                .collect(),
+            rows: vec![vec![
+                vec![Inline::Text("one".into())],
+                vec![Inline::Text("two".into())],
+                vec![Inline::Text("three".into())],
+                vec![Inline::Text("four".into())],
+                vec![Inline::Text("five".into())],
+            ]],
+            alignments: Vec::new(),
+        })]);
+        let layout = LayoutEngine::new(style).layout(&document, Viewport::new(600, 300));
+        let table = layout.blocks()[0].table.as_ref().expect("table metadata");
+
+        assert_eq!(table.mode, TableLayoutMode::Normal);
+        assert!(layout.blocks()[0]
+            .lines
+            .iter()
+            .flat_map(|line| line.fragments.iter())
+            .all(|fragment| fragment.style.font_size == style.body.font_size));
+        assert!(layout.blocks()[0].lines.iter().all(|line| {
+            line.bounds.size.height
+                == style
+                    .body
+                    .line_height
+                    .saturating_add(style.table_cell_vertical_padding.saturating_mul(2))
+        }));
     }
 
     #[test]
