@@ -1791,7 +1791,10 @@ fn collect_spans(
             for child in label {
                 collect_spans(
                     child,
-                    style,
+                    TextStyle {
+                        underline: true,
+                        ..style
+                    },
                     Some(target.clone()),
                     image_height,
                     images,
@@ -2345,6 +2348,7 @@ mod tests {
             .iter()
             .any(|fragment| fragment.style.strikethrough));
         assert!(fragments.iter().any(|fragment| fragment.style.code));
+        assert!(fragments.iter().all(|fragment| !fragment.style.underline));
         assert!(fragments.iter().any(|fragment| fragment.text == " "));
     }
 
@@ -2403,6 +2407,7 @@ mod tests {
         assert!(fragments
             .iter()
             .all(|fragment| fragment.link.as_ref() == Some(&target)));
+        assert!(fragments.iter().all(|fragment| fragment.style.underline));
         assert!(layout.blocks()[0]
             .lines
             .iter()

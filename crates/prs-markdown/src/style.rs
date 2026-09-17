@@ -87,6 +87,8 @@ pub struct TextStyle {
     pub italic: bool,
     pub code: bool,
     pub strikethrough: bool,
+    /// Draw a thin line below the text using the same grayscale ink.
+    pub underline: bool,
     /// Grayscale ink value: 0 is black and 255 is white.
     pub ink: u8,
 }
@@ -100,6 +102,7 @@ impl TextStyle {
             italic: false,
             code: false,
             strikethrough: false,
+            underline: false,
             ink: 0,
         }
     }

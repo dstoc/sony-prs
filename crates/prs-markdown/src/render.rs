@@ -283,7 +283,35 @@ where
         )?;
     }
 
+    if style.underline {
+        draw_underline(target, bounds, style.ink)?;
+    }
+
     Ok(())
+}
+
+fn draw_underline<T>(target: &mut T, bounds: Rect, ink: u8) -> Result<(), T::Error>
+where
+    T: DrawTarget<Color = Rgb888>,
+{
+    if bounds.size.width == 0 || bounds.size.height < 2 {
+        return Ok(());
+    }
+
+    // Leave one clear pixel below the line box's text area. This keeps the
+    // one-pixel decoration separate from descenders on the T1's display.
+    let y = bounds
+        .top_left
+        .y
+        .saturating_add(bounds.size.height.saturating_sub(2) as i32);
+    fill_rect(
+        target,
+        Rect::new(
+            Point::new(bounds.top_left.x, y),
+            Size::new(bounds.size.width, 1),
+        ),
+        Color::rgb(ink, ink, ink),
+    )
 }
 
 fn font_face(style: &ReaderTextStyle) -> FontFace {
@@ -545,6 +573,40 @@ mod tests {
         assert_eq!(display.get_pixel(Point::new(18, 1)), Some(Rgb888::BLACK));
         assert_eq!(display.get_pixel(Point::new(20, 5)), Some(Rgb888::WHITE));
         assert_eq!(display.get_pixel(Point::new(24, 8)), Some(Rgb888::WHITE));
+    }
+
+    #[test]
+    fn underlined_text_draws_one_ink_matched_pixel_below_glyphs() {
+        let mut renderer = EmbeddedGraphicsRenderer::new(TestTextEngine::default());
+        let mut display = MockDisplay::<Rgb888>::new();
+        display.set_allow_overdraw(true);
+        display.clear(Rgb888::WHITE).unwrap();
+        let style = ReaderTextStyle {
+            underline: true,
+            ink: 96,
+            ..ReaderTextStyle::new(12, 4)
+        };
+        let bounds = Rect::new(Point::new(1, 1), Size::new(4, 4));
+        let page = PageLayout {
+            number: 1,
+            viewport: crate::geometry::Viewport::new(8, 8),
+            range: crate::pagination::DocumentRange::default(),
+            commands: DisplayList::from([DisplayCommand::Text {
+                bounds,
+                text: "x".into(),
+                style,
+            }]),
+            hit_regions: Vec::new(),
+        };
+
+        renderer.render(&page, &mut display).unwrap();
+
+        assert_eq!(
+            display.get_pixel(Point::new(1, 3)),
+            Some(Rgb888::new(96, 96, 96))
+        );
+        assert_eq!(display.get_pixel(Point::new(5, 3)), Some(Rgb888::WHITE));
+        assert_eq!(display.get_pixel(Point::new(1, 4)), Some(Rgb888::WHITE));
     }
 
     #[test]

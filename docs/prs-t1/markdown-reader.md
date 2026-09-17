@@ -104,8 +104,8 @@ the framebuffer origin later; no status-bar offset is stored in a page.
 `pagination::PageLayout` is the renderer input. Its ordered `DisplayList`
 contains positioned, non-semantic primitives:
 
-- `Text` carries a text run, its bounds, common `TextStyle` metrics, and an
-  e-ink grayscale ink value.
+- `Text` carries a text run, its bounds, common `TextStyle` metrics, explicit
+  underline and strikethrough decorations, and an e-ink grayscale ink value.
 - `Fill` and `Border` express backgrounds and framed regions.
 - `Rule` expresses horizontal or vertical rules as a stroked rectangle.
 - `Image` carries a bounded grayscale raster, bounds, alternative text, and
@@ -352,7 +352,8 @@ images and fully styled table cells. All line widths come from the configured
 Layout returns the complete document in document coordinates. It exposes each
 positioned line as a legal pagination split and never decides page boundaries.
 Links are retained on each wrapped fragment so pagination can create one hit
-region per visible line portion.
+region per visible line portion. Linked text also receives the explicit thin
+underline decoration, while ordinary text remains unchanged.
 
 The deliberate visual deviations from browser/GitHub rendering are compact
 reader choices: soft breaks collapse to ordinary whitespace, long unbreakable

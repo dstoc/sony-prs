@@ -313,6 +313,88 @@ fn list_spacing_fixture_preserves_states_and_matches_narrow_png_goldens() {
 }
 
 #[test]
+fn links_are_underlined_across_blocks_styles_and_wrapped_fragments() {
+    let source = "# [heading link](#heading)\n\nordinary text\n\n**[bold link](#bold)** *[italic link](#italic)* ***[bold italic link](#both)***\n\n- [list link](#list)\n\n> [quote link](#quote)\n\n> [!NOTE]\n> [alert link](#alert)\n\nfootnote[^note]\n\n[^note]: [footnote link](#footnote)\n\n| Table |\n| --- |\n| [table link](#table) |\n\n[This linked label is deliberately long so it wraps across several visible fragments](#wrapped)\n\n## heading\n";
+    let style = ReaderStyle {
+        page_padding: Insets::all(2),
+        body: TextStyle::new(10, 12),
+        heading: TextStyle {
+            bold: true,
+            ..TextStyle::new(16, 18)
+        },
+        code: TextStyle::new(10, 12),
+        paragraph_spacing: 2,
+        heading_spacing_before: 2,
+        heading_spacing_after: 2,
+        list_indent: 12,
+        block_quote_indent: 8,
+        block_quote_padding: 2,
+        ..ReaderStyle::default()
+    };
+    let reader = HostReader::from_source(source, style, Viewport::new(82, 120))
+        .expect("link coverage source should parse");
+
+    let fragments = reader
+        .layout()
+        .blocks()
+        .iter()
+        .flat_map(|block| block.lines.iter())
+        .flat_map(|line| line.fragments.iter())
+        .collect::<Vec<_>>();
+    let linked = fragments
+        .iter()
+        .filter(|fragment| fragment.link.is_some())
+        .collect::<Vec<_>>();
+    assert!(!linked.is_empty());
+    assert!(linked.iter().all(|fragment| fragment.style.underline));
+    assert!(fragments
+        .iter()
+        .filter(|fragment| fragment.link.is_none())
+        .all(|fragment| !fragment.style.underline));
+
+    let style_for = |anchor: &str| {
+        linked
+            .iter()
+            .filter(|fragment| {
+                fragment.link.as_ref() == Some(&NavigationTarget::Anchor(anchor.to_owned()))
+            })
+            .map(|fragment| fragment.style)
+            .collect::<Vec<_>>()
+    };
+    assert!(style_for("heading").iter().all(|style| style.bold));
+    assert!(style_for("bold")
+        .iter()
+        .all(|style| style.bold && !style.italic));
+    assert!(style_for("italic")
+        .iter()
+        .all(|style| style.italic && !style.bold));
+    assert!(style_for("both")
+        .iter()
+        .all(|style| style.bold && style.italic));
+    for anchor in ["list", "quote", "alert", "footnote", "table"] {
+        assert!(!style_for(anchor).is_empty(), "missing {anchor} link");
+    }
+
+    let wrapped = style_for("wrapped");
+    assert!(wrapped.len() > 1, "the long link should wrap");
+    assert!(wrapped.iter().all(|style| style.underline));
+
+    for page in reader.pagination().pages() {
+        for region in &page.hit_regions {
+            assert!(
+                page.display_list().iter().any(|command| matches!(
+                    command,
+                    DisplayCommand::Text { bounds, style, .. }
+                        if bounds == &region.bounds && style.underline
+                )),
+                "hit region {:?} must match an underlined text command",
+                region.bounds
+            );
+        }
+    }
+}
+
+#[test]
 fn syntax_highlighting_is_eink_styled_lossless_and_wraps_code() {
     let source = include_str!("fixtures/syntax-highlight.md");
     let reader = HostReader::from_source(source, structural_style(), Viewport::new(96, 80))
