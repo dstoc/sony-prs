@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.5.0](https://github.com/dstoc/sony-prs/compare/prs-markdown-v0.4.0...prs-markdown-v0.5.0) (2026-09-17)
+
+
+### Features
+
+* **prs-markdown:** use real monospace style faces ([522aa3a](https://github.com/dstoc/sony-prs/commit/522aa3a881aa4ece7fcf3a56997fdcec764c1eb4))
+* **prs-markdown:** use upstream Syntect grammars ([3d65a3f](https://github.com/dstoc/sony-prs/commit/3d65a3f8d4acc2ceb364808f64b15c89f2244bfd))
+
+
+### Bug Fixes
+
+* **prs-markdown:** add stable code block surfaces ([cd84656](https://github.com/dstoc/sony-prs/commit/cd846564b72501b36d1766859b61dd5b13e08d9b))
+* **prs-markdown:** allocate wide table columns by content ([bb37cf3](https://github.com/dstoc/sony-prs/commit/bb37cf362bc15e9ad88440f4e903552feb175eb1))
+* **prs-markdown:** improve e-ink syntax contrast ([4efa5e9](https://github.com/dstoc/sony-prs/commit/4efa5e977e0086a1b712c3e9a797b6b8ee3a1bf3))
+* **prs-markdown:** improve table typography and padding ([073663d](https://github.com/dstoc/sony-prs/commit/073663d16b8eda395b5e92fd6c1795bebe4fe434))
+* **prs-markdown:** keep wrapped table rows continuous ([ec5266e](https://github.com/dstoc/sony-prs/commit/ec5266e8e8183937db538964860e5f6ecac5c319))
+* **prs-markdown:** preserve nested code surfaces ([07f6a54](https://github.com/dstoc/sony-prs/commit/07f6a5418c14cd4c2b8546b49415787b3c61f5b2))
+* **prs-markdown:** preserve wrapped header border width ([fae4cf3](https://github.com/dstoc/sony-prs/commit/fae4cf30d2ae0a5498405373ce13894907e092ca))
+* **prs-markdown:** render italic syntax in code ([2132d32](https://github.com/dstoc/sony-prs/commit/2132d3208ec77d600f04d766c573b5ddb6adcf56))
+* **prs-markdown:** try normal table typography first ([161a013](https://github.com/dstoc/sony-prs/commit/161a013032f150c571141bbf29991705442b1c66))
+
 ## [0.4.0](https://github.com/dstoc/sony-prs/compare/prs-markdown-v0.3.0...prs-markdown-v0.4.0) (2026-09-17)
 
 
