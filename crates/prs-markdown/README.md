@@ -95,7 +95,13 @@ continuation lines receive a slightly darker code fill to distinguish them
 from source-newline lines. Code blocks paginate at displayed line boundaries.
 
 The corpus regression test compares every page of every checked-in fixture
-against a deterministic PNG golden in `tests/goldens/`. If a comparison fails,
+against a deterministic PNG golden in `tests/goldens/`. These primary fixture
+goldens use the PRS-T1's 600x800 visible viewport and the default
+`ReaderStyle`, so they represent the intended reader typography and spacing.
+Structural and targeted wrapping, pagination, table, and syntax tests continue
+to use deliberately small viewports for edge-case coverage. The standalone
+`host-page.png` renderer smoke golden remains a dedicated 120x80 constrained
+case. If a comparison fails,
 the rendered page is written to `target/prs-markdown-golden-failures/` and the
 test output includes the command to promote all current renders after they
 have been inspected:

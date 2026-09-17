@@ -11,6 +11,7 @@ use prs_markdown::style::{Insets, ReaderStyle, TextStyle};
 use prs_markdown::typography::{
     FontConfig, FontFace, FontdueTextEngine, TextEngine, TextRun, TextStyle as FontTextStyle,
 };
+use prs_markdown::T1_VIEWPORT;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -364,11 +365,11 @@ fn every_checked_in_fixture_matches_png_goldens() {
 }
 
 fn assert_fixture_goldens(name: &str, source: &str) {
-    let viewport = Viewport::new(180, 120);
+    let viewport = T1_VIEWPORT;
     let font_engine = golden_font_engine();
     let reader = HostReader::from_source_with_measurer(
         source,
-        structural_style(),
+        ReaderStyle::default(),
         viewport,
         font_engine.clone(),
     )
@@ -377,7 +378,40 @@ fn assert_fixture_goldens(name: &str, source: &str) {
 
     for (page_index, page) in reader.pagination().pages().iter().enumerate() {
         let image = render_page(page, &mut renderer);
+        assert_eq!(image.width(), T1_VIEWPORT.width);
+        assert_eq!(image.height(), T1_VIEWPORT.height);
         assert_png_golden(name, page_index + 1, &image);
+    }
+    remove_obsolete_fixture_goldens(name, reader.page_count());
+}
+
+fn remove_obsolete_fixture_goldens(name: &str, page_count: usize) {
+    if env::var_os("PRS_MARKDOWN_UPDATE_GOLDENS").is_none() {
+        return;
+    }
+
+    let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/goldens");
+    let prefix = format!("{name}-page-");
+    let entries = fs::read_dir(&directory)
+        .unwrap_or_else(|error| panic!("read golden directory {}: {error}", directory.display()));
+    for entry in entries {
+        let entry = entry.unwrap_or_else(|error| panic!("read golden directory entry: {error}"));
+        let path = entry.path();
+        let Some(file_name) = path.file_name().and_then(|file| file.to_str()) else {
+            continue;
+        };
+        let Some(page) = file_name
+            .strip_prefix(&prefix)
+            .and_then(|page| page.strip_suffix(".png"))
+            .and_then(|page| page.parse::<usize>().ok())
+        else {
+            continue;
+        };
+        if page > page_count {
+            fs::remove_file(&path).unwrap_or_else(|error| {
+                panic!("remove obsolete golden {}: {error}", path.display())
+            });
+        }
     }
 }
 
@@ -501,6 +535,8 @@ fn host_render_helper_uses_the_production_renderer() {
     assert!(image.pixels().iter().any(|pixel| *pixel < 255));
 }
 
+// Keep one standalone renderer smoke golden small; the fixture corpus above is
+// the device-sized visual regression suite.
 #[test]
 fn rendered_host_page_matches_checked_in_png_golden() {
     let font_engine = golden_font_engine();

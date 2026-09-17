@@ -19,6 +19,9 @@ pub struct Viewport {
     pub height: u32,
 }
 
+/// The visible PRS-T1 framebuffer used by the host reader profile.
+pub const T1_VIEWPORT: Viewport = Viewport::new(600, 800);
+
 impl Viewport {
     pub const fn new(width: u32, height: u32) -> Self {
         Self { width, height }

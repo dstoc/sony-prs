@@ -5,6 +5,7 @@ use prs_markdown::layout::Viewport;
 use prs_markdown::resources::FileSystemResourceProvider;
 use prs_markdown::style::{Insets, ReaderStyle, TextStyle};
 use prs_markdown::typography::{FontConfig, FontdueTextEngine};
+use prs_markdown::T1_VIEWPORT;
 use std::env;
 use std::error::Error;
 use std::fs;
@@ -116,8 +117,8 @@ impl Cli {
         let mut output = PathBuf::from(DEFAULT_OUTPUT);
         let mut pages = Vec::new();
         let mut font = None;
-        let mut width = 600;
-        let mut height = 800;
+        let mut width = T1_VIEWPORT.width;
+        let mut height = T1_VIEWPORT.height;
         let mut padding = 16;
         let mut body_size = 16;
         let mut line_height = 22;
@@ -317,6 +318,8 @@ fn default_font_path() -> Option<PathBuf> {
 }
 
 fn print_usage() {
+    let t1_width = T1_VIEWPORT.width;
+    let t1_height = T1_VIEWPORT.height;
     println!(
         "Usage: prs-markdown-harness [OPTIONS] FILE\n\n\
          Render the production Markdown parser/layout/pagination/renderer pipeline\n\
@@ -329,8 +332,8 @@ fn print_usage() {
            --page N                     render 1-based page N; repeat for selected pages\n\n\
          Configuration:\n\
            --font PATH                  TrueType/OpenType font (or PRS_MARKDOWN_FONT)\n\
-           --width N                    viewport width (default: 600)\n\
-           --height N                   viewport height (default: 800)\n\
+           --width N                    viewport width (default: {t1_width})\n\
+           --height N                   viewport height (default: {t1_height})\n\
            --padding N                  page padding on all sides (default: 16)\n\
            --body-size N                body font size (default: 16)\n\
            --line-height N              body line height (default: 22)\n\
