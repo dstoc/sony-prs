@@ -18,6 +18,7 @@ use std::path::{Path, PathBuf};
 
 const CORPUS: &str = include_str!("fixtures/regression.md");
 const BOUNDARY: &str = include_str!("fixtures/page-boundary.md");
+const BLOCK_LIST_CONTENT: &str = include_str!("fixtures/list-block-content.md");
 const TASK_CONTROLS: &str = include_str!("fixtures/task-controls.md");
 const ORDERED_LIST_START: &str = include_str!("fixtures/ordered-list-start.md");
 const GOLDEN_REGULAR: &[u8] = notosans::REGULAR_TTF;
@@ -524,6 +525,112 @@ fn list_layout_matches_narrow_png_goldens() {
         }
         remove_obsolete_fixture_goldens(name, reader.page_count());
     }
+}
+
+#[test]
+fn block_list_fixture_keeps_outer_markers_on_first_child_lines() {
+    let reader = HostReader::from_source(
+        BLOCK_LIST_CONTENT,
+        narrow_list_style(),
+        Viewport::new(240, 280),
+    )
+    .expect("block-list fixture should parse");
+
+    let list = reader
+        .layout()
+        .blocks()
+        .iter()
+        .find(|block| block.kind == prs_markdown::layout::LayoutBlockKind::List)
+        .expect("fixture should contain a list layout");
+    let outer_item_x =
+        narrow_list_style().page_padding.left as i32 + narrow_list_style().list_indent as i32;
+    let outer_markers = list
+        .lines
+        .iter()
+        .filter(|line| {
+            line.fragments.first().is_some_and(|fragment| {
+                fragment.text == "• " && fragment.bounds.top_left.x == outer_item_x
+            })
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(outer_markers.len(), 5);
+    assert!(outer_markers.iter().all(|line| line.fragments.len() >= 2));
+    assert!(!list
+        .lines
+        .iter()
+        .any(|line| line.fragments.len() == 1 && line.fragments[0].text == "• "));
+    let quote_first_line = outer_markers
+        .iter()
+        .find(|line| {
+            line.fragments
+                .iter()
+                .any(|fragment| fragment.text == "Quote")
+        })
+        .expect("quote marker should share its first rendered line");
+    let quote_text_x = quote_first_line.fragments[1].bounds.top_left.x;
+    let quote_continuation = list
+        .lines
+        .iter()
+        .find(|line| {
+            line.fragments
+                .iter()
+                .any(|fragment| fragment.text == "continuation")
+        })
+        .expect("quote should have a continuation line");
+    assert_eq!(
+        quote_continuation.fragments[0].bounds.top_left.x,
+        quote_text_x
+    );
+
+    let prs_markdown::Block::List { items, .. } = &reader.document().blocks()[1] else {
+        panic!("expected block-content list")
+    };
+    assert!(matches!(
+        items[0].children.first(),
+        Some(prs_markdown::Block::Quote(_))
+    ));
+    assert!(matches!(
+        items[1].children.first(),
+        Some(prs_markdown::Block::Heading { .. })
+    ));
+    assert!(matches!(
+        items[2].children.first(),
+        Some(prs_markdown::Block::CodeBlock { .. })
+    ));
+    assert!(matches!(
+        items[3].content.first(),
+        Some(prs_markdown::Inline::Image { .. })
+    ));
+    assert!(matches!(
+        items[4].children.first(),
+        Some(prs_markdown::Block::List { .. })
+    ));
+}
+
+#[test]
+fn block_list_fixture_matches_narrow_png_golden() {
+    let font_engine = golden_font_engine();
+    let reader = HostReader::from_source_with_measurer(
+        BLOCK_LIST_CONTENT,
+        narrow_list_style(),
+        Viewport::new(240, 400),
+        font_engine.clone(),
+    )
+    .expect("block-list fixture should parse");
+    assert_eq!(reader.page_count(), 1);
+
+    let mut renderer = prs_markdown::EmbeddedGraphicsRenderer::new(font_engine);
+    let image = render_page(
+        reader.pagination().page(0).expect("page 1 should exist"),
+        &mut renderer,
+    );
+    assert_png_golden_at(
+        golden_path("list-block-content", 1),
+        golden_failure_path("list-block-content", 1),
+        "list-block-content page 1",
+        &image,
+    );
 }
 
 #[test]
