@@ -508,6 +508,7 @@ impl Paginator {
                                         block.table.as_ref(),
                                         header_index,
                                         true,
+                                        false,
                                     );
                                 }
                             }
@@ -515,6 +516,7 @@ impl Paginator {
                     }
                     page_start = None;
                 }
+                let starts_page = page_start.is_none();
                 page_start.get_or_insert(cursor);
                 add_line(
                     &mut page,
@@ -525,6 +527,7 @@ impl Paginator {
                     block.table.as_ref(),
                     line_index,
                     false,
+                    starts_page,
                 );
             }
         }
@@ -579,6 +582,7 @@ impl Paginator {
                     block.table.as_ref(),
                     line_index,
                     true,
+                    false,
                 );
             }
         }
@@ -596,6 +600,7 @@ impl Paginator {
                         block.table.as_ref(),
                         line_index,
                         false,
+                        cursor == entry.range.start,
                     );
                 }
             }
@@ -760,6 +765,7 @@ fn add_line(
     table: Option<&TableLayout>,
     line_index: usize,
     repeated_header: bool,
+    starts_page: bool,
 ) {
     let code_surface = kind == LayoutBlockKind::Code || line.code;
     let table_header = kind == LayoutBlockKind::Table
@@ -806,6 +812,7 @@ fn add_line(
             table,
             line_index,
             repeated_header,
+            starts_page,
         );
     }
     if let (Some(task), Some(task_checkbox_x)) = (line.task, line.task_checkbox_x) {
@@ -958,6 +965,7 @@ fn page_origin_and_header(
     (origin_y, repeated_header)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn add_table_decoration(
     page: &mut PageLayout,
     line: &LayoutLine,
@@ -966,6 +974,7 @@ fn add_table_decoration(
     table: Option<&TableLayout>,
     line_index: usize,
     repeated_header: bool,
+    starts_page: bool,
 ) {
     let Some(table) = table else {
         return;
@@ -1052,7 +1061,13 @@ fn add_table_decoration(
         style: style.table_border,
     });
 
-    if line_index == row.line_range.start && (row_index == 0 || repeated_header) {
+    // A group transition on the same page already has the preceding row's
+    // bottom rule. Restore the top rule only when a later group header starts
+    // a page and the preceding boundary is on the previous page.
+    let starts_later_group = row.header && row.group > 0;
+    if line_index == row.line_range.start
+        && (row_index == 0 || repeated_header || (starts_page && starts_later_group))
+    {
         page.push_command(DisplayCommand::Rule {
             bounds: translate(
                 Rect::new(
@@ -2241,6 +2256,77 @@ mod tests {
                 .count();
             assert!(header_vertical_rules > group.widths.len());
         }
+    }
+
+    #[test]
+    fn grouped_continuation_page_starts_later_group_with_top_boundary() {
+        let style = pagination_style();
+        let document = Document::from_blocks(vec![Block::Table(Table {
+            headers: vec![
+                vec![Inline::Text("Key".into())],
+                vec![Inline::Text("State".into())],
+                vec![Inline::Text("Owner".into())],
+                vec![Inline::Text("Detail".into())],
+            ],
+            rows: vec![vec![
+                vec![Inline::Text("row".into())],
+                vec![Inline::Text("ready".into())],
+                vec![Inline::Text("reader".into())],
+                vec![Inline::Text(
+                    "A long grouped continuation cell wraps across several display lines.".into(),
+                )],
+            ]],
+            alignments: Vec::new(),
+        })]);
+        let layout = LayoutEngine::new(style).layout(&document, Viewport::new(50, 40));
+        let table = layout.blocks()[0].table.as_ref().expect("table metadata");
+        assert_eq!(table.mode, crate::layout::TableLayoutMode::Grouped);
+        let pages = Paginator::new(style).paginate(&layout);
+        let group_header = table
+            .rows
+            .iter()
+            .find(|row| row.group == 1 && row.header)
+            .expect("second group header");
+        let header_cursor = DocumentCursor::new(0, group_header.line_range.start);
+        let page = pages
+            .iter()
+            .find(|page| page.range.start == header_cursor)
+            .expect("continuation page starting at second group header");
+        let group = &table.groups[group_header.group];
+        let top_rules = page
+            .display_list()
+            .iter()
+            .filter_map(|command| match command {
+                DisplayCommand::Rule {
+                    bounds,
+                    style: rule_style,
+                } if bounds.top_left.y == 0
+                    && bounds.size == Size::new(group.width, style.table_border.width)
+                    && *rule_style == style.table_border =>
+                {
+                    Some(*bounds)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            top_rules,
+            vec![Rect::new(
+                Point::new(group.x, 0),
+                Size::new(group.width, style.table_border.width),
+            )]
+        );
+
+        let paginator = Paginator::new(style);
+        let index = paginator.index(&layout);
+        let page_index = pages
+            .iter()
+            .position(|candidate| candidate.range == page.range)
+            .expect("page index");
+        assert_eq!(
+            paginator.page_from_index(&layout, &index, page_index),
+            Some(page.clone())
+        );
     }
 
     #[test]
