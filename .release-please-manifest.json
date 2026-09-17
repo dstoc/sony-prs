@@ -1,4 +1,4 @@
 {
-  "crates/prs-t1-agent": "0.4.0",
-  "crates/prs-markdown": "0.1.0"
+  "crates/prs-t1-agent": "0.4.1",
+  "crates/prs-markdown": "0.2.0"
 }
