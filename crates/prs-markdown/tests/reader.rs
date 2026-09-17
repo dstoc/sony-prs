@@ -1,9 +1,16 @@
+use prs_markdown::document::Document;
+use prs_markdown::parse::{ComrakParser, MarkdownParser, ParseError};
+use prs_markdown::reader::ReaderEvent;
 use prs_markdown::{
     DocumentId, DocumentLocation, FileSystemResourceProvider, NavigationTarget, Reader,
-    ReaderEvent, ReaderStyle, Viewport,
+    ReaderLimits, ReaderStyle, Viewport,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc,
+};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 struct TestRoot(PathBuf);
@@ -46,6 +53,18 @@ fn reader(root: &TestRoot) -> Reader<FileSystemResourceProvider> {
         ..ReaderStyle::default()
     };
     Reader::new(provider, style, Viewport::new(80, 32))
+}
+
+#[derive(Clone)]
+struct CountingParser {
+    parses: Arc<AtomicUsize>,
+}
+
+impl MarkdownParser for CountingParser {
+    fn parse(&self, source: &str) -> Result<Document, ParseError> {
+        self.parses.fetch_add(1, Ordering::Relaxed);
+        ComrakParser::new().parse(source)
+    }
 }
 
 #[test]
@@ -160,4 +179,76 @@ fn anchors_and_external_links_are_actions_without_side_effects() {
     );
     assert!(reader.back().expect("restore start"));
     assert_eq!(reader.current_location().unwrap().anchor, None);
+}
+
+#[test]
+fn bounded_reader_rebuilds_evicted_pages_without_reparsing() {
+    let root = TestRoot::new();
+    let source = (0..160)
+        .map(|index| {
+            format!(
+                "## Section {index}\n\nLong prose line {index} with enough words to create multiple pages in the compact test viewport.\n\n"
+            )
+        })
+        .collect::<String>();
+    fs::write(root.path().join("index.md"), source).expect("write stress document");
+    fs::write(
+        root.path().join("chapter.md"),
+        "# Chapter\n\nA linked chapter.\n",
+    )
+    .expect("write chapter");
+
+    let parses = Arc::new(AtomicUsize::new(0));
+    let provider = FileSystemResourceProvider::new(root.path(), "index.md").expect("provider");
+    let style = ReaderStyle {
+        page_padding: prs_markdown::Insets::all(1),
+        body: prs_markdown::TextStyle::new(10, 10),
+        heading: prs_markdown::TextStyle::new(10, 10),
+        code: prs_markdown::TextStyle::new(10, 10),
+        paragraph_spacing: 0,
+        heading_spacing_before: 0,
+        heading_spacing_after: 0,
+        ..ReaderStyle::default()
+    };
+    let mut bounded = Reader::with_limits(
+        provider,
+        CountingParser {
+            parses: parses.clone(),
+        },
+        prs_markdown::ApproximateTextMeasurer,
+        style,
+        Viewport::new(80, 32),
+        ReaderLimits {
+            max_history_entries: 2,
+            max_cached_documents: 1,
+            page_cache_capacity: 2,
+            ..ReaderLimits::default()
+        },
+    );
+    bounded.open().expect("open stress document");
+    assert!(bounded.pagination().is_none());
+    assert!(bounded.page_count() > 10);
+    assert_eq!(parses.load(Ordering::Relaxed), 1);
+
+    let mut eager = reader(&root);
+    eager.open().expect("open eager reference");
+    for _ in 0..8 {
+        assert!(bounded.next_page().expect("next page"));
+        assert!(eager.next_page().expect("next eager page"));
+        assert!(bounded.current_page().is_some());
+        assert_eq!(bounded.current_page(), eager.current_page());
+        assert!(bounded.cache_stats().cached_pages <= 2);
+    }
+    let stats = bounded.cache_stats();
+    assert!(stats.cached_pages <= stats.page_cache_limit);
+    assert!(stats.history_entries <= stats.history_limit);
+
+    bounded
+        .follow_document("chapter.md")
+        .expect("follow chapter");
+    assert_eq!(parses.load(Ordering::Relaxed), 2);
+    bounded.back().expect("return to stress document");
+    bounded.forward().expect("return to chapter");
+    assert_eq!(parses.load(Ordering::Relaxed), 2);
+    assert!(bounded.cache_stats().cached_documents <= 1);
 }

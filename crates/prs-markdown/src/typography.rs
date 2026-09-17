@@ -231,6 +231,12 @@ pub struct GlyphBitmap {
     pub alpha: Vec<u8>,
 }
 
+impl GlyphBitmap {
+    fn byte_len(&self) -> usize {
+        self.alpha.len()
+    }
+}
+
 /// The shaping/rasterization boundary used by the reader.
 pub trait TextEngine {
     fn measure(&self, run: &TextRun<'_>) -> TextMetrics;
@@ -334,13 +340,17 @@ struct GlyphCacheKey {
 #[derive(Clone, Debug)]
 struct GlyphCache {
     capacity: usize,
+    byte_capacity: usize,
+    bytes: usize,
     entries: VecDeque<(GlyphCacheKey, GlyphBitmap)>,
 }
 
 impl GlyphCache {
-    fn new(capacity: usize) -> Self {
+    fn new(capacity: usize, byte_capacity: usize) -> Self {
         Self {
             capacity,
+            byte_capacity,
+            bytes: 0,
             entries: VecDeque::new(),
         }
     }
@@ -352,12 +362,15 @@ impl GlyphCache {
             .position(|(entry_key, _)| *entry_key == key)?;
         let entry = self.entries.remove(index)?;
         let bitmap = entry.1.clone();
+        self.bytes = self.bytes.saturating_sub(entry.1.byte_len());
         self.entries.push_back(entry);
+        self.bytes = self.bytes.saturating_add(bitmap.byte_len());
         Some(bitmap)
     }
 
     fn insert(&mut self, key: GlyphCacheKey, bitmap: GlyphBitmap) {
-        if self.capacity == 0 {
+        let bitmap_bytes = bitmap.byte_len();
+        if self.capacity == 0 || bitmap_bytes > self.byte_capacity {
             return;
         }
         if let Some(index) = self
@@ -365,14 +378,30 @@ impl GlyphCache {
             .iter()
             .position(|(entry_key, _)| *entry_key == key)
         {
-            self.entries.remove(index);
+            if let Some((_, previous)) = self.entries.remove(index) {
+                self.bytes = self.bytes.saturating_sub(previous.byte_len());
+            }
         }
-        while self.entries.len() >= self.capacity {
-            self.entries.pop_front();
+        while self.entries.len() >= self.capacity
+            || self.bytes.saturating_add(bitmap_bytes) > self.byte_capacity
+        {
+            let Some((_, previous)) = self.entries.pop_front() else {
+                break;
+            };
+            self.bytes = self.bytes.saturating_sub(previous.byte_len());
         }
+        self.bytes = self.bytes.saturating_add(bitmap_bytes);
         self.entries.push_back((key, bitmap));
     }
+
+    fn clear(&mut self) {
+        self.entries.clear();
+        self.bytes = 0;
+    }
 }
+
+/// Default upper bound for rasterized glyph coverage stored by a text engine.
+pub const DEFAULT_GLYPH_CACHE_BYTES: usize = 256 * 1024;
 
 /// Fontdue-backed implementation of [`TextEngine`].
 #[derive(Clone, Debug)]
@@ -387,13 +416,41 @@ impl FontdueTextEngine {
     /// Load all five faces and reserve at most `cache_capacity` rasterized
     /// glyphs. A capacity of zero disables reuse but remains bounded.
     pub fn new(config: FontConfig, cache_capacity: usize) -> Result<Self, FontError> {
-        Self::with_load_config(config, FontLoadConfig::default(), cache_capacity)
+        Self::with_cache_limits(config, cache_capacity, DEFAULT_GLYPH_CACHE_BYTES)
+    }
+
+    /// Load all faces with both entry and byte bounds on rasterized glyphs.
+    pub fn with_cache_limits(
+        config: FontConfig,
+        cache_capacity: usize,
+        cache_bytes: usize,
+    ) -> Result<Self, FontError> {
+        Self::with_load_config_and_cache_limits(
+            config,
+            FontLoadConfig::default(),
+            cache_capacity,
+            cache_bytes,
+        )
     }
 
     pub fn with_load_config(
         config: FontConfig,
         load_config: FontLoadConfig,
         cache_capacity: usize,
+    ) -> Result<Self, FontError> {
+        Self::with_load_config_and_cache_limits(
+            config,
+            load_config,
+            cache_capacity,
+            DEFAULT_GLYPH_CACHE_BYTES,
+        )
+    }
+
+    pub fn with_load_config_and_cache_limits(
+        config: FontConfig,
+        load_config: FontLoadConfig,
+        cache_capacity: usize,
+        cache_bytes: usize,
     ) -> Result<Self, FontError> {
         let settings = fontdue::FontSettings {
             collection_index: load_config.collection_index,
@@ -417,7 +474,7 @@ impl FontdueTextEngine {
         ];
         Ok(Self {
             fonts,
-            cache: GlyphCache::new(cache_capacity),
+            cache: GlyphCache::new(cache_capacity, cache_bytes),
             cache_hits: 0,
             rasterizations: 0,
         })
@@ -439,6 +496,14 @@ impl FontdueTextEngine {
         self.cache.entries.len()
     }
 
+    pub fn cached_glyph_bytes(&self) -> usize {
+        self.cache.bytes
+    }
+
+    pub fn cache_byte_capacity(&self) -> usize {
+        self.cache.byte_capacity
+    }
+
     pub fn cache_hits(&self) -> u64 {
         self.cache_hits
     }
@@ -448,7 +513,7 @@ impl FontdueTextEngine {
     }
 
     pub fn clear_cache(&mut self) {
-        self.cache.entries.clear();
+        self.cache.clear();
     }
 
     fn font(&self, face: FontFace) -> &fontdue::Font {
@@ -738,5 +803,6 @@ mod tests {
             engine.rasterize_glyph(glyph);
         }
         assert!(engine.cached_glyphs() <= engine.cache_capacity());
+        assert!(engine.cached_glyph_bytes() <= engine.cache_byte_capacity());
     }
 }

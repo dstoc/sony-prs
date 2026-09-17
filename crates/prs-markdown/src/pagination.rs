@@ -261,6 +261,72 @@ impl DerefMut for Pagination {
     }
 }
 
+/// A compact page directory used by bounded readers.
+///
+/// Unlike [`Pagination`], this directory retains only the logical range and
+/// document-space origin needed to rebuild one display list. The reader can
+/// consequently evict old `PageLayout` values without losing page navigation
+/// or forcing a Markdown reparse.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PaginationIndex {
+    viewport: Viewport,
+    pages: Vec<PageIndexEntry>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PageIndexEntry {
+    range: DocumentRange,
+    origin_y: i32,
+    repeated_header: Option<(usize, std::ops::Range<usize>)>,
+}
+
+impl PaginationIndex {
+    pub fn page_count(&self) -> usize {
+        self.pages.len()
+    }
+
+    pub fn len(&self) -> usize {
+        self.page_count()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.pages.is_empty()
+    }
+
+    pub fn range(&self, index: usize) -> Option<DocumentRange> {
+        self.pages.get(index).map(|page| page.range)
+    }
+
+    pub fn page_index_for_cursor(&self, cursor: DocumentCursor) -> Option<usize> {
+        self.pages
+            .iter()
+            .position(|page| page.range.contains(cursor))
+    }
+
+    fn from_pagination(
+        layout: &DocumentLayout,
+        pagination: &Pagination,
+        style: &ReaderStyle,
+    ) -> Self {
+        let pages = pagination
+            .pages()
+            .iter()
+            .map(|page| {
+                let (origin_y, repeated_header) = page_origin_and_header(layout, page, style);
+                PageIndexEntry {
+                    range: page.range,
+                    origin_y,
+                    repeated_header,
+                }
+            })
+            .collect();
+        Self {
+            viewport: layout.viewport,
+            pages,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DisplayCommand {
     /// A positioned text run. The renderer chooses how to rasterize it.
@@ -457,6 +523,65 @@ impl Paginator {
             ));
         }
         Pagination::new(pages)
+    }
+
+    /// Build a compact page directory. Pagination is performed once to retain
+    /// the established split rules, then the temporary display lists are
+    /// released. Bounded readers rebuild only requested pages from this
+    /// directory and the retained document layout.
+    pub fn index(&self, layout: &DocumentLayout) -> PaginationIndex {
+        let pagination = self.paginate(layout);
+        PaginationIndex::from_pagination(layout, &pagination, &self.style)
+    }
+
+    /// Rebuild one page from a compact [`PaginationIndex`] entry.
+    pub fn page_from_index(
+        &self,
+        layout: &DocumentLayout,
+        index: &PaginationIndex,
+        page_index: usize,
+    ) -> Option<PageLayout> {
+        let entry = index.pages.get(page_index)?;
+        let mut page = PageLayout::with_range(page_index + 1, index.viewport, entry.range);
+
+        if let Some((block_index, header_range)) = &entry.repeated_header {
+            let block = layout.blocks().get(*block_index)?;
+            let header = block.lines.get(header_range.start)?;
+            let header_offset = Point::new(
+                0,
+                self.style.page_padding.top as i32 - header.bounds.top_left.y,
+            );
+            for line_index in header_range.clone() {
+                let line = block.lines.get(line_index)?;
+                add_line(
+                    &mut page,
+                    line,
+                    header_offset,
+                    block.kind,
+                    &self.style,
+                    block.table.as_ref(),
+                    line_index,
+                );
+            }
+        }
+
+        for (block_index, block) in layout.blocks().iter().enumerate() {
+            for (line_index, line) in block.lines.iter().enumerate() {
+                let cursor = DocumentCursor::new(block_index, line_index);
+                if entry.range.contains(cursor) {
+                    add_line(
+                        &mut page,
+                        line,
+                        Point::new(0, entry.origin_y.saturating_neg()),
+                        block.kind,
+                        &self.style,
+                        block.table.as_ref(),
+                        line_index,
+                    );
+                }
+            }
+        }
+        Some(page)
     }
 
     fn should_break_before(
@@ -736,6 +861,42 @@ fn table_row_height(block: &crate::layout::LayoutBlock, row: &TableRowLayout) ->
         .get(row.line_range.end.saturating_sub(1))
         .unwrap_or(first);
     line_bottom(last.bounds).saturating_sub(first.bounds.top_left.y)
+}
+
+fn page_origin_and_header(
+    layout: &DocumentLayout,
+    page: &PageLayout,
+    style: &ReaderStyle,
+) -> (i32, Option<(usize, std::ops::Range<usize>)>) {
+    let Some(block) = layout.blocks().get(page.range.start.block) else {
+        return (0, None);
+    };
+    let Some(line) = block.lines.get(page.range.start.line) else {
+        return (0, None);
+    };
+
+    let mut origin_y = if page.number == 1 {
+        0
+    } else {
+        line.bounds
+            .top_left
+            .y
+            .saturating_sub(style.page_padding.top as i32)
+    };
+    let mut repeated_header = None;
+    if block.kind == LayoutBlockKind::Table {
+        if let Some(table) = block.table.as_ref() {
+            if let Some(row) = table_row_at(table, page.range.start.line) {
+                if !row.header {
+                    if let Some(header) = table_header_for_line(table, page.range.start.line) {
+                        origin_y = origin_y.saturating_sub(table_row_height(block, header));
+                        repeated_header = Some((page.range.start.block, header.line_range.clone()));
+                    }
+                }
+            }
+        }
+    }
+    (origin_y, repeated_header)
 }
 
 fn add_table_decoration(
@@ -1171,6 +1332,25 @@ mod tests {
         let previous = pages.previous_page(next.number - 1).expect("previous page");
         assert_eq!(previous.range, pages[0].range);
         assert_eq!(pages.page(usize::MAX), None);
+    }
+
+    #[test]
+    fn compact_index_rebuilds_table_pages_identically() {
+        let document = crate::parse::parse(include_str!("../tests/fixtures/tables-code-images.md"))
+            .expect("table fixture should parse");
+        let style = ReaderStyle::default();
+        let layout = LayoutEngine::new(style).layout(&document, Viewport::new(180, 80));
+        let paginator = Paginator::new(style);
+        let eager = paginator.paginate(&layout);
+        let index = paginator.index(&layout);
+
+        assert_eq!(index.page_count(), eager.page_count());
+        for page_index in 0..eager.page_count() {
+            assert_eq!(
+                paginator.page_from_index(&layout, &index, page_index),
+                eager.page(page_index).cloned()
+            );
+        }
     }
 
     #[test]

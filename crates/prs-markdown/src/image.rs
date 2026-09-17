@@ -17,9 +17,18 @@ use std::sync::Arc;
 /// Images are still resized to the display area before they are retained.
 pub const MAX_SOURCE_ALLOCATION: u64 = 64 * 1024 * 1024;
 
+/// The largest encoded image source read into memory by the resource layer.
+/// This is intentionally lower than the decoder allocation limit because the
+/// encoded byte buffer and decoder working memory coexist during decode.
+pub const MAX_SOURCE_BYTES: usize = 16 * 1024 * 1024;
+
 /// The total display-sized raster data retained by one [`ImageResources`].
 /// Images beyond this budget degrade to the normal alt-text fallback.
 pub const DEFAULT_RETAINED_BYTES: usize = 4 * 1024 * 1024;
+
+/// Maximum number of distinct image references retained in one document.
+/// Sources after this bound use the normal alt-text fallback.
+pub const DEFAULT_IMAGE_ENTRIES: usize = 128;
 
 /// A display-sized, opaque 8-bit grayscale raster.
 ///
@@ -109,6 +118,7 @@ pub struct ImageResources {
     images: HashMap<String, Option<RasterImage>>,
     retained_bytes: usize,
     retained_limit: usize,
+    entry_limit: usize,
 }
 
 impl Default for ImageResources {
@@ -119,10 +129,15 @@ impl Default for ImageResources {
 
 impl ImageResources {
     pub fn new(retained_limit: usize) -> Self {
+        Self::with_limits(retained_limit, DEFAULT_IMAGE_ENTRIES)
+    }
+
+    pub fn with_limits(retained_limit: usize, entry_limit: usize) -> Self {
         Self {
             images: HashMap::new(),
             retained_bytes: 0,
             retained_limit,
+            entry_limit,
         }
     }
 
@@ -132,6 +147,14 @@ impl ImageResources {
 
     pub fn retained_limit(&self) -> usize {
         self.retained_limit
+    }
+
+    pub fn entry_count(&self) -> usize {
+        self.images.len()
+    }
+
+    pub fn entry_limit(&self) -> usize {
+        self.entry_limit
     }
 
     pub fn image(&self, source: &str) -> Option<&RasterImage> {
@@ -144,6 +167,9 @@ impl ImageResources {
 
     pub fn insert(&mut self, source: impl Into<String>, image: Option<RasterImage>) {
         let source = source.into();
+        if !self.images.contains_key(&source) && self.images.len() >= self.entry_limit {
+            return;
+        }
         if let Some(previous) = self.images.remove(&source).flatten() {
             self.retained_bytes = self.retained_bytes.saturating_sub(previous.byte_len());
         }
@@ -183,14 +209,32 @@ impl ImageResources {
         max_height: u32,
         retained_limit: usize,
     ) -> Self {
+        Self::from_document_with_limits(
+            provider,
+            containing_document,
+            document,
+            max_width,
+            max_height,
+            retained_limit,
+            DEFAULT_IMAGE_ENTRIES,
+        )
+    }
+
+    pub fn from_document_with_limits<P: ResourceProvider>(
+        provider: &P,
+        containing_document: &Path,
+        document: &Document,
+        max_width: u32,
+        max_height: u32,
+        retained_limit: usize,
+        entry_limit: usize,
+    ) -> Self {
         let mut sources = Vec::new();
         for block in document.blocks() {
-            collect_block_sources(block, &mut sources);
+            collect_block_sources(block, &mut sources, entry_limit);
         }
-        sources.sort();
-        sources.dedup();
 
-        let mut resources = Self::new(retained_limit);
+        let mut resources = Self::with_limits(retained_limit, entry_limit);
         for source in sources {
             let image = load_reference(
                 provider,
@@ -244,7 +288,7 @@ fn load_reference<P: ResourceProvider>(
     let ResourceTarget::Asset(path) = target else {
         return None;
     };
-    let bytes = provider.read_binary(&path).ok()?;
+    let bytes = provider.read_binary_limited(&path, MAX_SOURCE_BYTES).ok()?;
     decode(&bytes, max_width, max_height)
 }
 
@@ -300,56 +344,62 @@ fn fitted_dimensions(width: u32, height: u32, max_width: u32, max_height: u32) -
     }
 }
 
-fn collect_block_sources(block: &Block, output: &mut Vec<String>) {
+fn collect_block_sources(block: &Block, output: &mut Vec<String>, limit: usize) {
     match block {
         Block::Heading { content, .. } | Block::Paragraph(content) => {
-            collect_inline_sources(content, output)
+            collect_inline_sources(content, output, limit)
         }
         Block::List { items, .. } => items
             .iter()
-            .for_each(|item| collect_item_sources(item, output)),
+            .for_each(|item| collect_item_sources(item, output, limit)),
         Block::Quote(blocks)
         | Block::Alert { blocks, .. }
         | Block::FootnoteDefinition { blocks, .. } => blocks
             .iter()
-            .for_each(|block| collect_block_sources(block, output)),
+            .for_each(|block| collect_block_sources(block, output, limit)),
         Block::Table(table) => {
             table
                 .headers
                 .iter()
-                .for_each(|cell| collect_inline_sources(cell, output));
+                .for_each(|cell| collect_inline_sources(cell, output, limit));
             table
                 .rows
                 .iter()
                 .flatten()
-                .for_each(|cell| collect_inline_sources(cell, output));
+                .for_each(|cell| collect_inline_sources(cell, output, limit));
         }
-        Block::Image { source, .. } => output.push(source.clone()),
+        Block::Image { source, .. } => push_source(output, source, limit),
         Block::CodeBlock { .. } | Block::Rule => {}
     }
 }
 
-fn collect_item_sources(item: &ListItem, output: &mut Vec<String>) {
-    collect_inline_sources(&item.content, output);
+fn collect_item_sources(item: &ListItem, output: &mut Vec<String>, limit: usize) {
+    collect_inline_sources(&item.content, output, limit);
     item.children
         .iter()
-        .for_each(|block| collect_block_sources(block, output));
+        .for_each(|block| collect_block_sources(block, output, limit));
 }
 
-fn collect_inline_sources(inlines: &[Inline], output: &mut Vec<String>) {
+fn collect_inline_sources(inlines: &[Inline], output: &mut Vec<String>, limit: usize) {
     for inline in inlines {
         match inline {
-            Inline::Image { source, .. } => output.push(source.clone()),
+            Inline::Image { source, .. } => push_source(output, source, limit),
             Inline::Emphasis(children)
             | Inline::Strong(children)
-            | Inline::Strikethrough(children) => collect_inline_sources(children, output),
-            Inline::Link { label, .. } => collect_inline_sources(label, output),
+            | Inline::Strikethrough(children) => collect_inline_sources(children, output, limit),
+            Inline::Link { label, .. } => collect_inline_sources(label, output, limit),
             Inline::Text(_)
             | Inline::Code(_)
             | Inline::FootnoteReference { .. }
             | Inline::SoftBreak
             | Inline::HardBreak => {}
         }
+    }
+}
+
+fn push_source(output: &mut Vec<String>, source: &str, limit: usize) {
+    if output.len() < limit && !output.iter().any(|existing| existing == source) {
+        output.push(source.to_owned());
     }
 }
 
@@ -400,5 +450,19 @@ mod tests {
             (image.fitted(3, 8).width(), image.fitted(3, 8).height()),
             (3, 1)
         );
+    }
+
+    #[test]
+    fn image_reference_metadata_is_bounded_separately_from_raster_bytes() {
+        let raster = || RasterImage::new(1, 1, Arc::<[u8]>::from(vec![0])).unwrap();
+        let mut resources = ImageResources::with_limits(16, 2);
+        resources.insert("first", Some(raster()));
+        resources.insert("second", Some(raster()));
+        resources.insert("third", Some(raster()));
+
+        assert_eq!(resources.entry_count(), 2);
+        assert_eq!(resources.retained_bytes(), 2);
+        assert!(resources.image("first").is_some());
+        assert!(resources.image("third").is_none());
     }
 }

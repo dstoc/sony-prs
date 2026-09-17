@@ -9,7 +9,7 @@
 use std::error::Error;
 use std::fmt;
 use std::fs;
-use std::io;
+use std::io::{self, Read};
 use std::path::{Component, Path, PathBuf};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -93,6 +93,24 @@ pub trait ResourceProvider {
 
     /// Read an opaque binary resource such as an image.
     fn read_binary(&self, path: &Path) -> Result<Vec<u8>, ResourceError>;
+
+    /// Read a binary resource with an encoded-byte bound.
+    ///
+    /// Providers with a streaming or filesystem backend should override this
+    /// method so the bound applies before allocation. The default keeps the
+    /// boundary useful for simple providers, although such providers may
+    /// still allocate their full source before this check.
+    fn read_binary_limited(&self, path: &Path, max_bytes: usize) -> Result<Vec<u8>, ResourceError> {
+        let bytes = self.read_binary(path)?;
+        if bytes.len() > max_bytes {
+            return Err(ResourceError::new(format!(
+                "binary resource exceeds {} byte limit: {}",
+                max_bytes,
+                path.display()
+            )));
+        }
+        Ok(bytes)
+    }
 
     /// Resolve a reference from the current document.
     fn resolve_reference(&self, reference: &str) -> Result<ResourceTarget, ResourceError>;
@@ -221,8 +239,31 @@ impl FileSystemResourceProvider {
     }
 
     pub fn read_binary(&self, path: &Path) -> Result<Vec<u8>, ResourceError> {
+        self.read_binary_limited(path, usize::MAX)
+    }
+
+    pub fn read_binary_limited(
+        &self,
+        path: &Path,
+        max_bytes: usize,
+    ) -> Result<Vec<u8>, ResourceError> {
         let path = self.filesystem_path(path)?;
-        fs::read(&path).map_err(|error| ResourceError::io("read binary resource", &path, error))
+        let metadata = fs::metadata(&path)
+            .map_err(|error| ResourceError::io("inspect binary resource", &path, error))?;
+        if metadata.len() > max_bytes as u64 {
+            return Err(ResourceError::new(format!(
+                "binary resource exceeds {} byte limit: {}",
+                max_bytes,
+                path.display()
+            )));
+        }
+        let capacity = usize::try_from(metadata.len()).unwrap_or(max_bytes);
+        let mut file = fs::File::open(&path)
+            .map_err(|error| ResourceError::io("open binary resource", &path, error))?;
+        let mut bytes = Vec::with_capacity(capacity.min(max_bytes));
+        file.read_to_end(&mut bytes)
+            .map_err(|error| ResourceError::io("read binary resource", &path, error))?;
+        Ok(bytes)
     }
 
     pub fn resolve_reference(&self, reference: &str) -> Result<ResourceTarget, ResourceError> {
@@ -338,6 +379,10 @@ impl ResourceProvider for FileSystemResourceProvider {
 
     fn read_binary(&self, path: &Path) -> Result<Vec<u8>, ResourceError> {
         self.read_binary(path)
+    }
+
+    fn read_binary_limited(&self, path: &Path, max_bytes: usize) -> Result<Vec<u8>, ResourceError> {
+        self.read_binary_limited(path, max_bytes)
     }
 
     fn resolve_reference(&self, reference: &str) -> Result<ResourceTarget, ResourceError> {
@@ -487,6 +532,13 @@ mod tests {
         );
         assert_eq!(
             provider.read_binary(Path::new("guide/part one/images/chart final.png")),
+            Ok(vec![0, 1, 2, 255])
+        );
+        assert!(provider
+            .read_binary_limited(Path::new("guide/part one/images/chart final.png"), 3)
+            .is_err());
+        assert_eq!(
+            provider.read_binary_limited(Path::new("guide/part one/images/chart final.png"), 4),
             Ok(vec![0, 1, 2, 255])
         );
     }

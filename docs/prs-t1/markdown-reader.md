@@ -183,6 +183,48 @@ pagination never allocates or depends on full-page bitmaps or E-ink refresh
 behaviour. Re-running pagination with the same layout and style produces the
 same page count, ranges, and page-space commands.
 
+## T1 resource policy and host baseline
+
+The production `Reader::with_components` path uses an explicit bounded policy
+(`ReaderLimits::default()`): at most 16 history entries, two inactive
+open-document states, three resident page display lists, 4 MiB of fitted image
+rasters across 128 image references, and 16 MiB per encoded image source. The
+filesystem provider checks the encoded size before reading it; the image
+decoder additionally limits transient decoded allocation to 64 MiB. Failed,
+unsupported, or over-budget images remain visible through their alt-text
+fallback. `ImageResources` retains no decoded source image.
+
+`FontdueTextEngine` keeps an LRU glyph cache bounded both by entry count and by
+256 KiB of coverage bytes. The selected Syntect runtime bundle is a static
+7,551-byte packdump in the current build and its grammar set is initialized
+once. Highlighting is performed once per code block while layout is built; it
+is not repeated on page turns.
+
+The bounded reader retains the complete owned document and document-coordinate
+layout needed to rebuild pages, plus a compact page directory of logical ranges
+and origins. It does not retain a display list for every page. An evicted page
+is rebuilt from that layout on demand, so ordinary next/previous turns do not
+reparse Markdown. The document cache is LRU-like and the history cap drops the
+oldest entries when the limit is reached; a cache miss reparses and relayouts
+only the requested document. Full-page bitmap caching is intentionally absent;
+the T1 owns its framebuffer and refresh policy.
+
+The host regression `crates/prs-markdown/tests/performance.rs` runs a checked-in
+stress corpus containing prose, headings, nested lists, highlighted Rust/JSON,
+a wide table, repeated images, and links to `stress-linked.md`. One observed
+Linux host run (debug test binary, 600x800 viewport) measured 29 KiB source,
+312 blocks, 48 pages, parse 6.0 ms, image preparation 558.6 ms, layout 13.4
+ms, page-directory construction 2.0 ms, open/time-to-first-page 568.8 ms, ten
+next-page turns 0.465 ms total, and previous-page 0.0006 ms. The process RSS
+sample was 35 MiB. These are regression observations, not T1 guarantees;
+on-device ARMv5TE measurements remain authoritative, especially for image
+decode and first-page latency.
+
+`Reader::new` remains an eager-pagination compatibility constructor for host
+callers that inspect every `Pagination` page. T1 integration and new callers
+use `with_components` or `with_limits`, which expose `cache_stats()` for host
+instrumentation and apply the bounded policy.
+
 ## Current crate shape
 
 The crate exposes the module boundaries for the pipeline:

@@ -37,7 +37,10 @@ pub use highlighting::{
     CodeHighlighter, HighlightSpan, HighlightedCode, HighlightedLine, SyntectHighlighter,
     SUPPORTED_LANGUAGES,
 };
-pub use image::{ImageResources, RasterImage, DEFAULT_RETAINED_BYTES, MAX_SOURCE_ALLOCATION};
+pub use image::{
+    ImageResources, RasterImage, DEFAULT_IMAGE_ENTRIES, DEFAULT_RETAINED_BYTES,
+    MAX_SOURCE_ALLOCATION, MAX_SOURCE_BYTES,
+};
 pub use layout::{
     ApproximateTextMeasurer, DocumentLayout, LayoutBlock, LayoutBlockKind, LayoutEngine,
     LayoutFragment, LayoutImage, LayoutLine, TableColumnGroup, TableColumnLayout, TableLayout,
@@ -46,11 +49,11 @@ pub use layout::{
 pub use navigation::{DocumentId, DocumentLocation, NavigationTarget, ReaderHistory};
 pub use pagination::{
     DisplayCommand, DisplayList, DocumentCursor, DocumentRange, HitRegion, LogicalPosition,
-    LogicalRange, PageLayout, Pagination, Paginator,
+    LogicalRange, PageLayout, Pagination, PaginationIndex, Paginator,
 };
 pub use reader::{
-    Reader, ReaderAction, ReaderError, ReaderEvent, ReaderRenderError, ReaderSession,
-    ReadingLocation,
+    Reader, ReaderAction, ReaderCacheStats, ReaderError, ReaderEvent, ReaderLimits,
+    ReaderRenderError, ReaderSession, ReadingLocation,
 };
 pub use render::EmbeddedGraphicsRenderer;
 pub use resources::{
@@ -60,7 +63,7 @@ pub use style::{BorderStyle, Color, FillStyle, Insets, ReaderStyle, TextStyle};
 pub use typography::{
     FontConfig, FontError, FontFace, FontLoadConfig, FontdueTextEngine, GlyphBitmap, LineMetrics,
     PositionedGlyph, SpanId, TextEngine, TextLayout, TextLine, TextMetrics, TextRun,
-    TextStyle as TypographyStyle,
+    TextStyle as TypographyStyle, DEFAULT_GLYPH_CACHE_BYTES,
 };
 
 #[cfg(test)]

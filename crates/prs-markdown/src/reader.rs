@@ -5,7 +5,9 @@ use crate::geometry::Viewport;
 use crate::image::ImageResources;
 use crate::layout::{ApproximateTextMeasurer, DocumentLayout, LayoutEngine, TextMeasurer};
 use crate::navigation::{DocumentId, DocumentLocation, NavigationTarget, ReaderHistory};
-use crate::pagination::{DocumentCursor, HitRegion, PageLayout, Pagination, Paginator};
+use crate::pagination::{
+    DocumentCursor, DocumentRange, HitRegion, PageLayout, Pagination, PaginationIndex, Paginator,
+};
 use crate::parse::{ComrakParser, MarkdownParser, ParseError};
 use crate::render::EmbeddedGraphicsRenderer;
 use crate::resources::{ResourceError, ResourceProvider, ResourceTarget};
@@ -13,6 +15,7 @@ use crate::style::ReaderStyle;
 use embedded_graphics::draw_target::DrawTarget;
 use embedded_graphics::geometry::Point;
 use embedded_graphics::pixelcolor::Rgb888;
+use std::collections::VecDeque;
 use std::error::Error;
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -139,6 +142,47 @@ impl<E: fmt::Display> fmt::Display for ReaderRenderError<E> {
     }
 }
 
+/// Explicit steady-state resource policy for the high-level reader.
+///
+/// `Reader::with_components` uses these bounds. The compatibility
+/// `Reader::new` constructor keeps its historical eager-pagination behaviour;
+/// T1 and new callers should use the component constructor so old page and
+/// host-inspection APIs remain source-compatible during the transition.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReaderLimits {
+    pub max_history_entries: usize,
+    pub max_cached_documents: usize,
+    pub page_cache_capacity: usize,
+    pub image_retained_bytes: usize,
+    pub image_entry_capacity: usize,
+}
+
+impl Default for ReaderLimits {
+    fn default() -> Self {
+        Self {
+            max_history_entries: 16,
+            max_cached_documents: 2,
+            page_cache_capacity: 3,
+            image_retained_bytes: crate::image::DEFAULT_RETAINED_BYTES,
+            image_entry_capacity: crate::image::DEFAULT_IMAGE_ENTRIES,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReaderCacheStats {
+    pub history_entries: usize,
+    pub history_limit: usize,
+    pub cached_documents: usize,
+    pub document_cache_limit: usize,
+    pub cached_pages: usize,
+    pub page_cache_limit: usize,
+    pub image_retained_bytes: usize,
+    pub image_retained_limit: usize,
+    pub image_entries: usize,
+    pub image_entry_limit: usize,
+}
+
 /// A complete, host-configurable Markdown reading session.
 ///
 /// The reader coordinates resource loading, parsing, layout, pagination, and
@@ -158,17 +202,165 @@ where
     style: ReaderStyle,
     viewport: Viewport,
     current: Option<OpenDocument>,
+    document_cache: DocumentCache,
     history: Vec<ReadingLocation>,
     history_index: usize,
+    limits: ReaderLimits,
+    eager_pagination: bool,
 }
 
 struct OpenDocument {
     location: DocumentLocation,
     document: Document,
     layout: DocumentLayout,
-    pagination: Pagination,
+    pagination: Option<Pagination>,
+    page_index: Option<PaginationIndex>,
+    page_cache: PageCache,
+    images: ImageResources,
     page: usize,
     cursor: DocumentCursor,
+}
+
+impl OpenDocument {
+    fn page_count(&self) -> usize {
+        self.pagination.as_ref().map_or_else(
+            || {
+                self.page_index
+                    .as_ref()
+                    .map_or(0, PaginationIndex::page_count)
+            },
+            Pagination::page_count,
+        )
+    }
+
+    fn page(&self) -> Option<&PageLayout> {
+        if let Some(pagination) = &self.pagination {
+            pagination.page(self.page)
+        } else {
+            self.page_cache.get(self.page)
+        }
+    }
+
+    fn page_range(&self, index: usize) -> DocumentRange {
+        self.pagination
+            .as_ref()
+            .and_then(|pages| pages.page(index).map(|page| page.range))
+            .or_else(|| {
+                self.page_index
+                    .as_ref()
+                    .and_then(|pages| pages.range(index))
+            })
+            .unwrap_or_default()
+    }
+
+    fn page_index_for_cursor(&self, cursor: DocumentCursor) -> Option<usize> {
+        self.pagination
+            .as_ref()
+            .and_then(|pages| pages.page_index_for_cursor(cursor))
+            .or_else(|| {
+                self.page_index
+                    .as_ref()
+                    .and_then(|pages| pages.page_index_for_cursor(cursor))
+            })
+    }
+
+    fn page_index_after(&self, index: usize, next: bool) -> Option<usize> {
+        let count = self.page_count();
+        if next {
+            index.checked_add(1).filter(|candidate| *candidate < count)
+        } else {
+            (index > 0 && index < count).then_some(index - 1)
+        }
+    }
+
+    fn ensure_page(&mut self, index: usize, style: &ReaderStyle) -> Result<(), ReaderError> {
+        if self.pagination.is_some() || self.page_cache.contains(index) {
+            return Ok(());
+        }
+        let Some(page_index) = self.page_index.as_ref() else {
+            return Ok(());
+        };
+        let page = Paginator::new(*style)
+            .page_from_index(&self.layout, page_index, index)
+            .ok_or(ReaderError::NoDocumentOpen)?;
+        self.page_cache.insert(index, page);
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+struct PageCache {
+    capacity: usize,
+    entries: VecDeque<(usize, PageLayout)>,
+}
+
+impl PageCache {
+    fn new(capacity: usize) -> Self {
+        Self {
+            capacity: capacity.max(1),
+            entries: VecDeque::new(),
+        }
+    }
+
+    fn get(&self, index: usize) -> Option<&PageLayout> {
+        self.entries
+            .iter()
+            .find_map(|(cached_index, page)| (*cached_index == index).then_some(page))
+    }
+
+    fn contains(&self, index: usize) -> bool {
+        self.entries
+            .iter()
+            .any(|(cached_index, _)| *cached_index == index)
+    }
+
+    fn insert(&mut self, index: usize, page: PageLayout) {
+        if let Some(position) = self
+            .entries
+            .iter()
+            .position(|(cached_index, _)| *cached_index == index)
+        {
+            self.entries.remove(position);
+        }
+        while self.entries.len() >= self.capacity {
+            self.entries.pop_front();
+        }
+        self.entries.push_back((index, page));
+    }
+}
+
+struct DocumentCache {
+    capacity: usize,
+    entries: VecDeque<OpenDocument>,
+}
+
+impl DocumentCache {
+    fn new(capacity: usize) -> Self {
+        Self {
+            capacity,
+            entries: VecDeque::new(),
+        }
+    }
+
+    fn take(&mut self, document: &DocumentId) -> Option<OpenDocument> {
+        let position = self
+            .entries
+            .iter()
+            .position(|entry| entry.location.document == *document)?;
+        self.entries.remove(position)
+    }
+
+    fn insert(&mut self, document: OpenDocument) {
+        if self.capacity == 0 {
+            return;
+        }
+        self.entries
+            .retain(|entry| entry.location.document != document.location.document);
+        while self.entries.len() >= self.capacity {
+            self.entries.pop_front();
+        }
+        self.entries.push_back(document);
+    }
 }
 
 impl<P: ResourceProvider> Reader<P, ApproximateTextMeasurer, ComrakParser> {
@@ -176,7 +368,7 @@ impl<P: ResourceProvider> Reader<P, ApproximateTextMeasurer, ComrakParser> {
     /// approximate metrics. Applications with real fonts should use
     /// [`Reader::with_components`] and pass the same font metrics to layout.
     pub fn new(provider: P, style: ReaderStyle, viewport: Viewport) -> Self {
-        Self::with_components(
+        Self::with_legacy_components(
             provider,
             ComrakParser::default(),
             ApproximateTextMeasurer,
@@ -200,6 +392,27 @@ where
         style: ReaderStyle,
         viewport: Viewport,
     ) -> Self {
+        Self::with_limits(
+            provider,
+            parser,
+            measurer,
+            style,
+            viewport,
+            ReaderLimits::default(),
+        )
+    }
+
+    /// Create a reader with explicit resource bounds. Page turns use the
+    /// compact page directory and bounded page cache; they never reparse the
+    /// current Markdown source.
+    pub fn with_limits(
+        provider: P,
+        parser: Parser,
+        measurer: M,
+        style: ReaderStyle,
+        viewport: Viewport,
+        limits: ReaderLimits,
+    ) -> Self {
         Self {
             provider,
             measurer,
@@ -207,8 +420,39 @@ where
             style,
             viewport,
             current: None,
+            document_cache: DocumentCache::new(limits.max_cached_documents),
             history: Vec::new(),
             history_index: 0,
+            limits,
+            eager_pagination: false,
+        }
+    }
+
+    fn with_legacy_components(
+        provider: P,
+        parser: Parser,
+        measurer: M,
+        style: ReaderStyle,
+        viewport: Viewport,
+    ) -> Self {
+        Self {
+            provider,
+            measurer,
+            parser,
+            style,
+            viewport,
+            current: None,
+            document_cache: DocumentCache::new(0),
+            history: Vec::new(),
+            history_index: 0,
+            limits: ReaderLimits {
+                max_history_entries: usize::MAX,
+                max_cached_documents: 0,
+                page_cache_capacity: usize::MAX,
+                image_retained_bytes: crate::image::DEFAULT_RETAINED_BYTES,
+                image_entry_capacity: crate::image::DEFAULT_IMAGE_ENTRIES,
+            },
+            eager_pagination: true,
         }
     }
 
@@ -224,8 +468,11 @@ where
             style: self.style,
             viewport: self.viewport,
             current: self.current,
+            document_cache: self.document_cache,
             history: self.history,
             history_index: self.history_index,
+            limits: self.limits,
+            eager_pagination: self.eager_pagination,
         }
     }
 
@@ -242,8 +489,11 @@ where
             style: self.style,
             viewport: self.viewport,
             current: self.current,
+            document_cache: self.document_cache,
             history: self.history,
             history_index: self.history_index,
+            limits: self.limits,
+            eager_pagination: self.eager_pagination,
         }
     }
 
@@ -259,6 +509,10 @@ where
         self.viewport
     }
 
+    pub fn limits(&self) -> ReaderLimits {
+        self.limits
+    }
+
     pub fn document(&self) -> Option<&Document> {
         self.current.as_ref().map(|current| &current.document)
     }
@@ -267,8 +521,14 @@ where
         self.current.as_ref().map(|current| &current.layout)
     }
 
+    /// Return eager display-list pagination when using the compatibility
+    /// constructor. Bounded readers expose ranges through
+    /// [`Self::pagination_index`] and retain display lists through
+    /// [`Self::current_page`].
     pub fn pagination(&self) -> Option<&Pagination> {
-        self.current.as_ref().map(|current| &current.pagination)
+        self.current
+            .as_ref()
+            .and_then(|current| current.pagination.as_ref())
     }
 
     pub fn current_location(&self) -> Option<&DocumentLocation> {
@@ -286,15 +546,41 @@ where
     }
 
     pub fn page_count(&self) -> usize {
-        self.current
-            .as_ref()
-            .map_or(0, |current| current.pagination.page_count())
+        self.current.as_ref().map_or(0, OpenDocument::page_count)
     }
 
     pub fn current_page(&self) -> Option<&PageLayout> {
+        self.current.as_ref().and_then(|current| current.page())
+    }
+
+    /// Return the compact page directory in bounded mode.
+    pub fn pagination_index(&self) -> Option<&PaginationIndex> {
         self.current
             .as_ref()
-            .and_then(|current| current.pagination.page(current.page))
+            .and_then(|current| current.page_index.as_ref())
+    }
+
+    pub fn cache_stats(&self) -> ReaderCacheStats {
+        let (cached_pages, image_retained_bytes, image_entries) =
+            self.current.as_ref().map_or((0, 0, 0), |current| {
+                (
+                    current.page_cache.entries.len(),
+                    current.images.retained_bytes(),
+                    current.images.entry_count(),
+                )
+            });
+        ReaderCacheStats {
+            history_entries: self.history.len(),
+            history_limit: self.limits.max_history_entries,
+            cached_documents: self.document_cache.entries.len(),
+            document_cache_limit: self.limits.max_cached_documents,
+            cached_pages,
+            page_cache_limit: self.limits.page_cache_capacity.max(1),
+            image_retained_bytes,
+            image_retained_limit: self.limits.image_retained_bytes,
+            image_entries,
+            image_entry_limit: self.limits.image_entry_capacity,
+        }
     }
 
     pub fn current_cursor(&self) -> Option<DocumentCursor> {
@@ -326,7 +612,7 @@ where
         let loaded = self.load_location(location)?;
         let event = ReaderEvent::Opened {
             location: loaded.location.clone(),
-            page_count: loaded.pagination.page_count(),
+            page_count: loaded.page_count(),
         };
         let history = Self::snapshot_for(&loaded);
         self.current = Some(loaded);
@@ -337,28 +623,32 @@ where
 
     /// Advance one page. `false` means the current page was already the last.
     pub fn next_page(&mut self) -> Result<bool, ReaderError> {
-        let Some(current) = self.current.as_mut() else {
+        let Some(current) = self.current.as_ref() else {
             return Err(ReaderError::NoDocumentOpen);
         };
-        let Some(next) = current.pagination.next_page_index(current.page) else {
+        let Some(next) = current.page_index_after(current.page, true) else {
             return Ok(false);
         };
+        self.ensure_current_page(next)?;
+        let current = self.current.as_mut().expect("current page exists");
         current.page = next;
-        current.cursor = current.pagination[next].range.start;
+        current.cursor = current.page_range(next).start;
         self.update_current_history();
         Ok(true)
     }
 
     /// Move back one page. `false` means the current page was already first.
     pub fn previous_page(&mut self) -> Result<bool, ReaderError> {
-        let Some(current) = self.current.as_mut() else {
+        let Some(current) = self.current.as_ref() else {
             return Err(ReaderError::NoDocumentOpen);
         };
-        let Some(previous) = current.pagination.previous_page_index(current.page) else {
+        let Some(previous) = current.page_index_after(current.page, false) else {
             return Ok(false);
         };
+        self.ensure_current_page(previous)?;
+        let current = self.current.as_mut().expect("current page exists");
         current.page = previous;
-        current.cursor = current.pagination[previous].range.start;
+        current.cursor = current.page_range(previous).start;
         self.update_current_history();
         Ok(true)
     }
@@ -435,12 +725,9 @@ where
         let Some(current) = self.current.as_ref() else {
             return Err(ReaderError::NoDocumentOpen);
         };
-        let cursor = anchor_cursor(
-            &current.layout,
-            &current.pagination,
-            &current.location,
-            anchor,
-        )?;
+        let cursor = anchor_cursor(&current.layout, &current.location, anchor, |cursor| {
+            current.page_index_for_cursor(cursor)
+        })?;
         let mut location = current.location.clone();
         location.anchor = Some(anchor.to_owned());
         self.navigate_loaded(location, cursor, None)
@@ -546,16 +833,17 @@ where
                 .as_ref()
                 .map(Self::snapshot_for)
                 .ok_or(ReaderError::NoDocumentOpen)?;
-            let (page, page_count) = {
+            let page = {
                 let current = self.current.as_mut().ok_or(ReaderError::NoDocumentOpen)?;
                 current.location = location.clone();
                 current.cursor = cursor;
                 current.page = current
-                    .pagination
                     .page_index_for_cursor(cursor)
                     .unwrap_or(current.page);
-                (current.page, current.pagination.page_count())
+                current.page
             };
+            self.ensure_current_page(page)?;
+            let page_count = self.page_count();
             let destination = self
                 .current
                 .as_ref()
@@ -564,9 +852,7 @@ where
             if let Some(entry) = self.history.get_mut(self.history_index) {
                 *entry = origin;
             }
-            self.history.truncate(self.history_index + 1);
-            self.history.push(destination);
-            self.history_index = self.history.len() - 1;
+            self.push_history(destination);
             return Ok(ReaderEvent::Navigated {
                 location,
                 page,
@@ -576,25 +862,35 @@ where
 
         next.location = location;
         next.cursor = cursor;
-        next.page = next
-            .pagination
-            .page_index_for_cursor(cursor)
-            .unwrap_or(next.page);
+        next.page = next.page_index_for_cursor(cursor).unwrap_or(next.page);
+        next.ensure_page(next.page, &self.style)?;
         let history_entry = Self::snapshot_for(&next);
         self.update_current_history();
-        self.history.truncate(self.history_index + 1);
-        self.history.push(history_entry);
-        self.history_index = self.history.len() - 1;
+        self.push_history(history_entry);
         let event = ReaderEvent::Navigated {
             location: next.location.clone(),
             page: next.page,
-            page_count: next.pagination.page_count(),
+            page_count: next.page_count(),
         };
         self.current = Some(next);
         Ok(event)
     }
 
-    fn load_location(&self, location: DocumentLocation) -> Result<OpenDocument, ReaderError> {
+    fn load_location(&mut self, location: DocumentLocation) -> Result<OpenDocument, ReaderError> {
+        if let Some(mut cached) = self.document_cache.take(&location.document) {
+            if let Err(error) = self.prepare_loaded(&mut cached, location) {
+                self.document_cache.insert(cached);
+                return Err(error);
+            }
+            self.cache_current();
+            return Ok(cached);
+        }
+        let loaded = self.load_uncached(&location)?;
+        self.cache_current();
+        Ok(loaded)
+    }
+
+    fn load_uncached(&self, location: &DocumentLocation) -> Result<OpenDocument, ReaderError> {
         let path = PathBuf::from(location.document.as_ref());
         let source = self.provider.read_markdown(&path)?;
         let document = self.parser.parse(&source)?;
@@ -610,33 +906,111 @@ where
                 .top
                 .saturating_add(self.style.page_padding.bottom),
         );
-        let images = ImageResources::from_document(
+        let images = ImageResources::from_document_with_limits(
             &self.provider,
             &path,
             &document,
             image_width,
             image_height,
+            self.limits.image_retained_bytes,
+            self.limits.image_entry_capacity,
         );
         let layout = LayoutEngine::with_measurer(self.style, self.measurer.clone())
             .layout_with_images(&document, self.viewport, &images);
-        let pagination = Paginator::new(self.style).paginate(&layout);
-        let cursor = match location.anchor.as_deref() {
-            Some(anchor) => anchor_cursor(&layout, &pagination, &location, anchor)?,
-            None => pagination
-                .page(0)
-                .map_or(DocumentCursor::new(layout.blocks.len(), 0), |page| {
-                    page.range.start
-                }),
+        let paginator = Paginator::new(self.style);
+        let (pagination, page_index) = if self.eager_pagination {
+            (Some(paginator.paginate(&layout)), None)
+        } else {
+            (None, Some(paginator.index(&layout)))
         };
-        let page = pagination.page_index_for_cursor(cursor).unwrap_or(0);
-        Ok(OpenDocument {
-            location,
+        let cursor = match location.anchor.as_deref() {
+            Some(anchor) => anchor_cursor(&layout, location, anchor, |cursor| {
+                pagination
+                    .as_ref()
+                    .and_then(|pages| pages.page_index_for_cursor(cursor))
+                    .or_else(|| {
+                        page_index
+                            .as_ref()
+                            .and_then(|pages| pages.page_index_for_cursor(cursor))
+                    })
+            })?,
+            None => pagination
+                .as_ref()
+                .and_then(|pages| pages.page(0).map(|page| page.range.start))
+                .or_else(|| {
+                    page_index
+                        .as_ref()
+                        .and_then(|pages| pages.range(0).map(|range| range.start))
+                })
+                .unwrap_or(DocumentCursor::new(layout.blocks.len(), 0)),
+        };
+        let page = pagination
+            .as_ref()
+            .and_then(|pages| pages.page_index_for_cursor(cursor))
+            .or_else(|| {
+                page_index
+                    .as_ref()
+                    .and_then(|pages| pages.page_index_for_cursor(cursor))
+            })
+            .unwrap_or(0);
+        let mut loaded = OpenDocument {
+            location: location.clone(),
             document,
             layout,
             pagination,
+            page_index,
+            page_cache: PageCache::new(self.limits.page_cache_capacity),
+            images,
             page,
             cursor,
-        })
+        };
+        loaded.ensure_page(page, &self.style)?;
+        Ok(loaded)
+    }
+
+    fn prepare_loaded(
+        &self,
+        loaded: &mut OpenDocument,
+        location: DocumentLocation,
+    ) -> Result<(), ReaderError> {
+        loaded.location = location.clone();
+        if let Some(anchor) = location.anchor.as_deref() {
+            loaded.cursor = anchor_cursor(&loaded.layout, &location, anchor, |cursor| {
+                loaded.page_index_for_cursor(cursor)
+            })?;
+        } else {
+            loaded.page = 0;
+            loaded.cursor = loaded.page_range(0).start;
+        }
+        loaded.page = loaded
+            .page_index_for_cursor(loaded.cursor)
+            .unwrap_or(loaded.page);
+        loaded.ensure_page(loaded.page, &self.style)?;
+        Ok(())
+    }
+
+    fn cache_current(&mut self) {
+        if let Some(current) = self.current.take() {
+            self.document_cache.insert(current);
+        }
+    }
+
+    fn ensure_current_page(&mut self, page: usize) -> Result<(), ReaderError> {
+        let current = self.current.as_mut().ok_or(ReaderError::NoDocumentOpen)?;
+        current.ensure_page(page, &self.style)
+    }
+
+    fn push_history(&mut self, entry: ReadingLocation) {
+        self.history.truncate(self.history_index + 1);
+        self.history.push(entry);
+        let limit = self.limits.max_history_entries.max(1);
+        if self.history.len() > limit {
+            let remove = self.history.len() - limit;
+            self.history.drain(..remove);
+            self.history_index = self.history_index.saturating_sub(remove);
+        } else {
+            self.history_index = self.history.len() - 1;
+        }
     }
 
     fn snapshot_for(current: &OpenDocument) -> ReadingLocation {
@@ -673,10 +1047,10 @@ where
         let loaded = self.load_location(target.location.clone())?;
         let mut restored = loaded;
         restored.page = restored
-            .pagination
             .page_index_for_cursor(target.cursor)
-            .unwrap_or(target.page.min(restored.pagination.len().saturating_sub(1)));
-        restored.cursor = restored.pagination[restored.page].range.start;
+            .unwrap_or(target.page.min(restored.page_count().saturating_sub(1)));
+        restored.ensure_page(restored.page, &self.style)?;
+        restored.cursor = restored.page_range(restored.page).start;
         self.current = Some(restored);
         self.history_index = target_index;
         Ok(true)
@@ -718,9 +1092,9 @@ fn document_id(path: &Path) -> DocumentId {
 
 fn anchor_cursor(
     layout: &DocumentLayout,
-    pagination: &Pagination,
     location: &DocumentLocation,
     anchor: &str,
+    page_index_for_cursor: impl Fn(DocumentCursor) -> Option<usize>,
 ) -> Result<DocumentCursor, ReaderError> {
     let Some(block) = layout
         .blocks()
@@ -733,7 +1107,7 @@ fn anchor_cursor(
         });
     };
     let cursor = DocumentCursor::new(block, 0);
-    if pagination.page_index_for_cursor(cursor).is_some() {
+    if page_index_for_cursor(cursor).is_some() {
         Ok(cursor)
     } else {
         Err(ReaderError::AnchorNotFound {
