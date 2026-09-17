@@ -9,8 +9,10 @@
 use crate::display::{self, CONTENT_TOP};
 use crate::framebuffer::{DisplayCanvas, DisplayRegion, NativeDisplay, WaveformMode};
 use embedded_graphics::geometry::Point;
+use embedded_graphics::mono_font::{ascii::FONT_8X13, MonoTextStyle};
 use embedded_graphics::pixelcolor::{Rgb565, RgbColor};
-use embedded_graphics::prelude::IntoStorage;
+use embedded_graphics::prelude::{Drawable, IntoStorage};
+use embedded_graphics::text::{Baseline, Text};
 use prs_markdown::geometry::Viewport;
 use prs_markdown::parse::ComrakParser;
 use prs_markdown::reader::{Reader, ReaderError, ReaderEvent};
@@ -74,6 +76,7 @@ pub fn viewport_for_display(width: u32, height: u32) -> Viewport {
 pub struct T1Reader {
     reader: Reader<FileSystemResourceProvider, FontdueTextEngine, ComrakParser>,
     renderer: EmbeddedGraphicsRenderer<FontdueTextEngine>,
+    external_url_notice: Option<String>,
 }
 
 impl T1Reader {
@@ -104,21 +107,31 @@ impl T1Reader {
         Ok(Self {
             reader,
             renderer: EmbeddedGraphicsRenderer::new(engine),
+            external_url_notice: None,
         })
+    }
+
+    /// Translate a whole-screen point into the page-space coordinates expected
+    /// by `prs-markdown`.
+    pub fn screen_to_viewport(&self, screen_point: Point) -> Option<Point> {
+        let content_top = CONTENT_TOP as i32;
+        if screen_point.y < content_top {
+            return None;
+        }
+        let page_point = Point::new(screen_point.x, screen_point.y - content_top);
+        self.reader
+            .viewport()
+            .contains(page_point)
+            .then_some(page_point)
     }
 
     /// Translate a screen-space content tap into a shared-reader action.
     /// Links get first refusal; a blank tap on the right half advances and a
     /// blank tap on the left half goes back.
     pub fn tap(&mut self, screen_point: Point) -> Result<ReaderEvent, ReaderError> {
-        let content_top = CONTENT_TOP as i32;
-        if screen_point.y < content_top {
+        let Some(page_point) = self.screen_to_viewport(screen_point) else {
             return Ok(ReaderEvent::NoAction);
-        }
-        let page_point = Point::new(screen_point.x, screen_point.y - content_top);
-        if !self.reader.viewport().contains(page_point) {
-            return Ok(ReaderEvent::NoAction);
-        }
+        };
 
         let event = self.reader.activate_at(page_point)?;
         if !matches!(event, ReaderEvent::NoAction) {
@@ -129,6 +142,25 @@ impl T1Reader {
         } else {
             self.reader.previous_page_event()
         }
+    }
+
+    pub fn next_page(&mut self) -> Result<ReaderEvent, ReaderError> {
+        self.reader.next_page_event()
+    }
+
+    pub fn previous_page(&mut self) -> Result<ReaderEvent, ReaderError> {
+        self.reader.previous_page_event()
+    }
+
+    pub fn back(&mut self) -> Result<ReaderEvent, ReaderError> {
+        self.reader.back_event()
+    }
+
+    /// Show an application-owned fallback for an external URL. The shared
+    /// reader reports the URL but deliberately does not know how to launch a
+    /// browser on the T1.
+    pub fn set_external_url_notice(&mut self, url: Option<String>) {
+        self.external_url_notice = url;
     }
 
     /// Build a complete packed RGB565 screen, including the T1 status bar and
@@ -162,7 +194,43 @@ impl T1Reader {
         self.renderer
             .render_at(page, &mut canvas, Point::new(0, CONTENT_TOP as i32))
             .expect("RGB565 DisplayCanvas drawing is infallible");
+        self.draw_external_url_notice(&mut canvas, width, height);
         Ok(frame)
+    }
+
+    fn draw_external_url_notice(
+        &self,
+        canvas: &mut DisplayCanvas<'_>,
+        width: usize,
+        height: usize,
+    ) {
+        let Some(url) = self.external_url_notice.as_deref() else {
+            return;
+        };
+        let notice_height = 24;
+        let notice_top = height.saturating_sub(notice_height);
+        canvas.fill_rect(
+            0,
+            notice_top,
+            width,
+            notice_height,
+            Rgb565::WHITE.into_storage(),
+        );
+
+        let available_chars = width.saturating_sub(16) / FONT_8X13.character_size.width as usize;
+        let mut label = String::from("External URL: ");
+        label.extend(
+            url.chars()
+                .take(available_chars.saturating_sub(label.len())),
+        );
+        Text::with_baseline(
+            &label,
+            Point::new(8, notice_top as i32 + 5),
+            MonoTextStyle::new(&FONT_8X13, Rgb565::BLACK),
+            Baseline::Top,
+        )
+        .draw(canvas)
+        .expect("RGB565 DisplayCanvas drawing is infallible");
     }
 
     pub fn draw(
@@ -299,6 +367,25 @@ mod tests {
                 page_count: reader.reader.page_count()
             }
         );
+        fs::remove_dir_all(root).expect("remove reader fixture root");
+    }
+
+    #[test]
+    fn screen_coordinates_translate_to_viewport_coordinates() {
+        let root = fixture_root("reader");
+        let reader =
+            T1Reader::open(fixture_config(&root), Viewport::new(240, 120)).expect("open fixture");
+
+        assert_eq!(
+            reader.screen_to_viewport(Point::new(23, CONTENT_TOP as i32 + 11)),
+            Some(Point::new(23, 11))
+        );
+        assert_eq!(reader.screen_to_viewport(Point::new(23, 47)), None);
+        assert_eq!(
+            reader.screen_to_viewport(Point::new(240, CONTENT_TOP as i32)),
+            None
+        );
+
         fs::remove_dir_all(root).expect("remove reader fixture root");
     }
 }

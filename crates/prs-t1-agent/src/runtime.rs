@@ -2,7 +2,7 @@ use crate::framebuffer::{DisplayRegion, NativeDisplay, WaveformMode};
 use crate::input::{EventReader, RawEvent};
 use crate::{display, input, reader};
 use embedded_graphics::geometry::Point;
-use prs_markdown::reader::ReaderEvent;
+use prs_markdown::reader::{ReaderError, ReaderEvent};
 use std::fs::OpenOptions;
 use std::io::{self, Read, Write};
 use std::os::fd::AsRawFd;
@@ -24,6 +24,8 @@ const ABS_MT_POSITION_Y: u16 = 54;
 const ABS_MT_TRACKING_ID: u16 = 57;
 const BTN_TOUCH: u16 = 330;
 const KEY_POWER: u16 = 116;
+const KEY_LEFT: u16 = 105;
+const KEY_RIGHT: u16 = 106;
 // The first key device (/dev/input/event0) reports the physical menu button
 // as "Unknown" code 357 (the diagnostic label is E0 Unknown C357).
 const KEY_MENU: u16 = 357;
@@ -145,24 +147,25 @@ pub fn run(path: &Path, suspend_mode: SuspendMode) -> io::Result<()> {
                 if event_action != PowerAction::None {
                     action = event_action;
                 }
+                if let Some(operation) = state.take_reader_operation() {
+                    let result = match operation {
+                        ReaderOperation::PreviousPage => markdown_reader.previous_page(),
+                        ReaderOperation::NextPage => markdown_reader.next_page(),
+                        ReaderOperation::Back => markdown_reader.back(),
+                    };
+                    let dirty = apply_reader_result(&mut state, &mut markdown_reader, result);
+                    redraw_area = Some(match redraw_area {
+                        Some(existing) => existing.merge(dirty),
+                        None => dirty,
+                    });
+                }
                 if let Some(point) = state.take_reader_tap() {
-                    match markdown_reader.tap(point) {
-                        Ok(event) => {
-                            state.message = reader_event_message(&event);
-                            redraw_area = Some(match redraw_area {
-                                Some(existing) => existing.merge(DirtyArea::Full),
-                                None => DirtyArea::Full,
-                            });
-                        }
-                        Err(error) => {
-                            state.message = format!("Reader error: {error}");
-                            eprintln!("standalone-test: Markdown tap failed: {error}");
-                            redraw_area = Some(match redraw_area {
-                                Some(existing) => existing.merge(DirtyArea::Full),
-                                None => DirtyArea::Full,
-                            });
-                        }
-                    }
+                    let result = markdown_reader.tap(point);
+                    let dirty = apply_reader_result(&mut state, &mut markdown_reader, result);
+                    redraw_area = Some(match redraw_area {
+                        Some(existing) => existing.merge(dirty),
+                        None => dirty,
+                    });
                 }
             }
         }
@@ -352,6 +355,36 @@ fn reader_event_message(event: &ReaderEvent) -> String {
         ReaderEvent::Asset(path) => format!("Asset selected: {}", path.display()),
         ReaderEvent::NoAction => "Reading unchanged".into(),
     }
+}
+
+fn apply_reader_result(
+    state: &mut UiState,
+    markdown_reader: &mut reader::T1Reader,
+    result: Result<ReaderEvent, ReaderError>,
+) -> DirtyArea {
+    match result {
+        Ok(event) => {
+            state.message = reader_event_message(&event);
+            match event {
+                ReaderEvent::ExternalUrl(url) => {
+                    markdown_reader.set_external_url_notice(Some(url));
+                }
+                ReaderEvent::NoAction => {}
+                ReaderEvent::Opened { .. }
+                | ReaderEvent::PageChanged { .. }
+                | ReaderEvent::Navigated { .. }
+                | ReaderEvent::Back { .. }
+                | ReaderEvent::Forward { .. }
+                | ReaderEvent::Asset(_) => markdown_reader.set_external_url_notice(None),
+            }
+        }
+        Err(error) => {
+            state.message = format!("Reader error: {error}");
+            markdown_reader.set_external_url_notice(None);
+            eprintln!("standalone-test: Markdown operation failed: {error}");
+        }
+    }
+    DirtyArea::Full
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1074,6 +1107,13 @@ enum PowerAction {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ReaderOperation {
+    PreviousPage,
+    NextPage,
+    Back,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum UiPage {
     Home,
     Details,
@@ -1084,6 +1124,7 @@ struct UiState {
     mode: &'static str,
     message: String,
     reader_tap: Option<Point>,
+    reader_operation: Option<ReaderOperation>,
     touch_seen: bool,
     touch_x: i32,
     touch_y: i32,
@@ -1110,6 +1151,7 @@ impl UiState {
             mode: "ACTIVE",
             message: "Input ready".into(),
             reader_tap: None,
+            reader_operation: None,
             touch_seen: false,
             touch_x: 0,
             touch_y: 0,
@@ -1145,6 +1187,10 @@ impl UiState {
 
     fn take_reader_tap(&mut self) -> Option<Point> {
         self.reader_tap.take()
+    }
+
+    fn take_reader_operation(&mut self) -> Option<ReaderOperation> {
+        self.reader_operation.take()
     }
 
     fn observe(
@@ -1230,6 +1276,22 @@ impl UiState {
             if source == InputSourceKind::Keys && event.code == KEY_MENU {
                 return self.observe_menu(event);
             }
+            if source == InputSourceKind::Keys && self.page == UiPage::Home && event.value == 1 {
+                let operation = match event.code {
+                    KEY_LEFT => Some(ReaderOperation::PreviousPage),
+                    KEY_RIGHT => Some(ReaderOperation::NextPage),
+                    _ => None,
+                };
+                if let Some(operation) = operation {
+                    self.reader_operation = Some(operation);
+                    self.message = match operation {
+                        ReaderOperation::PreviousPage => "Previous page".into(),
+                        ReaderOperation::NextPage => "Next page".into(),
+                        ReaderOperation::Back => unreachable!(),
+                    };
+                    return (Some(DirtyArea::Full), PowerAction::None);
+                }
+            }
             if source.is_power() && event.code == KEY_POWER {
                 eprintln!(
                     "standalone-test: power event source={} value={} timestamp_us={} mode={}",
@@ -1289,16 +1351,22 @@ impl UiState {
                 }
             }
             0 => {
-                let duration = self
-                    .menu_press_us
-                    .take()
-                    .map(|start| event.timestamp_micros().saturating_sub(start))
-                    .unwrap_or_default();
+                let Some(start) = self.menu_press_us.take() else {
+                    self.menu_pressed_at = None;
+                    self.menu_hold_triggered = false;
+                    self.message = "Menu released".into();
+                    return (Some(DirtyArea::Key), PowerAction::None);
+                };
+                let duration = event.timestamp_micros().saturating_sub(start);
                 self.menu_pressed_at = None;
                 let already_triggered = self.menu_hold_triggered;
                 self.menu_hold_triggered = false;
                 if !already_triggered && duration >= MENU_HOLD_MICROS {
                     (Some(self.trigger_menu_redraw()), PowerAction::None)
+                } else if !already_triggered && self.page == UiPage::Home {
+                    self.reader_operation = Some(ReaderOperation::Back);
+                    self.message = "Reader back".into();
+                    (Some(DirtyArea::Full), PowerAction::None)
                 } else {
                     self.message = "Menu released".into();
                     (Some(DirtyArea::Key), PowerAction::None)
@@ -1426,9 +1494,9 @@ impl UiState {
 #[cfg(test)]
 mod tests {
     use super::{
-        display, DirtyArea, InputSourceKind, Point, SuspendMode, UiPage, UiState,
+        display, DirtyArea, InputSourceKind, Point, ReaderOperation, SuspendMode, UiPage, UiState,
         ABS_MT_POSITION_X, ABS_MT_POSITION_Y, ABS_MT_TOUCH_MAJOR, ABS_MT_TRACKING_ID, ABS_X, ABS_Y,
-        BTN_TOUCH, EVENT_ABS, EVENT_KEY, EVENT_SYN, KEY_MENU, SYN_REPORT,
+        BTN_TOUCH, EVENT_ABS, EVENT_KEY, EVENT_SYN, KEY_LEFT, KEY_MENU, KEY_RIGHT, SYN_REPORT,
     };
     use crate::input::RawEvent;
     use std::time::{Duration, Instant};
@@ -1506,13 +1574,57 @@ mod tests {
     }
 
     #[test]
-    fn short_menu_press_does_not_force_full_redraw() {
+    fn short_menu_press_requests_reader_back() {
         let mut state = UiState::new();
         state.observe(InputSourceKind::Keys, event(KEY_MENU, 1, 1_000_000));
 
         let (dirty, action) = state.observe(InputSourceKind::Keys, event(KEY_MENU, 0, 1_999_999));
+        assert_eq!(dirty, Some(DirtyArea::Full));
+        assert_eq!(action, super::PowerAction::None);
+        assert_eq!(state.take_reader_operation(), Some(ReaderOperation::Back));
+    }
+
+    #[test]
+    fn page_buttons_queue_one_reader_page_operation_on_press() {
+        let mut state = UiState::new();
+
+        let (dirty, action) = state.observe(InputSourceKind::Keys, event(KEY_LEFT, 1, 1_000_000));
+        assert_eq!(dirty, Some(DirtyArea::Full));
+        assert_eq!(action, super::PowerAction::None);
+        assert_eq!(
+            state.take_reader_operation(),
+            Some(ReaderOperation::PreviousPage)
+        );
+
+        let (dirty, action) = state.observe(InputSourceKind::Keys, event(KEY_LEFT, 2, 1_000_001));
         assert_eq!(dirty, Some(DirtyArea::Key));
         assert_eq!(action, super::PowerAction::None);
+        assert_eq!(state.take_reader_operation(), None);
+
+        let (dirty, action) = state.observe(InputSourceKind::Keys, event(KEY_RIGHT, 1, 1_000_002));
+        assert_eq!(dirty, Some(DirtyArea::Full));
+        assert_eq!(action, super::PowerAction::None);
+        assert_eq!(
+            state.take_reader_operation(),
+            Some(ReaderOperation::NextPage)
+        );
+    }
+
+    #[test]
+    fn page_buttons_and_reader_back_do_not_leave_details_page() {
+        let mut state = UiState::new();
+        state.page = UiPage::Details;
+
+        let (dirty, action) = state.observe(InputSourceKind::Keys, event(KEY_RIGHT, 1, 1_000_000));
+        assert_eq!(dirty, Some(DirtyArea::Key));
+        assert_eq!(action, super::PowerAction::None);
+        assert_eq!(state.take_reader_operation(), None);
+
+        state.observe(InputSourceKind::Keys, event(KEY_MENU, 1, 2_000_000));
+        let (dirty, action) = state.observe(InputSourceKind::Keys, event(KEY_MENU, 0, 2_100_000));
+        assert_eq!(dirty, Some(DirtyArea::Key));
+        assert_eq!(action, super::PowerAction::None);
+        assert_eq!(state.take_reader_operation(), None);
     }
 
     #[test]

@@ -164,8 +164,21 @@ shared `FileSystemResourceProvider` inside that root.
 
 The reader handles link activation through `prs-markdown` first. A tap on an
 otherwise empty page area advances on the right half and goes back on the left
-half. External URLs are reported as application events and are not opened by
-the native runtime.
+half. The page coordinate is translated from whole-screen input by removing the
+76-pixel status/chrome offset before the shared reader performs hit testing.
+Internal links support anchors and root-relative Markdown files, including
+`#anchor`, `other.md`, and `other.md#anchor`. External URLs are reported by the
+shared reader and remain an application concern: the T1 runtime displays the
+activated URL in a bottom-of-screen notice and does not launch a browser.
+
+On the Home reading surface, the hardware left and right keys (`KEY_LEFT` code
+105 and `KEY_RIGHT` code 106) perform one previous/next reader-page operation
+per physical press. Repeat events are ignored. A short physical menu press
+performs the reader's Back operation, restoring the previous document/anchor and
+page after an internal link. A menu hold of at least one second retains its
+existing full GC16 redraw behavior. Page controls and reader Back are ignored
+while Details / Settings is open, so they cannot trigger document navigation
+from the power/settings UI.
 
 Tap the status bar to open **Details / Settings**. The details page groups the
 live snapshot under:
