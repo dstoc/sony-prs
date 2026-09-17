@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.6.0](https://github.com/dstoc/sony-prs/compare/prs-markdown-v0.5.0...prs-markdown-v0.6.0) (2026-09-17)
+
+
+### Features
+
+* **prs-markdown:** honor tight and loose list spacing ([c86aa56](https://github.com/dstoc/sony-prs/commit/c86aa56e75738edc80611315c096fdd9a2209037))
+* **prs-markdown:** render task list checkboxes ([bc3d5e5](https://github.com/dstoc/sony-prs/commit/bc3d5e542a19f1401a96535cc021b45c00f89ed1))
+* **prs-markdown:** underline linked text ([adf3a52](https://github.com/dstoc/sony-prs/commit/adf3a52e26f2d2b53ceec1e3378df79b53d15e7b))
+
+
+### Bug Fixes
+
+* **markdown:** preserve ordered list start numbers ([49d0923](https://github.com/dstoc/sony-prs/commit/49d0923333d185cc8ee97039de4a4c1f90a94a48))
+* **prs-markdown:** composite text against surface backgrounds ([d4079a3](https://github.com/dstoc/sony-prs/commit/d4079a344dfda9509eee002e10fcd419ad4c6d3c))
+* **prs-markdown:** draw table grid boundaries once ([d51d381](https://github.com/dstoc/sony-prs/commit/d51d3815f2b79b3d38a11c27d8661c3e4a1f9c0c))
+* **prs-markdown:** keep markers with block list items ([8003c5d](https://github.com/dstoc/sony-prs/commit/8003c5d497685f92f88b43f1504a37afc89725f6))
+* **prs-markdown:** keep task markers in stable columns ([20c298f](https://github.com/dstoc/sony-prs/commit/20c298f3b2d7c8954439af9ef4c907b0c1c64358))
+* **prs-markdown:** restore grouped page-start rule ([913143f](https://github.com/dstoc/sony-prs/commit/913143f3c85c684fca7dcbed4ee738fd604baed2))
+* **prs-markdown:** stabilize list marker columns ([6474f89](https://github.com/dstoc/sony-prs/commit/6474f894d1334b751cd8dabc2da1fb205b31562f))
+* **prs-markdown:** stabilize list marker columns ([5484d5a](https://github.com/dstoc/sony-prs/commit/5484d5a9cd8078815701cfb424870bfe1f66c812))
+* **prs-markdown:** use one fill for wrapped code lines ([0682530](https://github.com/dstoc/sony-prs/commit/068253022414fb93ad833d253629b6143ecc5d25))
+
 ## [0.5.0](https://github.com/dstoc/sony-prs/compare/prs-markdown-v0.4.0...prs-markdown-v0.5.0) (2026-09-17)
 
 
