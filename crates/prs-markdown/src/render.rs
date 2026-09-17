@@ -13,7 +13,7 @@ use crate::style::{BorderStyle, Color, TextStyle as ReaderTextStyle};
 use crate::typography::{FontFace, GlyphBitmap, TextEngine, TextRun, TextStyle};
 use embedded_graphics::draw_target::{DrawTarget, DrawTargetExt};
 use embedded_graphics::geometry::{Point, Size};
-use embedded_graphics::pixelcolor::Rgb888;
+use embedded_graphics::pixelcolor::{Rgb888, RgbColor};
 use embedded_graphics::prelude::Pixel;
 use embedded_graphics::primitives::Rectangle;
 
@@ -131,7 +131,15 @@ where
             bounds,
             text,
             style,
-        } => draw_text(target, translate(*bounds, origin), text, style, text_engine),
+            background,
+        } => draw_text(
+            target,
+            translate(*bounds, origin),
+            text,
+            style,
+            *background,
+            text_engine,
+        ),
         DisplayCommand::ImagePlaceholder { bounds, .. } => {
             draw_image_placeholder(target, translate(*bounds, origin))
         }
@@ -257,6 +265,7 @@ fn draw_text<T, E>(
     bounds: Rect,
     text: &str,
     style: &ReaderTextStyle,
+    background: Color,
     text_engine: &mut E,
 ) -> Result<(), T::Error>
 where
@@ -280,6 +289,7 @@ where
             bounds.top_left.y.saturating_add(glyph.y),
             &bitmap,
             style.ink,
+            background,
         )?;
     }
 
@@ -324,6 +334,7 @@ fn draw_glyph<T>(
     y: i32,
     bitmap: &GlyphBitmap,
     ink: u8,
+    background: Color,
 ) -> Result<(), T::Error>
 where
     T: DrawTarget<Color = Rgb888>,
@@ -349,7 +360,7 @@ where
                             x.saturating_add(column as i32),
                             y.saturating_add(row as i32),
                         ),
-                        coverage_color(ink, *alpha),
+                        coverage_color(ink, *alpha, background),
                     )
                 })
         });
@@ -398,17 +409,27 @@ where
     image_target.draw_iter(pixels)
 }
 
-fn coverage_color(ink: u8, alpha: u8) -> Rgb888 {
-    to_rgb888(Color::rgba(ink, ink, ink, alpha))
+fn coverage_color(ink: u8, alpha: u8, background: Color) -> Rgb888 {
+    let background = to_rgb888(background);
+    let coverage = u16::from(alpha);
+    let composite = |background_channel: u8| {
+        ((u16::from(ink) * coverage + u16::from(background_channel) * (255 - coverage) + 127) / 255)
+            as u8
+    };
+    Rgb888::new(
+        composite(background.r()),
+        composite(background.g()),
+        composite(background.b()),
+    )
 }
 
 /// Convert a device-independent RGBA value into the opaque intermediate color
 /// understood by `embedded-graphics` drawing primitives.
 ///
-/// `DrawTarget` has no read/modify/write operation, so translucency is
-/// composited against white at this boundary. Glyph coverage uses the same
-/// rule, producing deterministic antialiased grayscale pixels on host and
-/// RGB565 targets.
+/// `DrawTarget` has no read/modify/write operation, so translucent fills are
+/// composited against white at this boundary. Glyph coverage is composited
+/// against the background carried by its display-list text command, producing
+/// deterministic antialiased grayscale pixels on host and RGB565 targets.
 fn to_rgb888(color: Color) -> Rgb888 {
     let alpha = u16::from(color.alpha);
     let composite =
@@ -429,9 +450,19 @@ mod tests {
     use embedded_graphics::mock_display::MockDisplay;
     use embedded_graphics::pixelcolor::{Rgb565, RgbColor};
 
-    #[derive(Debug, Default)]
+    #[derive(Debug)]
     struct TestTextEngine {
         rasterizations: usize,
+        alpha: Vec<u8>,
+    }
+
+    impl Default for TestTextEngine {
+        fn default() -> Self {
+            Self {
+                rasterizations: 0,
+                alpha: vec![255; 4],
+            }
+        }
     }
 
     impl TextEngine for TestTextEngine {
@@ -492,7 +523,7 @@ mod tests {
                 left: 0,
                 top: -2,
                 advance_width: 2.0,
-                alpha: vec![255; 4],
+                alpha: self.alpha.clone(),
             }
         }
     }
@@ -512,6 +543,7 @@ mod tests {
             bounds: Rect::new(Point::new(3, 3), Size::new(4, 2)),
             text: "x".into(),
             style: ReaderTextStyle::new(12, 14),
+            background: Color::WHITE,
         });
         page.push_command(DisplayCommand::Rule {
             bounds: Rect::new(Point::new(2, 7), Size::new(8, 1)),
@@ -624,6 +656,7 @@ mod tests {
                     bounds: Rect::new(Point::new(3, 2), Size::new(2, 2)),
                     text: "x".into(),
                     style: ReaderTextStyle::new(12, 14),
+                    background: Color::BLACK,
                 },
             ]),
             hit_regions: Vec::new(),
@@ -668,8 +701,58 @@ mod tests {
     #[test]
     fn rgba_and_glyph_coverage_are_composited_deterministically() {
         assert_eq!(to_rgb888(Color::rgba(0, 0, 0, 0)), Rgb888::WHITE);
-        assert_eq!(coverage_color(0, 128), Rgb888::new(127, 127, 127));
-        assert_eq!(coverage_color(160, 255), Rgb888::new(160, 160, 160));
+        assert_eq!(
+            coverage_color(0, 128, Color::WHITE),
+            Rgb888::new(127, 127, 127)
+        );
+        assert_eq!(
+            coverage_color(160, 255, Color::rgb(240, 240, 240)),
+            Rgb888::new(160, 160, 160)
+        );
+    }
+
+    #[test]
+    fn glyph_coverage_uses_the_text_surface_background() {
+        fn render(background: Color) -> MockDisplay<Rgb888> {
+            let mut page = PageLayout::new(1, crate::geometry::Viewport::new(2, 2));
+            page.push_command(DisplayCommand::Fill {
+                bounds: Rect::new(Point::zero(), Size::new(2, 2)),
+                style: crate::style::FillStyle::new(background),
+            });
+            page.push_command(DisplayCommand::Text {
+                bounds: Rect::new(Point::zero(), Size::new(2, 2)),
+                text: "x".into(),
+                style: ReaderTextStyle::new(12, 14),
+                background,
+            });
+            let mut renderer = EmbeddedGraphicsRenderer::new(TestTextEngine {
+                rasterizations: 0,
+                alpha: vec![128, 255, 0, 255],
+            });
+            let mut display = MockDisplay::<Rgb888>::new();
+            display.set_allow_overdraw(true);
+            renderer.render(&page, &mut display).unwrap();
+            display
+        }
+
+        let white = render(Color::WHITE);
+        let gray = render(Color::rgb(200, 200, 200));
+
+        assert_eq!(
+            white.get_pixel(Point::new(0, 0)),
+            Some(Rgb888::new(127, 127, 127))
+        );
+        assert_eq!(
+            gray.get_pixel(Point::new(0, 0)),
+            Some(Rgb888::new(100, 100, 100))
+        );
+        assert_eq!(white.get_pixel(Point::new(1, 0)), Some(Rgb888::BLACK));
+        assert_eq!(gray.get_pixel(Point::new(1, 0)), Some(Rgb888::BLACK));
+        assert_eq!(white.get_pixel(Point::new(0, 1)), Some(Rgb888::WHITE));
+        assert_eq!(
+            gray.get_pixel(Point::new(0, 1)),
+            Some(Rgb888::new(200, 200, 200))
+        );
     }
 
     #[test]
@@ -708,6 +791,7 @@ mod tests {
             Rect::new(Point::zero(), Size::new(4, 1)),
             "x",
             &style,
+            Color::WHITE,
             &mut text_engine,
         )
         .unwrap();

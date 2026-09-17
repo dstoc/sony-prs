@@ -334,6 +334,11 @@ pub enum DisplayCommand {
         bounds: Rect,
         text: String,
         style: TextStyle,
+        /// The opaque surface colour behind this text run.
+        ///
+        /// The renderer cannot read a generic draw target, so pagination
+        /// carries the known surface colour with the text command.
+        background: Color,
     },
     /// A solid background or other rectangular fill.
     Fill { bounds: Rect, style: FillStyle },
@@ -373,10 +378,16 @@ impl DisplayCommand {
 
     fn with_bounds(self, bounds: Rect) -> Self {
         match self {
-            Self::Text { text, style, .. } => Self::Text {
+            Self::Text {
+                text,
+                style,
+                background,
+                ..
+            } => Self::Text {
                 bounds,
                 text,
                 style,
+                background,
             },
             Self::Fill { style, .. } => Self::Fill { bounds, style },
             Self::Border { style, .. } => Self::Border { bounds, style },
@@ -745,6 +756,15 @@ fn add_line(
     line_index: usize,
 ) {
     let code_surface = kind == LayoutBlockKind::Code || line.code;
+    let table_header = kind == LayoutBlockKind::Table
+        && table.is_some_and(|table| table_row_at(table, line_index).is_some_and(|row| row.header));
+    let line_background = if code_surface {
+        style.code_background.color
+    } else if table_header {
+        style.table_header_fill.color
+    } else {
+        Color::WHITE
+    };
     if matches!(kind, LayoutBlockKind::Quote | LayoutBlockKind::Alert) {
         let border_x = line.bounds.top_left.x.saturating_sub(
             style
@@ -814,6 +834,11 @@ fn add_line(
             bounds,
             text: fragment.text.clone(),
             style: fragment.style,
+            background: if fragment.style.code && !code_surface {
+                style.inline_code_background.color
+            } else {
+                line_background
+            },
         });
         if fragment.style.strikethrough && bounds.size.width > 0 {
             page.push_command(DisplayCommand::Rule {
@@ -1114,6 +1139,7 @@ mod tests {
             bounds: Rect::new(Point::new(8, 8), Size::new(72, 12)),
             text: "A synthetic page".into(),
             style: TextStyle::new(12, 16),
+            background: Color::WHITE,
         });
         page.push_command(DisplayCommand::Rule {
             bounds: Rect::new(Point::new(8, 26), Size::new(72, 2)),
@@ -1175,6 +1201,36 @@ mod tests {
             matches!(
                 command,
                 DisplayCommand::Rule { style, .. } if style.color == Color::rgb(10, 11, 12)
+            )
+        }));
+        assert!(page.commands.iter().any(|command| {
+            matches!(
+                command,
+                DisplayCommand::Text {
+                    style,
+                    background,
+                    ..
+                } if style.code && *background == Color::rgb(1, 2, 3)
+            )
+        }));
+        assert!(page.commands.iter().any(|command| {
+            matches!(
+                command,
+                DisplayCommand::Text {
+                    style,
+                    background,
+                    ..
+                } if style.code && *background == Color::rgb(4, 5, 6)
+            )
+        }));
+        assert!(page.commands.iter().any(|command| {
+            matches!(
+                command,
+                DisplayCommand::Text {
+                    style,
+                    background,
+                    ..
+                } if !style.code && *background == Color::WHITE
             )
         }));
     }
@@ -1682,6 +1738,19 @@ mod tests {
                 _ => None,
             })
             .any(|text| text == "Header")));
+        assert!(pages
+            .iter()
+            .flat_map(|page| page.display_list())
+            .any(|command| {
+                matches!(
+                    command,
+                    DisplayCommand::Text {
+                        text,
+                        background,
+                        ..
+                    } if text == "Header" && *background == style.table_header_fill.color
+                )
+            }));
         for pair in pages.windows(2) {
             assert_eq!(pair[0].range.end, pair[1].range.start);
         }
