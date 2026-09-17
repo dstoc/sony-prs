@@ -1,15 +1,16 @@
 # PRS-T1 native UI agent
 
-`prs-t1-agent` is the active native UI prototype for a rooted Sony PRS-T1.
+`prs-t1-agent` is the development native application for a rooted Sony PRS-T1.
 It is a Rust ARM binary that talks directly to the T1 framebuffer, EPDC
 refresh interface, Linux evdev devices, and legacy Android power interfaces.
 The Android framework is not a runtime dependency of the native UI.
 
-This crate has moved beyond hardware discovery: it can render and interact
-with a small document-oriented shell after Android relinquishes display
-ownership. It remains a development build that is manually launched through
-ADB or the optional Android Home entry point. It does not install a boot hook
-or replace the stock Android UI permanently.
+This crate is the device-side integration for the shared `prs-markdown`
+reader. After Android relinquishes display ownership, it renders and interacts
+with a paginated Markdown document, status bar, details/settings page, touch
+links, hardware page controls, and power actions. It remains a development
+build that is manually launched through ADB or the optional Android Home entry
+point. It does not install a boot hook or replace the stock Android UI.
 
 ## Current status
 
@@ -24,20 +25,21 @@ The current tested T1 path is:
 | Pixel damage | Implemented; complete logical frames are diffed and only the smallest changed rectangle is submitted. |
 | Sleep and wake | Native EINK standby and wake-side power handoff have been exercised; USB/ADB rebind is deferred until the cable is detected after wake. |
 | Android handoff | Implemented for manual ADB use and the tap-to-launch APK; no automatic startup integration. |
-| Product-ready ownership | Not complete; the long-term display ownership boundary and recovery UX still need a deliberate design. |
+| Persistent/product ownership | Not implemented; the standalone path is a manual development handoff that stops Android framework services and retains an explicit reboot recovery path. |
 
 The detailed device observations, command output, timings, and test history
 are kept in [`docs/prs-t1/analysis.md`](../../docs/prs-t1/analysis.md). They
 describe one rooted PRS-T1 and should not be generalized to every firmware
 revision.
 
-## Design goal and boundary
+## Integration boundary
 
-The near-term goal is a small native process that can own the visible T1 UI
-for development and provide a document-reading surface without depending on
-Android Java services. The current shell opens one configured development
-Markdown document while making device state and recovery actions visible;
-document browsing and broader asset support remain future work.
+The current native process owns the visible T1 UI for development without
+depending on Android Java services. It opens one configured root-relative
+Markdown document at startup; the shared reader can then follow staged local
+Markdown documents and anchors, while a document browser is not part of this
+application. Device state and recovery actions remain visible alongside the
+reading surface.
 
 The reusable Markdown reader boundary is in
 [`crates/prs-markdown`](../prs-markdown/) and its canonical design is in
@@ -132,9 +134,9 @@ margin for the reader.
 
 ### Development Markdown document
 
-The first integration deliberately opens one configured file rather than
-providing a document browser. Stage the checked-in smoke-test document before
-starting the native runtime:
+The integration opens one configured file rather than providing a document
+browser. Stage the checked-in smoke-test document before starting the native
+runtime:
 
 ```sh
 adb push docs/prs-t1/development.md /mnt/sdcard/index.md
@@ -156,11 +158,13 @@ The default configuration is:
 | `PRS_T1_FONT_BOLD_ITALIC` | regular face | Optional bold-italic face. |
 | `PRS_T1_FONT_MONOSPACE` | `/system/fonts/DroidSansMono.ttf` | Optional code face; falls back to regular if absent. |
 
-The four optional proportional faces fall back to the regular font bytes when
-their configured files are unavailable. To read another staged document from
-the helper workflow, set `PRS_T1_DOCUMENT_ROOT` and `PRS_T1_DOCUMENT` in the
-environment used to launch the agent. Relative links are resolved by the
-shared `FileSystemResourceProvider` inside that root.
+The three optional proportional faces and the optional monospace face fall
+back to the regular font bytes when their configured files are unavailable. To
+read another staged document from the helper workflow, set
+`PRS_T1_DOCUMENT_ROOT` and `PRS_T1_DOCUMENT` in the environment used to launch
+the agent. Relative links are resolved by the shared
+`FileSystemResourceProvider` inside that root; the provider rejects references
+that escape the configured root.
 
 The reader handles link activation through `prs-markdown` first. A tap on an
 otherwise empty page area advances on the right half and goes back on the left
@@ -195,10 +199,12 @@ the T1: `BTN_TOUCH=0`, `ABS_MT_TRACKING_ID=-1`, or
 `ABS_MT_TOUCH_MAJOR=0`, committed by `SYN_REPORT`. The legacy `ABS_X/Y` path is
 normalized from the panel's advertised 800x600 axes before hit testing.
 
-The physical menu button is event0 code 357 (`Unknown` in the old kernel). A
-hold of at least one second requests a full GC16 redraw with the EPDC's
-`UPDATE_MODE_FULL` flag. Short menu presses only update diagnostics. A short
-power press sleeps; a press of at least two seconds requests reboot.
+The physical menu button is event0 code 357 (`Unknown` in the old kernel). On
+the Home reading surface, a short press invokes reader Back and a hold of at
+least one second requests a full GC16 redraw with the EPDC's
+`UPDATE_MODE_FULL` flag. On Details / Settings, menu navigation does not invoke
+reader Back. A short power press sleeps; a press of at least two seconds
+requests reboot.
 
 ## Display and refresh model
 
@@ -307,20 +313,25 @@ If ADB or the native process does not return, use the reader's hardware reset
 button. A normal reboot is the supported way to restore zygote,
 `system_server`, `dispd`, and Android's normal UI.
 
-## Next goals
+## Known limitations
 
-The next work should stay focused on making the custom UI useful while keeping
-the recovery path explicit:
-
-1. Decide how the native UI should obtain durable display ownership without
-   depending on a broad zygote shutdown.
-2. Characterize repeated DU updates on the physical panel and choose a GC16
-   cleanup policy.
-3. Improve the standby image and USB/ADB recovery behavior across suspend.
-4. Expand the configured reading surface with document browsing and image
-   content after the ownership and refresh policy are reliable.
-5. Only then evaluate a persistent startup integration.
+- Startup opens one configured document; there is no file browser or persistent
+  library UI. Local Markdown links and anchors can still navigate within the
+  configured resource root.
+- External URLs produce a short T1-owned bottom notice and are not opened in a
+  browser. Task-list markers are not interactive. Specialist Markdown uses the
+  fallbacks in the [support matrix](../../docs/prs-t1/markdown-reader.md#markdown-support-matrix).
+- The native ownership path is a broad zygote/system_server shutdown and needs
+  root access. It is not an Android boot integration or a product-ready
+  display-owner boundary.
+- The refresh policy's four-DU-turn GC16 cadence is a bounded starting policy.
+  The runner-side tests cover plan selection, but repeated-turn optical
+  ghosting and alignment quantum still require inspection on the physical T1.
+- Paths, ioctl behavior, timings, input codes, and suspend behavior are based
+  on the observed rooted Android 2.2.1 device. Consult
+  [`docs/prs-t1/analysis.md`](../../docs/prs-t1/analysis.md) before applying
+  them to another firmware revision.
 
 The older discovery procedure and full evidence ledger remain available in
 [`docs/prs-t1/analysis.md`](../../docs/prs-t1/analysis.md); this README is the
-operational description of the current crate rather than a staged plan.
+operational description of the current crate.

@@ -1,16 +1,17 @@
 # Sony PRS reader tools
 
 This repository contains read-only host tooling for Sony x50 readers and
-device-side experiments for two readers with different operating systems.
+device-side development software for two readers with different operating
+systems.
 
-The active development focus is the PRS-T1 native UI in
-[`crates/prs-t1-agent`](crates/prs-t1-agent/). It is now a usable, manually
-launched native UI prototype: it renders a custom status bar and paginated
-Markdown reading surface, retains the diagnostics screen, reads touch and
-hardware input, tracks pixel damage, and handles development sleep/wake and
-reboot actions. It still requires a rooted reader and an explicit ADB or
-launcher handoff; it is not a persistent replacement for the stock Android UI
-yet.
+The active development focus is the PRS-T1 native application in
+[`crates/prs-t1-agent`](crates/prs-t1-agent/). It is a manually launched,
+Markdown-capable native reader and device shell: it renders a status bar and
+paginated Markdown, follows local document links and anchors, handles touch and
+hardware page controls, tracks pixel damage, and performs development
+sleep/wake and reboot actions. It still requires a rooted reader and an
+explicit ADB or launcher handoff; it is not a persistent replacement for the
+stock Android UI.
 
 PRS-350 work is on hold while waiting for hardware unbricking. The existing
 PRS-350 controls remain available for development when hardware access returns,
@@ -26,8 +27,8 @@ but they are not the current project focus.
 | `crates/prs350-wire` | PRS-350 development serial wire format. |
 | `crates/prs350-devctl` | Stateful PRS-350 development serial controls. |
 | `crates/prs350-agent` | Cross-compiled ARM-side PRS-350 development agent. |
-| `crates/prs-t1-agent` | Native PRS-T1 framebuffer, input, status, and UI runtime. |
-| `crates/prs-markdown` | Hardware-independent Markdown document, layout, pagination, navigation, and rendering boundaries. |
+| `crates/prs-t1-agent` | PRS-T1 native framebuffer, input, status/settings, refresh, and reader integration runtime. |
+| `crates/prs-markdown` | Hardware-independent Markdown parsing, layout, pagination, navigation, images, and rendering library used by the T1 reader and host harness. |
 | `tools/prs-t1-launcher` | Optional Android 2.2 Home entry point for the T1 runtime. |
 
 The SCSI layers contain no write, delete, update-mode, flash, or arbitrary
@@ -63,9 +64,11 @@ group owning the SCSI-generic devices.
 
 The reusable reader architecture is documented in
 [`docs/prs-t1/markdown-reader.md`](docs/prs-t1/markdown-reader.md). The
-`prs-markdown` crate owns document semantics and viewport-relative page
-layouts; the T1 agent owns device input, framebuffer access, and refresh
-policy.
+`prs-markdown` crate owns Markdown semantics, resource resolution, font-backed
+layout, pagination, navigation, and generic rendering. `prs-t1-agent` owns the
+rooted-device integration: Android paths and font configuration, framebuffer
+and EPDC access, evdev input, status/settings UI, touch coordinate mapping,
+suspend/wake, damage, and refresh policy.
 
 The T1 agent is tested against a rooted Sony PRS-T1 running Android 2.2.1. The
 observed device exposes a 600x800 RGB565 framebuffer at
@@ -106,10 +109,11 @@ adb shell '/data/local/tmp/prs-t1-agent capture > /data/local/tmp/t1-screen.pgm'
 adb pull /data/local/tmp/t1-screen.pgm ./t1-screen.pgm
 ```
 
-The native UI's status bar opens a details page. The home canvas renders the
-configured development Markdown document through the shared `prs-markdown`
-reader; see [`crates/prs-t1-agent/README.md`](crates/prs-t1-agent/README.md)
-for staging and environment overrides. The details page groups the device
+The native UI's status bar opens a details page. The home reading surface
+renders the configured development Markdown document through the shared
+`prs-markdown` reader; see
+[`crates/prs-t1-agent/README.md`](crates/prs-t1-agent/README.md) for staging and
+environment overrides. The details page groups the device
 snapshot under Power, Connectivity, System, Storage, and Input and provides
 reboot, power-off, and return actions. The runtime polls status every five
 seconds, keeps status-only document redraws inside the status-bar region, and
@@ -135,11 +139,11 @@ and invokes the same detached handoff. It is a tap-to-launch development
 entry point, not automatic startup. Reboot or the hardware reset button is the
 supported recovery route if the native process or USB link does not return.
 
-Remaining T1 work includes deciding on a durable display-ownership boundary,
-characterizing repeated DU updates and when to schedule GC16 cleanup, improving
-standby-image quality, and deciding whether a persistent startup integration is
-worth the recovery and Android-compatibility cost. The detailed hardware
-evidence and test history are in [the T1 analysis](docs/prs-t1/analysis.md).
+Current device limitations include the broad zygote/system_server handoff,
+manual startup, lack of a document browser, and the need for optical hardware
+validation of repeated DU page turns. The reader's content support and
+fallbacks are recorded in the [Markdown support matrix](docs/prs-t1/markdown-reader.md#markdown-support-matrix);
+hardware evidence and experimental history remain in [the T1 analysis](docs/prs-t1/analysis.md).
 
 ## Read-only host CLI
 
@@ -179,7 +183,9 @@ prs350-devctl shell /dev/ttyACM0 COMMAND
 - [T1 native UI guide](crates/prs-t1-agent/README.md)
 - [T1 build and deployment guide](crates/prs-t1-agent/build.md)
 - [T1 analysis and device evidence](docs/prs-t1/analysis.md)
-- [Markdown reader architecture](docs/prs-t1/markdown-reader.md)
+- [Markdown reader architecture and support matrix](docs/prs-t1/markdown-reader.md)
+- [`prs-markdown` library and host harness](crates/prs-markdown/README.md)
+- [Development reader smoke-test document](docs/prs-t1/development.md)
 - [T1 launcher guide](tools/prs-t1-launcher/README.md)
 - [PRS-350 documentation](docs/prs350/)
 - [Workspace crates](crates/)

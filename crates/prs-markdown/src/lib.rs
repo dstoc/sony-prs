@@ -2,15 +2,16 @@
 //!
 //! The crate deliberately stops at a generic
 //! [`embedded_graphics::draw_target::DrawTarget`]
-//! boundary.  A future parser, font backend, image decoder, and device UI can
-//! be added without making the document engine know about a framebuffer or a
-//! particular reader model. [`parse::ComrakParser`] converts CommonMark/GFM
+//! boundary. Alternate parsers, font backends, image providers, and device UIs
+//! can use the same boundaries without making the document engine know about a
+//! framebuffer or a particular reader model. [`parse::ComrakParser`] converts CommonMark/GFM
 //! input into the owned [`Document`] IR; Comrak nodes and arena lifetimes do
 //! not appear in document, layout, pagination, or rendering types.
 //! A caller supplies font bytes to [`typography::FontdueTextEngine`]; the
-//! reader engine does not choose or bundle a licensed font family. A future
-//! shaping backend, image decoder, and device UI can be added without making
-//! the document engine know about a framebuffer or a particular reader model.
+//! reader engine does not choose or bundle a licensed font family. A shaping
+//! backend or alternate resource provider can implement the existing traits
+//! without making the document engine know about a framebuffer or a particular
+//! reader model.
 
 pub mod document;
 pub mod geometry;

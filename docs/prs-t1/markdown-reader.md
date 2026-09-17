@@ -1,9 +1,11 @@
 # PRS-T1 Markdown reader architecture
 
-This document defines the reusable reader boundary for the PRS-T1 work and
-for future host-side tools. It is the design reference for the follow-up
-reader milestones; device-specific behavior belongs in the T1 agent guide and
-the T1 analysis ledger instead.
+This is the implementation guide for the reusable Markdown reader used by the
+PRS-T1 native application and the host harness. It describes the boundaries
+that exist in `prs-markdown`, the current content contract, and the policies
+that the T1 adapter supplies. Device observations and historical experiments
+belong in the [T1 analysis ledger](analysis.md); device operation belongs in
+the [T1 agent guide](../../crates/prs-t1-agent/README.md).
 
 ## Components and dependency direction
 
@@ -316,15 +318,15 @@ are not interpreted relative to the process working directory. Resolving a
 target does not open it or update history. The high-level reader chooses what
 to do with a document, anchor, asset, or external URL after resolution.
 
-The resource boundary remains intentionally extensible for future storage and
-image-decoding implementations. `ImageResources` resolves Markdown image
-references from the containing document through `ResourceProvider`, supports
-PNG, JPEG, and WebP, reads dimensions before decoding, and converts the result
-to opaque 8-bit grayscale. The decoder enforces a transient source allocation
-limit and retained display rasters have a bounded byte budget; the decoded
-source is not retained. Alpha is composited against white. A device or archive
-provider can use the same interface without introducing T1 framebuffer policy
-into parsing or layout.
+The resource boundary permits alternate storage providers. The current
+`ImageResources` implementation resolves Markdown image references from the
+containing document through `ResourceProvider`, supports PNG, JPEG, and WebP,
+reads dimensions before decoding, and converts the result to opaque 8-bit
+grayscale. The decoder enforces a transient source allocation limit and
+retained display rasters have a bounded byte budget; the decoded source is not
+retained. Alpha is composited against white. A device or archive provider can
+use the same interface without introducing T1 framebuffer policy into parsing
+or layout.
 
 Missing, unsupported, corrupt, external, or over-budget images do not abort a
 document. Their alt text is laid out as visible `[image: …]` fallback text (or
@@ -376,32 +378,37 @@ stop at the parser module; layout and later stages consume only
 
 ## Markdown support matrix
 
-The reader intentionally targets readable, bounded output rather than browser
-compatibility. This is the current contract for Markdown commonly produced by
-coding and AI agents:
+The reader targets readable, bounded output rather than browser compatibility.
+The default `ComrakParser` enables the GFM extensions listed below; callers
+that use `ComrakParser::with_options` can change the parser extensions, but the
+owned IR and layout still apply the same reader-oriented fallbacks.
 
-| Construct | Reader behaviour |
+| Construct | Implemented behaviour and fallback |
 | --- | --- |
-| Headings, paragraphs, emphasis, strong, code spans, links, images, lists, quotes, and thematic breaks | First-class owned IR and layout. Images use bounded grayscale rasters when supported and visible alt-text fallbacks otherwise. |
-| GFM task lists | Checked and unchecked markers render as readable `[x]` and `[ ]` list prefixes. There is no toggle action. |
-| GFM strikethrough | Content remains visible with its style bit and a one-pixel strike decoration in the display list. |
-| GFM autolinks | URL, `www`, and email autolinks become ordinary semantic links; external targets are returned to the host as actions. |
-| GFM footnotes and inline footnotes | References render as `[1]` when Comrak supplies a number (or `[^name]` as a name fallback). Definitions render as ordinary, splittable `[^name]: ...` text; no browser-style back-link action is required. |
-| GitHub alerts (`> [!NOTE]`, `TIP`, `IMPORTANT`, `WARNING`, `CAUTION`) | Parsed when enabled, retaining kind, custom/default title, and body. Layout shows a bold title and the body with the reader's quote rule. |
-| Fenced code, including Mermaid, diagram DSLs, and `math` fences | Literal source is retained and rendered in the monospace code treatment. No JavaScript, syntax highlighter, or diagram renderer is required. |
-| TeX/MathML-style math when a Comrak math extension is enabled | The raw expression and delimiters are rendered as text. There is no TeX, MathML, or browser layout engine. |
-| Raw inline or block HTML | Never executed, interpreted, or styled. The original HTML source is rendered as ordinary readable text, so tags do not hide following Markdown. |
-| Comrak block directives when enabled | A labelled `[unsupported block directive: ...]` marker and converted child content are rendered inside the existing quote primitive. |
-| Tables | Rows use deterministic sized columns, alignment, borders, and readable continuation groups. |
+| CommonMark basics | Paragraphs, escaped/literal text, soft and hard breaks, inline code, links, images, and thematic rules are parsed into owned IR and laid out as readable page content. Soft breaks collapse to ordinary whitespace; hard breaks remain line boundaries. |
+| Headings, lists, and quotes | ATX/setext headings (levels 1--6), ordered/unordered lists, nested list children, and block quotes are laid out with reader spacing and indentation. Heading text receives deterministic slug anchors; long lists and quotes split at layout-line boundaries. |
+| Emphasis and strikethrough | Emphasis and strong text select the configured italic/bold faces. GFM strikethrough remains visible and adds a strike decoration; it does not remove or hide the content. |
+| GFM task lists | Checked and unchecked markers render as readable `[x]` and `[ ]` list prefixes. There is no task toggle action. |
+| Autolinks | URL, `www`, and email autolinks become semantic links. Local targets navigate through the reader; external targets are returned to the host as `ReaderEvent::ExternalUrl`. |
+| Internal links and anchors | Fragment links (`#anchor`), root-relative `.md`/`.markdown` documents, and document-plus-anchor references are resolved relative to the containing document and root boundary. Back restores the prior document, page, and logical cursor. Missing documents or anchors return a reader error. |
+| GFM tables | Headers, body rows, left/center/right alignment, borders, compact/aggressive font fallback, repeated continuation headers, and deterministic vertical column groups are implemented. Rows normally paginate atomically; an oversized row splits at its displayed lines. |
+| Fenced code and syntax | Fenced source is preserved, highlighted in one stateful pass, and paginated at displayed-line boundaries. The bundled grammars cover shell/bash, Rust, Python, JavaScript, TypeScript, JSON, YAML, TOML, C, C++, Go, HTML, CSS, SQL, diff/patch, and Markdown, plus plain text. Unknown or absent languages remain lossless plain monospace. |
+| Images | Local PNG, JPEG, and WebP references are decoded, alpha-composited onto white, proportionally fitted to the content/page bounds, converted to bounded grayscale, and rendered as display-list rasters. Standalone images are atomic pagination units; inline images participate in their line. |
+| Missing or unsupported images | Missing, external, corrupt, over-budget, and unsupported image formats do not abort the document. The image's alt text is rendered as `[image: ...]`, or `[image unavailable]` when no alt text exists. Encoded reads, decoder allocation, retained bytes, and image-entry count are bounded. |
+| Footnotes | GFM footnote and inline-footnote references render as `[1]` (or `[^name]` when no number is supplied). Definitions render as ordinary splittable `[^name]: ...` content. There is no browser-style back-link action. |
+| GitHub alerts | `NOTE`, `TIP`, `IMPORTANT`, `WARNING`, and `CAUTION` alerts retain their kind, custom/default title, and body. Layout renders a bold title and quote-style body; alerts do not add a separate interactive panel. |
+| Raw HTML | Inline and block HTML is never executed, interpreted, or styled. Its source is rendered as ordinary readable text, so HTML tags cannot hide following Markdown. |
+| Mermaid and diagram DSLs | Mermaid and other specialist fences are treated as fenced code. Their literal source is readable in monospace; there is no JavaScript, SVG, or diagram renderer. |
+| Math | A `math` fenced block is ordinary fenced source. When a caller enables Comrak's dollar-math extension, inline/display expressions retain their `$...$` or `$$...$$` delimiters and render as text. There is no TeX, MathML, or equation layout engine. |
+| Directives and other unsupported content | An enabled Comrak block directive becomes a labelled `[unsupported block directive: ...]` marker plus converted child content inside the quote primitive. Other parser nodes are converted to child content where possible; no HTML/CSS/browser layout engine or arbitrary embedded-content execution is present. |
 
-The matrix is deliberately explicit about fallback behaviour: unsupported
-specialist content is not silently discarded, and every fallback uses existing
-owned blocks, lines, and pagination boundaries. No second HTML/CSS/browser
-layout engine is part of this crate.
+Unsupported specialist content is therefore visible rather than silently
+discarded. Every fallback uses the same owned blocks, lines, hit regions, and
+pagination boundaries as ordinary content.
 
 The production typography/font backend and pixel rasterization remain
-independent concerns. Their integration points should extend these boundaries
-instead of moving T1 hardware policy into the library.
+independent concerns. New implementations extend these boundaries instead of
+moving T1 hardware policy into the library.
 
 ## Typography boundary
 
@@ -426,7 +433,7 @@ for host instrumentation. The cache is bounded by entry count, and a capacity
 of zero disables reuse.
 
 The initial backend is deliberately scoped to Latin and code-heavy documents.
-It does not yet perform complex-script shaping, bidirectional layout,
-grapheme-aware cursoring, or broad fallback-font selection. A future shaping
-engine can implement `TextEngine` without exposing Fontdue types to parsing,
-pagination, or the device renderer.
+The current backend does not perform complex-script shaping, bidirectional
+layout, grapheme-aware cursoring, or broad fallback-font selection. An alternate
+shaping backend can implement `TextEngine` without exposing Fontdue types to
+parsing, pagination, or the device renderer.

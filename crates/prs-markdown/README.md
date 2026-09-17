@@ -1,118 +1,190 @@
 # `prs-markdown`
 
-Hardware-independent Markdown reader primitives for the Sony PRS work. The
-crate's host harness runs the production pipeline:
+`prs-markdown` is the hardware-independent Markdown reader library used by
+the PRS-T1 native application and the host preview harness. It turns a
+root-relative Markdown document and caller-supplied typography into bounded,
+viewport-relative page layouts, semantic link regions, and a generic
+`embedded-graphics` display list. It contains no framebuffer, EPDC, evdev,
+Android, or e-ink refresh policy.
+
+The complete content contract, including fallbacks for specialist Markdown,
+is the [Markdown support matrix](../../docs/prs-t1/markdown-reader.md#markdown-support-matrix).
+
+## Pipeline and architecture
+
+The production pipeline is:
 
 ```text
-Markdown source -> ComrakParser -> LayoutEngine -> Paginator
-               -> PageLayout -> EmbeddedGraphicsRenderer -> PGM + PNG
+Markdown source
+    -> ComrakParser -> owned Document IR
+    -> LayoutEngine -> document-coordinate lines/fragments
+    -> Paginator -> PageLayout/display list + hit regions
+    -> EmbeddedGraphicsRenderer -> caller's DrawTarget
 ```
 
-## Host rendering harness
+The parser copies Comrak's arena-backed tree into owned `Document`, `Block`,
+and `Inline` values. Layout uses a caller-supplied `TextMeasurer`; the
+production Fontdue backend supplies the same font metrics later used for glyph
+rasterization. Pagination applies deterministic line, heading, table, rule,
+and image split policies. The renderer translates and clips page coordinates
+at a caller-selected origin and supports any compatible
+`embedded_graphics::DrawTarget`.
 
-Use the checked-in corpus to render every page into host-inspectable grayscale
-PGM and PNG images:
+`ResourceProvider` is the storage boundary. The supplied
+`FileSystemResourceProvider` keeps paths root-relative, resolves references
+from the containing document, rejects lexical and symlink escapes, and exposes
+bounded binary reads for image loading. `ImageResources` supports PNG, JPEG,
+and WebP, retaining only fitted 8-bit grayscale rasters. The high-level
+`Reader` adds document loading, page movement, anchor/document navigation,
+cursor-aware Back/Forward history, and bounded page/document caches.
+
+The T1-specific adapter in `crates/prs-t1-agent/src/reader.rs` constructs this
+pipeline with `ComrakParser`, `FontdueTextEngine`, `ReaderStyle::default()`,
+and a filesystem provider. It maps whole-screen taps into page coordinates and
+lets the surrounding T1 runtime own status UI, input, framebuffer damage, and
+EPDC refresh planning.
+
+## Public reader API
+
+Most applications use `reader::Reader` with explicit components:
+
+```rust
+use prs_markdown::geometry::Viewport;
+use prs_markdown::parse::ComrakParser;
+use prs_markdown::reader::Reader;
+use prs_markdown::resources::FileSystemResourceProvider;
+use prs_markdown::style::ReaderStyle;
+use prs_markdown::typography::{FontConfig, FontdueTextEngine};
+use embedded_graphics::geometry::Point;
+
+let provider = FileSystemResourceProvider::new("book", "index.md")?;
+let regular = std::fs::read("DejaVuSans.ttf")?;
+let fonts = FontConfig::from_regular(regular);
+let engine = FontdueTextEngine::new(fonts, 256)?;
+let mut reader = Reader::with_components(
+    provider,
+    ComrakParser::default(),
+    engine,
+    ReaderStyle::default(),
+    Viewport::new(600, 708),
+);
+let point = Point::new(20, 20);
+
+reader.open()?;
+reader.next_page_event()?;
+let page = reader.current_page();
+let event = reader.activate_at(point)?;
+reader.back()?;
+```
+
+`Reader::with_components` uses the bounded production policy. Use
+`Reader::with_limits` to set `ReaderLimits` explicitly and inspect
+`ReaderCacheStats`. `Reader::new` remains an eager-pagination compatibility
+constructor for callers that need a complete `Pagination`; new device and
+host integrations should use the component constructor.
+
+The important operations are:
+
+- `open` or `open_document` starts a reading session;
+- `current_page`, `page_count`, `next_page_event`, and `previous_page_event`
+  expose page state and movement;
+- `render_current_page` submits the current page through a caller-owned
+  `EmbeddedGraphicsRenderer` and draw target;
+- `hit_test` and `activate_at` use page-space coordinates and return
+  `ReaderEvent::Navigated`, `Back`, `Forward`, `ExternalUrl`, `Asset`, or
+  `NoAction` as appropriate;
+- `follow_reference`, `navigate_to_anchor`, `back`, and `forward` implement
+  root-relative document/anchor navigation and cursor-aware history;
+- `document`, `layout`, `pagination_index`, `history`, and `cache_stats` are
+  available for inspection and instrumentation.
+
+External URLs are events, not side effects: the library never launches a
+browser or chooses a device handler. Page indices are zero-based; the page
+display number stored on `PageLayout` is one-based.
+
+## Host harness and preview
+
+The host harness runs the same parser/layout/pagination/renderer path as the
+T1 integration. It can render a checked-in fixture or a Markdown file into
+inspectable 8-bit grayscale PGM and PNG files:
 
 ```sh
 cargo run -p prs-markdown --bin prs-markdown-harness -- \
   --fixture regression \
   --font /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf \
   --output target/reader-pages
-```
 
-The harness also accepts a Markdown file directly:
-
-```sh
 cargo run -p prs-markdown --bin prs-markdown-harness -- \
   path/to/document.md --page 1 --page 3 --output target/reader-pages
 ```
 
-With no `--page`, all pages are rendered. Selected page numbers are 1-based;
-the output directory contains matching names such as `page-001.pgm` and
-`page-001.png`. The default font search checks `PRS_MARKDOWN_FONT` and common
-host font locations. Pass `--font` for a reproducible font choice. Width,
-height, padding, body, heading, and code metrics are configurable with the
-corresponding options shown by `--help`.
-
-The fixture corpus in `tests/fixtures/` covers prose, headings, inline styles,
-nested lists, task lists, quotes, alerts, footnotes, autolinks, strikethrough,
-long paragraphs, links and anchors, cross-file links, exact page boundaries,
-agent responses, readable GFM tables, fenced specialist source, raw HTML
-fallbacks, image references, and explicit font-face selection. The provider-backed
-`tests/fixtures/images.md` fixture also covers nested relative paths, all three
-supported raster formats, scaling, pagination, and graceful fallbacks; its
-rendered pages are checked in as `tests/goldens/images-page-*.png`. The fixture
-derives its PNG, JPEG, and WebP inputs from the checked-in, high-contrast
-`tests/fixtures/assets/observatory.png` illustration so the snapshots exercise
-actual image detail as well as image bounds and fallback text.
-`tests/harness.rs`
-asserts structural outputs such as page count, logical cursor ranges, visible
-fragments, hit regions, navigation, and PGM encoding. Those structural tests use the
-deterministic approximate measurer and remain independent of font files. The
-checked-in corpus PNG goldens use the production Fontdue pipeline with the
-Noto Sans faces supplied by the test-only `notosans` crate, so they are readable,
-deterministic across CI hosts, and sensitive to glyph geometry and
-bold/italic selection. The crate does not publish a monospace face, so its
-regular face fills the golden harness's monospace slot while code styling and
-face selection remain covered by the structural and Fontdue tests. The
-command-line harness uses the supplied Fontdue font for both layout metrics and
+With no `--page`, all pages are rendered. Page selections are 1-based and
+produce names such as `page-001.pgm` and `page-001.png`. The CLI defaults to
+the public `T1_VIEWPORT` (600x800) and `ReaderStyle::default()`; use `--help`
+for viewport, style, and glyph-cache overrides. `--font` or
+`PRS_MARKDOWN_FONT` selects the font used for both layout metrics and
 rasterization.
-The CLI writes both formats from the same rendered grayscale pixels, so PNGs
-can be opened directly while PGM remains convenient for simple tooling.
 
-## Embedded raster images
+The CLI output is a host preview, not a T1 deployment artifact. To build the
+device binary, follow the [T1 build guide](../prs-t1-agent/build.md) and use
+the ARMv5TE/musl cross-build.
 
-When the input is a file, the harness configures a filesystem resource provider
-for its containing directory. Markdown image references are resolved relative
-to that file. PNG, JPEG, and WebP images are fitted proportionally to the
-content width and available page area, converted to bounded grayscale rasters,
-and rendered through the normal display list. Standalone images are atomic
-pagination units. Missing, unsupported, corrupt, external, or over-budget
-images remain visible through their alt text (or an unavailable-image label)
-and do not abort the run.
+## Content model
 
-The complete Markdown decision record, including deterministic fallbacks for raw
-HTML, Mermaid/diagram source, and optional math/directive extensions, is in the
-[Markdown support matrix](../../docs/prs-t1/markdown-reader.md#markdown-support-matrix).
+The default Comrak parser handles CommonMark plus GFM tables, task lists,
+strikethrough, autolinks, footnotes, inline footnotes, and GitHub alerts.
+The owned IR and layout cover headings, paragraphs, emphasis/strong/code,
+lists, nested lists, quotes, links, anchors, tables, fenced code, rules,
+footnotes, alerts, and images. Supported local image formats are PNG, JPEG,
+and WebP; missing, corrupt, external, unsupported, or over-budget images use
+visible alt-text fallback.
 
-## Fenced code highlighting
+Fenced code uses a build-generated bounded Syntect bundle for shell/bash, Rust,
+Python, JavaScript, TypeScript, JSON, YAML, TOML, C, C++, Go, HTML, CSS, SQL,
+diff/patch, and Markdown. Unknown languages remain lossless plain monospace.
+Mermaid and other diagram fences therefore show their source. Raw HTML shows
+its source and is never executed. Dollar math, when enabled by caller-supplied
+Comrak options, preserves delimiters as text; there is no equation or browser
+layout engine. See the support matrix for the exact fallback contract.
 
-Fenced code is highlighted by the isolated `highlighting` component. Syntect
-is used with a build-generated packdump containing 17 deliberately selected
-small grammars: shell/bash, Rust, Python, JavaScript, TypeScript, JSON, YAML,
-TOML, C, C++, Go, HTML, CSS, SQL, diff/patch, Markdown, and plain text. The
-packdump is currently 7,551 bytes in this build (the build script reports its
-exact size), compared with loading Syntect's unrestricted default package.
-The runtime enables only parsing, fancy-regex, and dump loading; grammar source
-files are not parsed on the reader.
+## Tests, fixtures, and goldens
 
-The theme maps token colors into four grayscale ink levels and uses bold or
-italic where useful. Unknown or absent language tags are lossless plain
-monospace. Source lines are highlighted in one stateful pass before layout,
-so multiline strings/comments continue across wrapped display lines and page
-boundaries. Long source lines wrap at character boundaries when necessary;
-continuation lines receive a slightly darker code fill to distinguish them
-from source-newline lines. Code blocks paginate at displayed line boundaries.
+Run the focused library tests while changing the reader:
 
-The corpus regression test compares every page of every checked-in fixture
-against a deterministic PNG golden in `tests/goldens/`. These primary fixture
-goldens use the PRS-T1's 600x800 visible viewport and the default
-`ReaderStyle`, so they represent the intended reader typography and spacing.
-Structural and targeted wrapping, pagination, table, and syntax tests continue
-to use deliberately small viewports for edge-case coverage. The standalone
-`host-page.png` renderer smoke golden remains a dedicated 120x80 constrained
-case. If a comparison fails,
-the rendered page is written to `target/prs-markdown-golden-failures/` and the
-test output includes the command to promote all current renders after they
-have been inspected:
+```sh
+cargo test -p prs-markdown
+cargo test -p prs-markdown --test harness
+```
+
+The fixtures under `tests/fixtures/` cover agent Markdown, headings, inline
+styles, nested/task lists, quotes, alerts, footnotes, autolinks,
+strikethrough, links and anchors, cross-file navigation, tables, fenced
+syntax, raw HTML, images, malformed input, and font-face selection. The image
+fixture derives deterministic PNG, JPEG, and WebP inputs from
+`tests/fixtures/assets/observatory.png` and checks readable image goldens plus
+missing/corrupt fallbacks.
+
+Structural tests use the deterministic approximate measurer and do not require
+font files. PNG corpus goldens use the test-only Noto Sans faces, including
+bold/italic variants, at the T1 600x800 viewport. The separate `host-page.png`
+is a small 120x80 renderer smoke golden. Every page is compared against a
+checked-in `tests/goldens/*.png`; an inspected mismatch is written under
+`target/prs-markdown-golden-failures/`.
+
+After intentionally changing layout or rendering, inspect the generated pages
+and then promote them explicitly:
 
 ```sh
 PRS_MARKDOWN_UPDATE_GOLDENS=1 \
   cargo test -p prs-markdown --test harness
 ```
 
-Run the focused harness tests with:
+For the repository-level verification used by the project:
 
 ```sh
-cargo test -p prs-markdown --test harness
+cargo test --workspace
+cargo build --workspace --release
 ```
+
+The workspace release build is host-only. It verifies the crates but does not
+produce an ARM executable for the T1.

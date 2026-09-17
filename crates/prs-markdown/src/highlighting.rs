@@ -71,9 +71,9 @@ pub struct HighlightedCode {
     pub recognized: bool,
 }
 
-/// Component boundary used by layout. A future smaller device highlighter can
-/// replace Syntect without exposing Syntect types to document or pagination
-/// layers.
+/// Component boundary used by layout. A smaller device-specific highlighter
+/// can replace Syntect without exposing Syntect types to document or
+/// pagination layers.
 pub trait CodeHighlighter {
     fn highlight(&self, language: Option<&str>, source: &str) -> HighlightedCode;
 }
