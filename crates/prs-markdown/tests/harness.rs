@@ -73,6 +73,23 @@ fn structural_style() -> ReaderStyle {
     }
 }
 
+fn narrow_list_style() -> ReaderStyle {
+    ReaderStyle {
+        page_padding: Insets::all(8),
+        body: TextStyle::new(12, 14),
+        heading: TextStyle {
+            bold: true,
+            ..TextStyle::new(14, 18)
+        },
+        paragraph_spacing: 0,
+        heading_spacing_before: 0,
+        heading_spacing_after: 0,
+        list_indent: 18,
+        list_item_spacing: 2,
+        ..ReaderStyle::default()
+    }
+}
+
 #[test]
 fn corpus_exercises_semantics_boundaries_and_navigation() {
     let reader = HostReader::from_source(CORPUS, structural_style(), Viewport::new(96, 80))
@@ -451,6 +468,62 @@ fn ordered_list_start_fixture_preserves_markers_across_pages() {
     assert!(visible.contains("8. Nested"));
     assert!(visible.contains("9. Nested"));
     assert!(visible.contains("18. Continue"));
+}
+
+#[test]
+fn list_layout_matches_narrow_png_goldens() {
+    let cases = [
+        (
+            "list-wrapped-unordered",
+            include_str!("fixtures/list-wrapped-unordered.md"),
+            Viewport::new(180, 120),
+        ),
+        (
+            "list-wrapped-ordered",
+            include_str!("fixtures/list-wrapped-ordered.md"),
+            Viewport::new(180, 120),
+        ),
+        (
+            "list-ordered-boundary",
+            include_str!("fixtures/list-ordered-boundary.md"),
+            Viewport::new(180, 320),
+        ),
+        (
+            "list-page-continuation",
+            include_str!("fixtures/list-page-continuation.md"),
+            Viewport::new(180, 64),
+        ),
+    ];
+
+    let font_engine = golden_font_engine();
+    for (name, source, viewport) in cases {
+        let reader = HostReader::from_source_with_measurer(
+            source,
+            narrow_list_style(),
+            viewport,
+            font_engine.clone(),
+        )
+        .unwrap_or_else(|error| panic!("fixture {name} should parse: {error}"));
+        assert!(
+            reader
+                .pagination()
+                .pages()
+                .iter()
+                .flat_map(|page| page.display_list())
+                .any(|command| matches!(command, DisplayCommand::Text { .. })),
+            "fixture {name} should render text"
+        );
+        if name == "list-page-continuation" {
+            assert!(reader.page_count() > 1);
+        }
+
+        let mut renderer = prs_markdown::EmbeddedGraphicsRenderer::new(font_engine.clone());
+        for (page_index, page) in reader.pagination().pages().iter().enumerate() {
+            let image = render_page(page, &mut renderer);
+            assert_png_golden(name, page_index + 1, &image);
+        }
+        remove_obsolete_fixture_goldens(name, reader.page_count());
+    }
 }
 
 #[test]

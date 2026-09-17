@@ -565,6 +565,29 @@ impl<M: TextMeasurer> LayoutEngine<M> {
         let indent = self.style.list_indent.min(width);
         let item_x = x.saturating_add(indent as i32);
         let item_width = width.saturating_sub(indent);
+        let marker_width = items
+            .iter()
+            .enumerate()
+            .map(|(index, item)| {
+                let marker_width = self
+                    .measurer
+                    .measure(&list_marker(ordered, start, index), &self.style.body);
+                if item.task.is_task() {
+                    marker_width
+                        .saturating_add(TASK_CHECKBOX_SIZE)
+                        .saturating_add(TASK_CHECKBOX_GAP)
+                } else {
+                    marker_width
+                }
+            })
+            .max()
+            .unwrap_or(0)
+            // Preserve the existing narrow-viewport progress guarantee. If
+            // the whole item box is narrower than its marker, the marker is
+            // clipped by the same content box as every other fragment.
+            .min(item_width);
+        let text_x = item_x.saturating_add(marker_width as i32);
+        let text_width = item_width.saturating_sub(marker_width).max(1);
         let mut y = start_y;
 
         for (index, item) in items.iter().enumerate() {
@@ -573,10 +596,8 @@ impl<M: TextMeasurer> LayoutEngine<M> {
             } else {
                 list_marker(ordered, start, index)
             };
+            let marker_text_width = self.measurer.measure(&marker, &self.style.body);
             let mut spans = Vec::new();
-            if !item.task.is_task() {
-                spans.push(Span::new(marker.clone(), self.style.body, None, false));
-            }
             for inline in &item.content {
                 collect_spans(
                     inline,
@@ -587,63 +608,55 @@ impl<M: TextMeasurer> LayoutEngine<M> {
                     &mut spans,
                 );
             }
-            let lines = if item.task.is_task() {
-                let marker_width = self.measurer.measure(&marker, &self.style.body);
-                let checkbox_x = item_x.saturating_add(marker_width as i32);
-                let text_x = checkbox_x
-                    .saturating_add(TASK_CHECKBOX_SIZE.saturating_add(TASK_CHECKBOX_GAP) as i32);
-                let reserved_width = marker_width
-                    .saturating_add(TASK_CHECKBOX_SIZE)
-                    .saturating_add(TASK_CHECKBOX_GAP);
-                let text_width = item_width.saturating_sub(reserved_width).max(1);
-                let mut lines = wrap_spans(
-                    &self.measurer,
-                    spans,
-                    y,
-                    text_x,
-                    text_width,
-                    self.style.body.line_height,
-                );
-                if let Some(first) = lines.first_mut() {
-                    if !marker.is_empty() {
-                        first.fragments.insert(
-                            0,
-                            LayoutFragment {
-                                text: marker,
-                                bounds: Rectangle::new(
-                                    Point::new(item_x, first.bounds.top_left.y),
-                                    Size::new(marker_width, self.style.body.line_height.max(1)),
-                                ),
-                                style: self.style.body,
-                                image: None,
-                                link: None,
-                            },
-                        );
-                    }
-                    let right = rect_right(&first.bounds)
-                        .max(checkbox_x.saturating_add(TASK_CHECKBOX_SIZE as i32))
-                        .min(item_x.saturating_add(item_width as i32));
-                    first.bounds = Rectangle::new(
-                        Point::new(item_x, first.bounds.top_left.y),
-                        Size::new(
-                            right.saturating_sub(item_x) as u32,
-                            first.bounds.size.height,
+            let mut lines = wrap_spans(
+                &self.measurer,
+                spans,
+                y,
+                text_x,
+                text_width,
+                self.style.body.line_height,
+            );
+            let first_line = lines
+                .first_mut()
+                .expect("list item wrapping always produces one line");
+            let text_bounds = first_line.bounds;
+            let checkbox_x = item_x.saturating_add(marker_text_width as i32);
+            let right = rect_right(&text_bounds)
+                .max(if item.task.is_task() {
+                    checkbox_x.saturating_add(TASK_CHECKBOX_SIZE as i32)
+                } else {
+                    text_x
+                })
+                .min(item_x.saturating_add(item_width as i32));
+            first_line.bounds = Rectangle::new(
+                Point::new(item_x, text_bounds.top_left.y),
+                Size::new(
+                    right.saturating_sub(item_x) as u32,
+                    text_bounds
+                        .size
+                        .height
+                        .max(self.style.body.line_height.max(1)),
+                ),
+            );
+            if !marker.is_empty() {
+                first_line.fragments.insert(
+                    0,
+                    LayoutFragment {
+                        text: marker,
+                        bounds: Rectangle::new(
+                            Point::new(item_x, first_line.bounds.top_left.y),
+                            Size::new(marker_width, self.style.body.line_height.max(1)),
                         ),
-                    );
-                    first.task = Some(item.task);
-                    first.task_checkbox_x = Some(checkbox_x);
-                }
-                lines
-            } else {
-                wrap_spans(
-                    &self.measurer,
-                    spans,
-                    y,
-                    item_x,
-                    item_width,
-                    self.style.body.line_height,
-                )
-            };
+                        style: self.style.body,
+                        image: None,
+                        link: None,
+                    },
+                );
+            }
+            if item.task.is_task() {
+                first_line.task = Some(item.task);
+                first_line.task_checkbox_x = Some(checkbox_x);
+            }
             y = append_lines(output, lines, y);
 
             // Children retain their block semantics and can themselves contain
@@ -2138,6 +2151,7 @@ mod tests {
     use super::*;
     use crate::document::{Document, Inline, ListItem};
     use crate::navigation::{DocumentId, NavigationTarget};
+    use crate::pagination::{DisplayCommand, Paginator};
     use crate::style::Insets;
 
     fn style() -> ReaderStyle {
@@ -2349,6 +2363,156 @@ mod tests {
         assert!(text.contains("5. outer"));
         assert!(text.contains("8. inner"));
         assert!(text.contains("9. next inner"));
+    }
+
+    #[test]
+    fn wrapped_unordered_items_use_a_stable_marker_column() {
+        let document = Document::from_blocks(vec![Block::List {
+            ordered: false,
+            start: 1,
+            items: vec![ListItem::new(vec![Inline::Text(
+                "wrapped unordered item keeps continuation text under the item text".into(),
+            )])],
+        }]);
+        let layout = LayoutEngine::new(style()).layout(&document, Viewport::new(78, 300));
+        let lines = &layout.blocks()[0].lines;
+
+        assert!(lines.len() >= 2);
+        assert_eq!(lines[0].fragments[0].text, "• ");
+        let text_x = lines[0].fragments[1].bounds.top_left.x;
+        assert_eq!(lines[1].fragments[0].bounds.top_left.x, text_x);
+        assert_eq!(
+            lines[0].bounds.top_left.x,
+            lines[0].fragments[0].bounds.top_left.x
+        );
+        assert_eq!(
+            lines[0].fragments[0].bounds.top_left.x
+                + lines[0].fragments[0].bounds.size.width as i32,
+            text_x
+        );
+    }
+
+    #[test]
+    fn ordered_items_reserve_width_for_the_widest_marker() {
+        let items = (1..=10)
+            .map(|number| ListItem::new(vec![Inline::Text(format!("ordered item {number}"))]))
+            .collect();
+        let document = Document::from_blocks(vec![Block::List {
+            ordered: true,
+            start: 1,
+            items,
+        }]);
+        let layout = LayoutEngine::new(style()).layout(&document, Viewport::new(220, 500));
+        let lines = &layout.blocks()[0].lines;
+
+        assert_eq!(lines.len(), 10);
+        assert_eq!(lines[0].fragments[0].text, "1. ");
+        assert_eq!(lines[9].fragments[0].text, "10. ");
+        assert_eq!(
+            lines[0].fragments[1].bounds.top_left.x,
+            lines[9].fragments[1].bounds.top_left.x
+        );
+    }
+
+    #[test]
+    fn task_markers_share_the_item_text_column() {
+        let mut unchecked = ListItem::new(vec![Inline::Text(
+            "unchecked task item with a continuation".into(),
+        )]);
+        unchecked.task = TaskState::Unchecked;
+        let mut checked = ListItem::new(vec![Inline::Text("checked task item".into())]);
+        checked.task = TaskState::Checked;
+        let document = Document::from_blocks(vec![Block::List {
+            ordered: false,
+            start: 1,
+            items: vec![unchecked, checked],
+        }]);
+        let layout = LayoutEngine::new(style()).layout(&document, Viewport::new(100, 300));
+        let lines = &layout.blocks()[0].lines;
+        let first_item_text_x = lines
+            .iter()
+            .find_map(|line| {
+                line.fragments
+                    .iter()
+                    .find(|fragment| fragment.text.starts_with("unchecked"))
+                    .map(|fragment| fragment.bounds.top_left.x)
+            })
+            .expect("unchecked task should be laid out");
+        let second_item_line = lines
+            .iter()
+            .find(|line| {
+                line.fragments
+                    .iter()
+                    .any(|fragment| fragment.text == "checked")
+            })
+            .expect("checked task should be laid out");
+
+        assert_eq!(
+            lines
+                .iter()
+                .filter_map(|line| line.task)
+                .collect::<Vec<_>>(),
+            vec![TaskState::Unchecked, TaskState::Checked]
+        );
+        assert!(lines.iter().any(|line| line.task_checkbox_x.is_some()));
+        assert_eq!(
+            second_item_line.fragments[0].bounds.top_left.x,
+            first_item_text_x
+        );
+        assert!(lines
+            .iter()
+            .flat_map(|line| line.fragments.iter())
+            .all(|fragment| !fragment.text.contains("[x]") && !fragment.text.contains("[ ]")));
+    }
+
+    #[test]
+    fn list_continuation_keeps_text_column_after_a_page_break() {
+        let style = ReaderStyle {
+            page_padding: Insets::all(0),
+            body: TextStyle::new(10, 10),
+            heading: TextStyle {
+                bold: true,
+                ..TextStyle::new(10, 10)
+            },
+            paragraph_spacing: 0,
+            heading_spacing_before: 0,
+            heading_spacing_after: 0,
+            list_item_spacing: 0,
+            ..ReaderStyle::default()
+        };
+        let document = Document::from_blocks(vec![Block::List {
+            ordered: false,
+            start: 1,
+            items: vec![ListItem::new(vec![Inline::Text(
+                "this list item wraps across a page boundary so its continuation starts on the next page".into(),
+            )])],
+        }]);
+        let layout = LayoutEngine::new(style).layout(&document, Viewport::new(78, 10));
+        assert!(layout.blocks()[0].lines.len() >= 2);
+
+        let pages = Paginator::new(style).paginate(&layout);
+        assert!(pages.len() >= 2);
+        let first_text = pages[0]
+            .display_list()
+            .iter()
+            .find_map(|command| match command {
+                DisplayCommand::Text { text, bounds, .. } if text != "• " => Some(*bounds),
+                _ => None,
+            })
+            .expect("first page should contain item text");
+        let continuation_text = pages[1]
+            .display_list()
+            .iter()
+            .find_map(|command| match command {
+                DisplayCommand::Text { text, bounds, .. } if text != "• " => Some(*bounds),
+                _ => None,
+            })
+            .expect("second page should contain continuation text");
+
+        assert_eq!(continuation_text.top_left.x, first_text.top_left.x);
+        assert!(!pages[1].display_list().iter().any(|command| {
+            matches!(command, DisplayCommand::Text { text, .. } if text == "• ")
+        }));
     }
 
     #[test]
