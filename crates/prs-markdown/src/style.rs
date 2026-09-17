@@ -128,6 +128,15 @@ pub struct ReaderStyle {
     pub thematic_break: BorderStyle,
     /// Horizontal inset applied to each table cell around its text.
     pub table_cell_padding: u32,
+    /// Vertical inset applied to each displayed line in a table cell.
+    ///
+    /// Table borders frame each displayed line. This inset keeps glyph bounds
+    /// away from those borders, including when a cell wraps.
+    pub table_cell_vertical_padding: u32,
+    /// Smallest table font size used by compact and grouped fallback modes.
+    pub table_min_font_size: u32,
+    /// Smallest table line height used by compact and grouped fallback modes.
+    pub table_min_line_height: u32,
     /// Monochrome cell border used for table framing and row separators.
     pub table_border: BorderStyle,
     /// A heavier rule distinguishes the header without relying on colour.
@@ -170,6 +179,9 @@ impl Default for ReaderStyle {
             code_continuation_background: FillStyle::new(Color::rgb(238, 238, 238)),
             thematic_break: BorderStyle::new(Color::rgb(128, 128, 128), 1),
             table_cell_padding: 3,
+            table_cell_vertical_padding: 3,
+            table_min_font_size: 12,
+            table_min_line_height: 16,
             table_border: BorderStyle::new(Color::BLACK, 1),
             table_header_border: BorderStyle::new(Color::BLACK, 2),
             table_header_fill: FillStyle::new(Color::rgb(238, 238, 238)),

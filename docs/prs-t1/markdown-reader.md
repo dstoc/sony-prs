@@ -353,16 +353,22 @@ words and URLs split at character boundaries, headings use one configured
 style with a compact level-size reduction, images use decoded grayscale rasters
 when available and alt-text fallbacks otherwise,
 and block quotes use a configured vertical rule with e-reader indentation.
-Tables use a deterministic sizing pass: minimum widths come from unbreakable
-cell tokens and preferred widths come from normally wrapped cell content. The
-available width is allocated in source-column order, with GFM left/center/right
-alignment, cell padding, borders, and a bold/heavier-rule header treatment.
-If normal body text cannot fit, tables retry with a bounded compact font and
-then character-level wrapping. If the frame still cannot hold all columns,
-the table is continued vertically in deterministic column groups; the first
-key column is repeated in each group where the viewport can hold it. These
-choices favor legibility and bounded host/device layout over HTML/CSS
-compatibility.
+Tables use a deterministic sizing pass: short tokens retain useful minimum
+widths, while oversized tokens use the same character-wrap fallback as cell
+layout. Preferred widths come from normally wrapped cell content. The
+available width is allocated in
+source-column order, with GFM left/center/right alignment, 3 page-space units
+of horizontal and vertical cell padding by default, borders, and a
+bold/heavier-rule header treatment. Normal body typography is retained for
+ordinary tables when their columns fit. Compact and grouped fallback modes use
+a minimum 12-pixel font and 16-pixel line height. Wrapped rows use continuous
+vertical edges and logical top/bottom rules, which keeps glyphs away from
+internal rules. If the frame still cannot hold all columns, the table is
+continued vertically in deterministic column groups; the first key column is
+repeated in each group where the viewport can hold it. Wider diagnostic tables
+use the readable compact floor to keep long detail cells from consuming a full
+page. These choices favor legibility and bounded host/device layout over
+HTML/CSS compatibility.
 
 ## Parser and owned document IR
 
@@ -391,7 +397,7 @@ owned IR and layout still apply the same reader-oriented fallbacks.
 | GFM task lists | Checked and unchecked markers render as readable `[x]` and `[ ]` list prefixes. There is no task toggle action. |
 | Autolinks | URL, `www`, and email autolinks become semantic links. Local targets navigate through the reader; external targets are returned to the host as `ReaderEvent::ExternalUrl`. |
 | Internal links and anchors | Fragment links (`#anchor`), root-relative `.md`/`.markdown` documents, and document-plus-anchor references are resolved relative to the containing document and root boundary. Back restores the prior document, page, and logical cursor. Missing documents or anchors return a reader error. |
-| GFM tables | Headers, body rows, left/center/right alignment, borders, compact/aggressive font fallback, repeated continuation headers, and deterministic vertical column groups are implemented. Rows normally paginate atomically; an oversized row splits at its displayed lines. |
+| GFM tables | Headers, body rows, left/center/right alignment, readable normal/compact/aggressive font fallback, horizontal and vertical cell padding, continuous wrapped-row rules, repeated continuation headers, and deterministic vertical column groups are implemented. Rows normally paginate atomically; an oversized row splits at its displayed lines. |
 | Fenced code and syntax | Fenced source is preserved, highlighted in one stateful pass, and paginated at displayed-line boundaries. The bundled grammars cover shell/bash, Rust, Python, JavaScript, TypeScript, JSON, YAML, TOML, C, C++, Go, HTML, CSS, SQL, diff/patch, and Markdown, plus plain text. Unknown or absent languages remain lossless plain monospace. |
 | Images | Local PNG, JPEG, and WebP references are decoded, alpha-composited onto white, proportionally fitted to the content/page bounds, converted to bounded grayscale, and rendered as display-list rasters. Standalone images are atomic pagination units; inline images participate in their line. |
 | Missing or unsupported images | Missing, external, corrupt, over-budget, and unsupported image formats do not abort the document. The image's alt text is rendered as `[image: ...]`, or `[image unavailable]` when no alt text exists. Encoded reads, decoder allocation, retained bytes, and image-entry count are bounded. |

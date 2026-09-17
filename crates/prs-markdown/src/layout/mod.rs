@@ -743,14 +743,24 @@ impl<M: TextMeasurer> LayoutEngine<M> {
         }
 
         let all_columns = (0..column_count).collect::<Vec<_>>();
-        let stages = [
-            (TableLayoutMode::Normal, self.table_text_style(false, false)),
-            (TableLayoutMode::Compact, self.table_text_style(true, false)),
-            (
-                TableLayoutMode::Aggressive,
-                self.table_text_style(true, true),
-            ),
-        ];
+        let normal = self.table_text_style(false, false);
+        let compact = self.table_text_style(true, false);
+        let aggressive = self.table_text_style(true, true);
+        // A small ordinary table retains body typography. Wider tables use
+        // the readable compact floor so the diagnostic columns remain useful
+        // without turning each long detail cell into a page-sized row.
+        let stages = if column_count > 4 {
+            vec![
+                (TableLayoutMode::Compact, compact),
+                (TableLayoutMode::Aggressive, aggressive),
+            ]
+        } else {
+            vec![
+                (TableLayoutMode::Normal, normal),
+                (TableLayoutMode::Compact, compact),
+                (TableLayoutMode::Aggressive, aggressive),
+            ]
+        };
 
         for (mode, text_style) in stages {
             let columns = self.table_columns(table, column_count, text_style, image_height, images);
@@ -761,10 +771,7 @@ impl<M: TextMeasurer> LayoutEngine<M> {
                     width,
                     mode == TableLayoutMode::Aggressive,
                 )
-                .filter(|widths| {
-                    mode != TableLayoutMode::Aggressive
-                        || self.table_widths_are_readable(widths, text_style)
-                })
+                .filter(|widths| self.table_widths_are_readable(widths, text_style))
             {
                 let groups = vec![TableColumnGroup {
                     columns: all_columns,
@@ -849,7 +856,10 @@ impl<M: TextMeasurer> LayoutEngine<M> {
         if !compact {
             return self.style.body;
         }
-        let minimum = 8;
+        let minimum = self
+            .style
+            .table_min_font_size
+            .min(self.style.body.font_size.max(1));
         let target_size = if aggressive {
             self.style.body.font_size.saturating_mul(2) / 3
         } else {
@@ -865,7 +875,8 @@ impl<M: TextMeasurer> LayoutEngine<M> {
                 .saturating_mul(font_size)
                 .checked_div(self.style.body.font_size.max(1))
                 .unwrap_or(font_size)
-                .max(font_size),
+                .max(font_size)
+                .max(self.style.table_min_line_height.max(1)),
             ..self.style.body
         }
     }
@@ -882,18 +893,24 @@ impl<M: TextMeasurer> LayoutEngine<M> {
             .map(|index| {
                 let mut minimum_width = 0;
                 let mut preferred_width = 0;
-                let mut inspect = |cell: &[Inline]| {
+                let mut inspect = |cell: &[Inline], cell_style: TextStyle| {
                     let (minimum, preferred) =
-                        self.table_cell_metrics(cell, text_style, image_height, images);
+                        self.table_cell_metrics(cell, cell_style, image_height, images);
                     minimum_width = minimum_width.max(minimum);
                     preferred_width = preferred_width.max(preferred);
                 };
                 if let Some(cell) = table.headers.get(index) {
-                    inspect(cell);
+                    inspect(
+                        cell,
+                        TextStyle {
+                            bold: true,
+                            ..text_style
+                        },
+                    );
                 }
                 for row in &table.rows {
                     if let Some(cell) = row.get(index) {
-                        inspect(cell);
+                        inspect(cell, text_style);
                     }
                 }
                 TableColumnLayout {
@@ -930,10 +947,21 @@ impl<M: TextMeasurer> LayoutEngine<M> {
             .map(|line| line.bounds.size.width)
             .max()
             .unwrap_or(0);
+        // `append_token` splits an over-wide word at character boundaries.
+        // Keep short tokens intact for useful column widths, but cap a long
+        // token before it can force compact typography. The capped remainder
+        // uses the same character-wrap fallback as cell layout.
+        let token_limit = style.font_size.saturating_mul(5).max(1);
         let mut minimum = 0;
-        for span in spans {
+        for span in &spans {
             for token in span.text.split(char::is_whitespace) {
-                minimum = minimum.max(self.measurer.measure(token, &span.style));
+                let token_width = self.measurer.measure(token, &span.style);
+                let character_width = token
+                    .chars()
+                    .map(|character| self.measurer.measure(&character.to_string(), &span.style))
+                    .max()
+                    .unwrap_or(0);
+                minimum = minimum.max(token_width.min(token_limit).max(character_width));
             }
         }
         (minimum, preferred.max(minimum))
@@ -1007,9 +1035,14 @@ impl<M: TextMeasurer> LayoutEngine<M> {
 
     fn table_widths_are_readable(&self, widths: &[u32], text_style: TextStyle) -> bool {
         widths.len() <= 1
-            || widths
-                .iter()
-                .all(|width| *width >= text_style.font_size.saturating_mul(2).max(12))
+            || widths.iter().all(|width| {
+                *width
+                    >= text_style
+                        .font_size
+                        .saturating_add(8)
+                        .max(self.style.table_min_font_size.saturating_add(8))
+                        .max(12)
+            })
     }
 
     fn make_table_group(
@@ -1123,6 +1156,7 @@ impl<M: TextMeasurer> LayoutEngine<M> {
         images: &ImageResources,
     ) -> i32 {
         let cell_padding = self.style.table_cell_padding;
+        let vertical_padding = self.style.table_cell_vertical_padding;
         let cell_lines = group
             .columns
             .iter()
@@ -1138,7 +1172,7 @@ impl<M: TextMeasurer> LayoutEngine<M> {
                     let mut lines = self.inline_lines_with_images(
                         inlines,
                         cell_style,
-                        start_y,
+                        start_y.saturating_add(vertical_padding as i32),
                         cell_x.saturating_add(cell_padding as i32),
                         (*column_width).max(1),
                         image_height,
@@ -1172,15 +1206,33 @@ impl<M: TextMeasurer> LayoutEngine<M> {
             for lines in &cell_lines {
                 if let Some(line) = lines.get(line_index) {
                     height = height.max(line.bounds.size.height);
-                    fragments.extend(line.fragments.clone());
+                    let target_y = row_y.saturating_add(vertical_padding as i32);
+                    let y_offset = target_y.saturating_sub(line.bounds.top_left.y);
+                    fragments.extend(line.fragments.iter().cloned().map(|mut fragment| {
+                        fragment.bounds = Rectangle::new(
+                            Point::new(
+                                fragment.bounds.top_left.x,
+                                fragment.bounds.top_left.y.saturating_add(y_offset),
+                            ),
+                            fragment.bounds.size,
+                        );
+                        fragment
+                    }));
                 }
             }
             output.push(LayoutLine {
-                bounds: Rectangle::new(Point::new(group.x, row_y), Size::new(group.width, height)),
+                bounds: Rectangle::new(
+                    Point::new(group.x, row_y),
+                    Size::new(
+                        group.width,
+                        height.saturating_add(vertical_padding.saturating_mul(2)),
+                    ),
+                ),
                 fragments,
                 wrapped: false,
             });
-            row_y = row_y.saturating_add(height as i32);
+            row_y = row_y
+                .saturating_add(height.saturating_add(vertical_padding.saturating_mul(2)) as i32);
         }
         rows.push(TableRowLayout {
             line_range: row_start..output.len(),
@@ -2037,6 +2089,57 @@ mod tests {
         assert!(
             block.lines[0].fragments[1].bounds.top_left.x
                 > block.lines[0].fragments[0].bounds.top_left.x
+        );
+    }
+
+    #[test]
+    fn tables_keep_normal_typography_and_clearance_at_t1_width() {
+        let document = crate::parse::parse(include_str!("../../tests/fixtures/table-layout.md"))
+            .expect("table fixture should parse");
+        let style = ReaderStyle::default();
+        let layout = LayoutEngine::new(style).layout(&document, Viewport::new(600, 800));
+        let tables = layout
+            .blocks()
+            .iter()
+            .filter_map(|block| block.table.as_ref())
+            .collect::<Vec<_>>();
+
+        assert_eq!(tables.len(), 2);
+        assert_eq!(tables[0].mode, TableLayoutMode::Normal);
+        assert!(matches!(
+            tables[1].mode,
+            TableLayoutMode::Compact | TableLayoutMode::Aggressive
+        ));
+
+        for block in layout
+            .blocks()
+            .iter()
+            .filter(|block| block.kind == LayoutBlockKind::Table)
+        {
+            for line in &block.lines {
+                for fragment in &line.fragments {
+                    assert!(fragment.style.font_size >= style.table_min_font_size);
+                    assert_eq!(
+                        fragment.bounds.top_left.y - line.bounds.top_left.y,
+                        style.table_cell_vertical_padding as i32
+                    );
+                    assert!(rect_bottom(&fragment.bounds) < rect_bottom(&line.bounds));
+                }
+            }
+        }
+
+        let first_table = layout
+            .blocks()
+            .iter()
+            .find(|block| block.kind == LayoutBlockKind::Table)
+            .expect("first table block");
+        let first_header = first_table.table.as_ref().unwrap().rows[0].line_range.start;
+        assert_eq!(
+            first_table.lines[first_header].bounds.size.height,
+            style
+                .body
+                .line_height
+                .saturating_add(style.table_cell_vertical_padding.saturating_mul(2))
         );
     }
 
