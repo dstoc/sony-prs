@@ -1515,7 +1515,7 @@ mod tests {
             ]],
             alignments: Vec::new(),
         })]);
-        let layout = LayoutEngine::new(style).layout(&document, Viewport::new(120, 200));
+        let layout = LayoutEngine::new(style).layout(&document, Viewport::new(120, 300));
         let table_block = &layout.blocks()[0];
         let table = table_block.table.as_ref().expect("table metadata");
         let row = table
@@ -1671,7 +1671,7 @@ mod tests {
             )]]],
             alignments: Vec::new(),
         })]);
-        let layout = LayoutEngine::new(style).layout(&document, Viewport::new(24, 20));
+        let layout = LayoutEngine::new(style).layout(&document, Viewport::new(24, 44));
         let first = Paginator::new(style).paginate(&layout);
         let second = Paginator::new(style).paginate(&layout);
 
