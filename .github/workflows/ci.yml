@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  host:
+    name: Host checks
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Read production build pins
+        id: build-pins
+        shell: bash
+        run: tools/prs-t1-agent-build.sh print-github-actions >> "$GITHUB_OUTPUT"
+
+      - name: Install the pinned Rust toolchain
+        run: |
+          rustup toolchain install "${{ steps.build-pins.outputs.rust_toolchain }}" \
+            --profile minimal \
+            --component rustfmt \
+            --no-self-update
+          rustup run "${{ steps.build-pins.outputs.rust_toolchain }}" rustc --version
+          rustup run "${{ steps.build-pins.outputs.rust_toolchain }}" cargo --version
+
+      - name: Check formatting
+        run: cargo +"${{ steps.build-pins.outputs.rust_toolchain }}" fmt --all --check
+
+      - name: Run workspace tests
+        run: cargo +"${{ steps.build-pins.outputs.rust_toolchain }}" test --workspace
+
+  prs-t1-cross-build:
+    name: PRS-T1 ARMv5TE build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Read production build pins
+        id: build-pins
+        shell: bash
+        run: tools/prs-t1-agent-build.sh print-github-actions >> "$GITHUB_OUTPUT"
+
+      - name: Install the pinned Rust toolchain and target
+        run: |
+          rustup toolchain install "${{ steps.build-pins.outputs.rust_toolchain }}" \
+            --profile minimal \
+            --target "${{ steps.build-pins.outputs.target }}" \
+            --no-self-update
+          rustup run "${{ steps.build-pins.outputs.rust_toolchain }}" rustc --version
+          rustup run "${{ steps.build-pins.outputs.rust_toolchain }}" cargo --version
+
+      - name: Install pinned Zig
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: "${{ steps.build-pins.outputs.zig_version }}"
+
+      - name: Install pinned cargo-zigbuild
+        run: |
+          cargo +"${{ steps.build-pins.outputs.rust_toolchain }}" install cargo-zigbuild \
+            --version "${{ steps.build-pins.outputs.cargo_zigbuild_version }}" \
+            --locked
+          zig version
+
+      - name: Build and verify the production executable
+        run: tools/prs-t1-agent-build.sh build-and-verify

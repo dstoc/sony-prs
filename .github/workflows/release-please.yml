@@ -16,15 +16,13 @@ permissions:
   issues: write
   pull-requests: write
 
-env:
-  CARGO_ZIGBUILD_VERSION: "0.23.4"
-  RUST_TOOLCHAIN: "1.98.1"
-  TARGET: armv5te-unknown-linux-musleabi
-
 jobs:
   release-please:
     runs-on: ubuntu-24.04
     steps:
+      - name: Check out workflow source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
       - name: Run Release Please
         id: release
         if: ${{ github.event_name == 'push' }}
@@ -54,6 +52,14 @@ jobs:
 
           printf 'tag=%s\n' "$tag" >> "$GITHUB_OUTPUT"
 
+      - name: Read production build pins
+        id: build-pins
+        if: ${{ steps.release-tag.outputs.tag != '' }}
+        shell: bash
+        run: |
+          tools/prs-t1-agent-build.sh print-github-actions >> "$GITHUB_OUTPUT"
+          cp tools/prs-t1-agent-build.sh "$RUNNER_TEMP/prs-t1-agent-build.sh"
+
       - name: Check out the released commit
         if: ${{ steps.release-tag.outputs.tag != '' }}
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -64,77 +70,32 @@ jobs:
       - name: Install the pinned Rust toolchain and target
         if: ${{ steps.release-tag.outputs.tag != '' }}
         run: |
-          rustup toolchain install "$RUST_TOOLCHAIN" \
+          rustup toolchain install "${{ steps.build-pins.outputs.rust_toolchain }}" \
             --profile minimal \
-            --target "$TARGET" \
+            --target "${{ steps.build-pins.outputs.target }}" \
             --no-self-update
-          rustup run "$RUST_TOOLCHAIN" rustc --version
-          rustup run "$RUST_TOOLCHAIN" cargo --version
+          rustup run "${{ steps.build-pins.outputs.rust_toolchain }}" rustc --version
+          rustup run "${{ steps.build-pins.outputs.rust_toolchain }}" cargo --version
 
       - name: Install pinned Zig
         if: ${{ steps.release-tag.outputs.tag != '' }}
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
-          version: "0.13.0"
+          version: "${{ steps.build-pins.outputs.zig_version }}"
 
       - name: Install pinned cargo-zigbuild
         if: ${{ steps.release-tag.outputs.tag != '' }}
         run: |
-          cargo +"$RUST_TOOLCHAIN" install cargo-zigbuild \
-            --version "$CARGO_ZIGBUILD_VERSION" \
+          cargo +"${{ steps.build-pins.outputs.rust_toolchain }}" install cargo-zigbuild \
+            --version "${{ steps.build-pins.outputs.cargo_zigbuild_version }}" \
             --locked
           zig version
 
-      - name: Build the released PRS-T1 binary
+      - name: Build and verify the released PRS-T1 binary
         if: ${{ steps.release-tag.outputs.tag != '' }}
-        run: |
-          RUSTFLAGS='-C target-cpu=arm926ej-s -C link-arg=-mcpu=arm926ej-s' \
-            cargo +"$RUST_TOOLCHAIN" zigbuild \
-            --manifest-path crates/prs-t1-agent/Cargo.toml \
-            --release \
-            --target "$TARGET"
-
-      - name: Verify the device executable
-        if: ${{ steps.release-tag.outputs.tag != '' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          artifact="target/$TARGET/release/prs-t1-agent"
-          test -x "$artifact"
-
-          file_output="$(file -b "$artifact")"
-          printf '%s\n' "$file_output"
-          case "$file_output" in
-            *"ELF 32-bit LSB"*"ARM"*"EABI5"*"statically linked"*) ;;
-            *)
-              printf 'unexpected executable format: %s\n' "$file_output" >&2
-              exit 1
-              ;;
-          esac
-
-          readelf -h "$artifact" | tee target/prs-t1-agent-readelf-header.txt
-          readelf -l "$artifact" | tee target/prs-t1-agent-readelf-program-headers.txt
-          readelf -A "$artifact" | tee target/prs-t1-agent-readelf-attributes.txt
-
-          grep -Eq '^  Class:.*ELF32' target/prs-t1-agent-readelf-header.txt
-          grep -Eq '^  Machine:.*ARM' target/prs-t1-agent-readelf-header.txt
-          grep -Eq '^  Flags:.*Version5 EABI, soft-float ABI' target/prs-t1-agent-readelf-header.txt
-
-          if grep -q 'INTERP' target/prs-t1-agent-readelf-program-headers.txt; then
-            printf '%s\n' 'the release executable has a dynamic loader' >&2
-            exit 1
-          fi
-
-          if grep -Eq 'Tag_ABI_VFP_args: VFP registers|Tag_ABI_HardFP_use' \
-            target/prs-t1-agent-readelf-attributes.txt; then
-            printf '%s\n' 'the release executable uses hard-float ABI attributes' >&2
-            exit 1
-          fi
-
-          mkdir -p dist
-          install -Dm755 "$artifact" dist/prs-t1-agent-armv5te
-          sha256sum dist/prs-t1-agent-armv5te
+        env:
+          PRS_T1_AGENT_REPO_ROOT: ${{ github.workspace }}
+        run: "$RUNNER_TEMP/prs-t1-agent-build.sh" build-and-verify
 
       - name: Upload the device executable to the GitHub Release
         if: ${{ steps.release-tag.outputs.tag != '' }}

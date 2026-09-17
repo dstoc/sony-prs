@@ -13,10 +13,12 @@ crate are ready to release. Merging that PR updates the crate version and
 `CHANGELOG.md`, creates a component-prefixed tag and GitHub Release such as
 `prs-t1-agent-v0.1.0`, and builds the device binary from that tagged commit.
 
-The release workflow follows the production `cargo zigbuild` command below,
-checks the result for ARM/EABI5, soft-float, and static linking, and uploads it
-to the release as `prs-t1-agent-armv5te`. Download it from the matching GitHub
-Release rather than from crates.io; this crate is not published there.
+The CI and release workflows call the shared
+[`tools/prs-t1-agent-build.sh`](../../tools/prs-t1-agent-build.sh) production
+build and ELF-validation script. CI stops after validation; the release
+workflow additionally uploads the resulting `dist/prs-t1-agent-armv5te` file
+to the matching GitHub Release. Download it from that release rather than from
+crates.io; this crate is not published there.
 
 Use Conventional Commit messages for changes that should affect the release:
 
@@ -53,8 +55,9 @@ Install or otherwise make these commands available on `PATH`:
 
 The agent does not require the Android SDK, Android NDK, Gradle, or a Java
 toolchain. The local development workflow does not require the exact versions
-used by the release workflow. The GitHub workflow pins Rust 1.88.0, Zig 0.13.0,
-and `cargo-zigbuild` 0.23.4 so published artifacts are reproducible. Verify
+used by the release workflow. The shared GitHub build pins Rust 1.98.1, Zig
+0.16.0, and `cargo-zigbuild` 0.23.4 so validation and published artifacts use
+the same toolchain. Verify
 the tools available for a local build before building:
 
 ```sh
