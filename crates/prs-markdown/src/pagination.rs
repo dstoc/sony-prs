@@ -1625,6 +1625,43 @@ mod tests {
     }
 
     #[test]
+    fn wrapped_table_headers_use_header_border_width_for_vertical_rules() {
+        let style = pagination_style();
+        let document = Document::from_blocks(vec![Block::Table(crate::Table {
+            headers: vec![vec![Inline::Text(
+                "wrapped table header content has multiple displayed lines".into(),
+            )]],
+            rows: Vec::new(),
+            alignments: Vec::new(),
+        })]);
+        let layout = LayoutEngine::new(style).layout(&document, Viewport::new(42, 400));
+        let table = layout.blocks()[0].table.as_ref().unwrap();
+        assert!(table.rows[0].header);
+        assert!(table.rows[0].line_range.len() > 1);
+
+        let page = Paginator::new(style).paginate(&layout).remove(0);
+        let vertical_header_rules = page
+            .display_list()
+            .iter()
+            .filter_map(|command| match command {
+                DisplayCommand::Rule {
+                    bounds,
+                    style: rule_style,
+                } if *rule_style == style.table_header_border
+                    && bounds.size.height > bounds.size.width =>
+                {
+                    Some(bounds.size.width)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(!vertical_header_rules.is_empty());
+        assert!(vertical_header_rules
+            .iter()
+            .all(|width| *width == style.table_header_border.width));
+    }
+
+    #[test]
     fn oversized_table_rows_split_deterministically_after_first_placement() {
         let style = pagination_style();
         let document = Document::from_blocks(vec![Block::Table(crate::Table {
