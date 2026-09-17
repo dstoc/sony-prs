@@ -20,6 +20,15 @@ grep -Fq '"${{ steps.release-tag.outputs.tag }}" \' "$workflow"
 grep -Fq 'tools/prs-t1-agent-build.sh print-github-actions' "$workflow"
 grep -Fq 'cp tools/prs-t1-agent-build.sh "$RUNNER_TEMP/prs-t1-agent-build.sh"' "$workflow"
 grep -Fq '"$RUNNER_TEMP/prs-t1-agent-build.sh" build-and-verify' "$workflow"
+if ! awk '
+  /name: Build and verify the released PRS-T1 binary/ { in_step = 1; next }
+  in_step && /- name:/ { in_step = 0 }
+  in_step && /run: \|/ { found = 1 }
+  END { exit !found }
+' "$workflow"; then
+  printf '%s\n' 'released binary build must use a block scalar run command' >&2
+  exit 1
+fi
 grep -Fq 'version: "${{ steps.build-pins.outputs.zig_version }}"' "$workflow"
 grep -Fq 'readonly RUST_TOOLCHAIN="1.98.1"' "$build_script"
 grep -Fq 'readonly ZIG_VERSION="0.16.0"' "$build_script"

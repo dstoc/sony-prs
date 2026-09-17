@@ -95,7 +95,8 @@ jobs:
         if: ${{ steps.release-tag.outputs.tag != '' }}
         env:
           PRS_T1_AGENT_REPO_ROOT: ${{ github.workspace }}
-        run: "$RUNNER_TEMP/prs-t1-agent-build.sh" build-and-verify
+        run: |
+          "$RUNNER_TEMP/prs-t1-agent-build.sh" build-and-verify
 
       - name: Upload the device executable to the GitHub Release
         if: ${{ steps.release-tag.outputs.tag != '' }}
