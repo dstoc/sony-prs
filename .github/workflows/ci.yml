@@ -71,6 +71,9 @@ jobs:
       - name: Test Cloudflare D1 migrations
         run: python3 tools/test-prs-cloudflare-migrations.py
 
+      - name: Test Cloudflare authorization state machine
+        run: python3 tools/test-prs-cloudflare-authorization.py
+
       - name: Build Cloudflare Worker WebAssembly
         run: cargo +"${{ steps.build-pins.outputs.rust_toolchain }}" build -p prs-cloudflare --target wasm32-unknown-unknown --release
 

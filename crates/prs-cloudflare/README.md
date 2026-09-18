@@ -125,4 +125,9 @@ root with:
 
 ```sh
 python3 tools/test-prs-cloudflare-migrations.py
+python3 tools/test-prs-cloudflare-authorization.py
 ```
+
+The second test runs the authorization transitions and D1 claim transaction
+shapes against Python's SQLite library. It does not require Wrangler or live
+Cloudflare bindings.

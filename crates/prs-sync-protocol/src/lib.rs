@@ -404,7 +404,7 @@ pub struct AuthorizationRequest {
     pub protocol_version: ProtocolVersion,
     pub request_id: AuthorizationRequestId,
     pub kind: AuthorizationKind,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credential_name: Option<SenderCredentialName>,
     pub approval_url: String,
     pub created_at: Timestamp,
@@ -738,6 +738,24 @@ mod tests {
         assert!(json.contains("laptop"));
         assert!(!json.contains("polling_secret"));
         assert!(!json.contains("secret-123"));
+    }
+
+    #[test]
+    fn legacy_reader_authorization_request_defaults_missing_credential_name() {
+        let request: AuthorizationRequest = serde_json::from_str(
+            r#"{
+                "protocol_version": {"major": 1, "minor": 0},
+                "request_id": "auth-legacy-reader",
+                "kind": "reader",
+                "approval_url": "https://reader.example/a/auth-legacy-reader",
+                "created_at": 100,
+                "expires_at": 160
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(request.kind, AuthorizationKind::Reader);
+        assert_eq!(request.credential_name, None);
     }
 
     #[test]
