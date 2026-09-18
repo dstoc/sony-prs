@@ -1,0 +1,13 @@
+[package]
+name = "prs-sync-bundle"
+version = "0.1.0"
+edition = "2021"
+description = "Safe streaming PRSync bundle generation and extraction"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[dependencies]
+prs-sync-protocol = { path = "../prs-sync-protocol" }
+serde_json = "1.0.151"
+tar = { version = "0.4.46", default-features = false }
+tempfile = "3.27.0"

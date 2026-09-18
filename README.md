@@ -31,6 +31,7 @@ but they are not the current project focus.
 | `crates/prs-markdown` | Hardware-independent Markdown parsing, layout, pagination, navigation, images, and rendering library used by the T1 reader and host harness. |
 | `crates/prs-sync-protocol` | Native- and Worker-compatible PRSync wire types and capabilities. |
 | `crates/prs-cloudflare` | Rust Cloudflare Worker scaffold with local D1/R2 bindings and migrations. |
+| `crates/prs-sync-bundle` | Streaming PRSync tar bundle generation, validation, and staged extraction. |
 | `tools/prs-t1-launcher` | Optional Android 2.2 Home entry point for the T1 runtime. |
 
 The SCSI layers contain no write, delete, update-mode, flash, or arbitrary

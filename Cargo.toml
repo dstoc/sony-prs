@@ -10,5 +10,6 @@ members = [
     "crates/prs-markdown",
     "crates/prs-sync-protocol",
     "crates/prs-cloudflare",
+    "crates/prs-sync-bundle",
 ]
 resolver = "2"
