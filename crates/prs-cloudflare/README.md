@@ -104,6 +104,43 @@ identifies objects that cleanup may inspect. A cleanup operation resolves
 inbox.current_bundle_id through bundles.object_key and keeps that object. All
 other objects under the prefix are abandoned replacement objects. The prefix
 remains on a current object because R2 has no rename operation.
+
+## Human approval application
+
+The Worker exposes the following human-facing routes:
+
+- `GET /a/<request-id>` renders the request context and the available action.
+- `POST /a/<request-id>/approve` approves the request.
+- `POST /a/<request-id>/deny` denies the request.
+
+The page shows the request kind, sender credential name when the request is a
+sender request, request ID, creation time, expiry time, and current state. It
+does not show a polling secret, a polling-secret hash, or a bearer credential.
+Approval and denial use separate POST actions. A request in a terminal state
+has no action buttons.
+
+### Trusted owner identity boundary
+
+The approval routes accept only a platform-authenticated principal. In a
+production build, the input is the `Cf-Access-Jwt-Assertion` header supplied by
+Cloudflare Access. Access must validate the JWT signature before the request
+reaches the Worker. The Worker then validates the JWT shape, requires the
+`RS256` algorithm, requires an HTTPS issuer and a subject, and compares the
+issuer and subject with the singleton row in `owner_identity`. If that row has
+an email, the JWT must contain the same email. The Worker does not accept an
+identity from the approval URL, query string, form body, cookie, or ordinary
+browser-provided identity header.
+
+Local integration tests can be built with the `local-test` Cargo feature. When
+`PRS_ENVIRONMENT=local`, the same boundary can parse
+`X-PRSync-Test-Owner: <issuer>|<subject>|<email>`. The production fetch path
+does not select this source, and a default production build does not compile
+the local test constructor.
+
+The approval URL contains only the public request ID. It is a lookup key, not
+an authentication factor. Owner authentication occurs before the Worker reads
+or changes the authorization request.
+
 ## Authorization boundary
 
 `src/authorization.rs` implements the D1-backed authorization state machine.

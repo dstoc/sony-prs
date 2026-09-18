@@ -5,6 +5,7 @@
 //! that returns a newly-created bearer token is a successful polling claim.
 //! Human approval receives an [`OwnerApprovalCapability`], not a client token.
 
+use crate::identity::TrustedPrincipal;
 use prs_sync_protocol::{
     AuthorizationKind, AuthorizationRequest, AuthorizationRequestId, AuthorizationStart,
     AuthorizationState, AuthorizationStatus, BearerToken, CredentialId, PollingSecret,
@@ -243,6 +244,18 @@ pub struct AuthorizationService {
     config: AuthorizationConfig,
 }
 
+/// Non-secret request data rendered by the human approval application.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApprovalRequestDetails {
+    pub request_id: AuthorizationRequestId,
+    pub kind: AuthorizationKind,
+    pub credential_name: Option<SenderCredentialName>,
+    pub approval_url: String,
+    pub created_at: Timestamp,
+    pub expires_at: Timestamp,
+    pub state: AuthorizationState,
+}
+
 impl AuthorizationService {
     pub fn new(database: D1Database, config: AuthorizationConfig) -> Self {
         Self { database, config }
@@ -274,6 +287,44 @@ impl AuthorizationService {
         self.expire_if_needed(request_id, now).await?;
         let row = self.load_request(request_id).await?;
         row.status()
+    }
+
+    /// Return the non-secret context needed by the approval page. This method
+    /// never returns the polling-secret hash, polling secret, or bearer token.
+    pub async fn approval_details(
+        &self,
+        request_id: &AuthorizationRequestId,
+        now: Timestamp,
+    ) -> Result<ApprovalRequestDetails> {
+        self.expire_if_needed(request_id, now).await?;
+        self.load_request(request_id).await?.approval_details()
+    }
+
+    /// Resolve a platform-authenticated principal against the one configured
+    /// owner identity. The resulting capability carries no bearer token and
+    /// cannot be constructed from a request ID or approval URL.
+    pub async fn authenticate_owner(
+        &self,
+        principal: &TrustedPrincipal,
+    ) -> Result<OwnerApprovalCapability> {
+        let row = self
+            .database
+            .prepare(
+                "SELECT issuer, subject, email\n                 FROM owner_identity\n                 WHERE singleton = 1",
+            )
+            .first::<OwnerIdentityRow>(None)
+            .await?
+            .ok_or(AuthorizationFailure::Unauthorized)?;
+        let email_matches = row
+            .email
+            .as_deref()
+            .map(|configured| principal.email() == Some(configured))
+            .unwrap_or(true);
+        if row.issuer != principal.issuer() || row.subject != principal.subject() || !email_matches
+        {
+            return Err(AuthorizationFailure::Unauthorized.into());
+        }
+        Ok(OwnerApprovalCapability::new())
     }
 
     /// Approve a sender request after the trusted owner boundary succeeds.
@@ -711,7 +762,7 @@ impl AuthorizationService {
         let args = [D1Type::Text(request_id.as_str())];
         self.database
             .prepare(
-                "SELECT request_id, kind, credential_name, polling_secret_hash, state, expires_at\n                 FROM authorization_requests\n                 WHERE request_id = ?1",
+                "SELECT request_id, kind, credential_name, polling_secret_hash, state,\n                        approval_url, created_at, expires_at\n                 FROM authorization_requests\n                 WHERE request_id = ?1",
             )
             .bind_refs(args.iter())?
             .first(None)
@@ -759,6 +810,8 @@ struct AuthorizationRow {
     credential_name: Option<String>,
     polling_secret_hash: Vec<u8>,
     state: String,
+    approval_url: String,
+    created_at: i32,
     expires_at: i32,
 }
 
@@ -789,6 +842,30 @@ impl AuthorizationRow {
             expires_at: Timestamp::new(self.expires_at as u64),
         })
     }
+
+    fn approval_details(&self) -> Result<ApprovalRequestDetails> {
+        Ok(ApprovalRequestDetails {
+            request_id: self.id()?,
+            kind: self.kind()?,
+            credential_name: self
+                .credential_name
+                .as_deref()
+                .map(SenderCredentialName::new)
+                .transpose()
+                .map_err(|error| worker::Error::RustError(error.to_string()))?,
+            approval_url: self.approval_url.clone(),
+            created_at: Timestamp::new(self.created_at as u64),
+            expires_at: Timestamp::new(self.expires_at as u64),
+            state: self.state()?.protocol(),
+        })
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct OwnerIdentityRow {
+    issuer: String,
+    subject: String,
+    email: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

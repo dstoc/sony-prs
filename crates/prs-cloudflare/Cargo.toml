@@ -9,6 +9,12 @@ publish = false
 [lib]
 crate-type = ["cdylib"]
 
+[features]
+default = []
+# Enables the local-only test principal constructor. Production builds do not
+# compile this seam, and the production fetch path never selects it.
+local-test = []
+
 [dependencies]
 prs-sync-bundle = { path = "../prs-sync-bundle" }
 prs-sync-protocol = { path = "../prs-sync-protocol" }

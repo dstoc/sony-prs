@@ -3,13 +3,16 @@
 //! The Worker owns all D1 and R2 access. The protocol crate remains a
 //! Cloudflare-independent collection of wire types.
 
+mod approval;
 mod authorization;
+mod identity;
 
 pub use authorization::{
-    AuthenticatedCapability, AuthorizationConfig, AuthorizationError, AuthorizationFailure,
-    AuthorizationResult, AuthorizationService, OwnerApprovalCapability, PendingPollingCapability,
-    ReaderAuthorization, SenderAuthorization,
+    ApprovalRequestDetails, AuthenticatedCapability, AuthorizationConfig, AuthorizationError,
+    AuthorizationFailure, AuthorizationResult, AuthorizationService, OwnerApprovalCapability,
+    PendingPollingCapability, ReaderAuthorization, SenderAuthorization,
 };
+pub use identity::{PrincipalBoundary, PrincipalError, TrustedPrincipal};
 use prs_sync_protocol::CURRENT_PROTOCOL_VERSION;
 use worker::*;
 
@@ -42,6 +45,18 @@ pub async fn fetch(request: Request, env: Env, _context: Context) -> Result<Resp
                 CURRENT_PROTOCOL_VERSION.major, CURRENT_PROTOCOL_VERSION.minor
             ))
         })
+        .get_async("/a/:request_id", |request, context| async move {
+            let request_id = context.param("request_id").cloned();
+            approval::show(request, context.env, request_id).await
+        })
+        .post_async("/a/:request_id/approve", |request, context| async move {
+            let request_id = context.param("request_id").cloned();
+            approval::approve(request, context.env, request_id).await
+        })
+        .post_async("/a/:request_id/deny", |request, context| async move {
+            let request_id = context.param("request_id").cloned();
+            approval::deny(request, context.env, request_id).await
+        })
         .run(request, env)
         .await
 }
@@ -54,5 +69,11 @@ mod tests {
     fn binding_names_are_stable() {
         assert_eq!(D1_BINDING, "DB");
         assert_eq!(R2_BINDING, "BUNDLES");
+    }
+
+    #[test]
+    fn approval_routes_are_separate_explicit_actions() {
+        assert_ne!("/a/:request_id/approve", "/a/:request_id/deny");
+        assert_ne!("/a/:request_id", "/a/:request_id/approve");
     }
 }

@@ -107,6 +107,20 @@ The Cloudflare Worker is the only component that directly accesses D1 or R2.
 
 Neither client receives Cloudflare account credentials or storage credentials.
 
+The human approval application is part of the Worker. It displays the
+non-secret context for sender and reader requests and provides separate approve
+and deny actions. The approval URL contains only the public request ID. It does
+not authenticate the human.
+
+The approval hostname is protected by Cloudflare Access. The Worker accepts a
+principal only from the `Cf-Access-Jwt-Assertion` header, after Access has
+validated the assertion at the edge. The Worker checks the assertion shape and
+matches its issuer, subject, and configured email against the singleton
+`owner_identity` row. It does not trust an identity from a URL, query
+parameter, form field, cookie, or ordinary browser header. Local integration
+tests may use the same principal boundary with the explicit `local-test`
+feature and a test-only owner header when `PRS_ENVIRONMENT=local`.
+
 ## Components
 
 ### `prs-sync-protocol`
