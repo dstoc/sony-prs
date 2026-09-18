@@ -119,6 +119,39 @@ does not show a polling secret, a polling-secret hash, or a bearer credential.
 Approval and denial use separate POST actions. A request in a terminal state
 has no action buttons.
 
+## Protocol API
+
+The machine API is under `/api/v1`. It uses the JSON types from
+`prs-sync-protocol`. Every JSON request includes a compatible
+`protocol_version`. Protocol API errors use the versioned `ApiError` envelope.
+
+Authorization requests do not require a bearer token. The client keeps the
+polling secret from the approval browser and submits it only to the polling
+route.
+
+| Method | Route | Access | Purpose |
+| --- | --- | --- | --- |
+| `POST` | `/api/v1/authorization/sender` | none | Create a named sender request. |
+| `POST` | `/api/v1/authorization/reader` | none | Create a reader request. |
+| `POST` | `/api/v1/authorization/poll` | polling secret | Claim the approved sender credential or reader session. |
+| `GET` | `/api/v1/authorization/<request-id>` | none | Read public authorization status. |
+| `PUT` | `/api/v1/sender/bundle` | sender bearer | Replace the current bundle. The request body is the validated tar archive. |
+| `DELETE` | `/api/v1/sender/bundle` | sender bearer | Clear the current bundle. |
+| `GET` | `/api/v1/sender/credentials` | sender bearer | List credential metadata only. |
+| `DELETE` | `/api/v1/sender/credentials/<name>` | sender bearer | Revoke the active credential with this name. |
+| `GET` | `/api/v1/reader/manifest` | reader bearer | Read the current manifest and revision. |
+| `GET` | `/api/v1/reader/bundle` | reader bearer | Stream the current bundle. |
+
+The reader manifest route accepts `If-Revision` and `If-None-Match` headers.
+When either condition matches, the response state is `not_modified`. The
+response also includes `X-PRSync-Revision` and, when a bundle exists, `ETag`.
+The sender routes never return the manifest or bundle. The reader routes do
+not accept sender mutations. Production protocol routes use bearer
+capabilities and do not require an interactive Access login.
+
+A successful sender push returns only publication metadata: revision, ETag,
+and encoded size. It does not return the manifest.
+
 ### Trusted owner identity boundary
 
 The approval routes accept only a platform-authenticated principal. In a

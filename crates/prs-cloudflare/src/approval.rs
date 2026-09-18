@@ -254,6 +254,7 @@ fn authorization_error_response(error: AuthorizationError) -> Result<Response> {
     if let Some(failure) = error.failure() {
         let status = match failure {
             AuthorizationFailure::NotFound => 404,
+            AuthorizationFailure::CredentialAlreadyExists => 409,
             AuthorizationFailure::Unauthorized => 403,
             AuthorizationFailure::Expired => 410,
             AuthorizationFailure::Denied

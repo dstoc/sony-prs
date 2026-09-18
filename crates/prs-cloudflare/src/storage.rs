@@ -9,9 +9,9 @@ use std::collections::HashMap;
 use std::io::Cursor;
 
 use prs_sync_bundle::validate;
-use prs_sync_protocol::{Manifest, MAX_BUNDLE_SIZE};
+use prs_sync_protocol::{EntityTag, InboxRevision, Manifest, MAX_BUNDLE_SIZE};
 use serde::Deserialize;
-use worker::{wasm_bindgen::JsCast, Bucket, D1Database, Error, Result};
+use worker::{wasm_bindgen::JsCast, Bucket, D1Database, Error, Object, Result};
 
 /// Candidate objects are private Worker storage. Cleanup can list this prefix
 /// and delete every object except the object referenced by the inbox.
@@ -98,6 +98,70 @@ impl BundleStore {
             self.bucket.delete(previous.object_key).await?;
         }
         Ok(())
+    }
+
+    /// Reads only the current inbox metadata. The returned object key is an
+    /// internal value used by the reader route to fetch the private R2 object.
+    pub(crate) async fn current(&self) -> Result<CurrentBundle> {
+        let inbox: CurrentInboxRow = self
+            .database
+            .prepare(
+                "SELECT revision, current_bundle_id
+                 FROM inbox
+                 WHERE singleton = 1",
+            )
+            .first(None)
+            .await?
+            .ok_or_else(|| Error::RustError("inbox singleton is missing".into()))?;
+        let revision = revision(inbox.revision)?;
+
+        let Some(bundle_id) = inbox.current_bundle_id else {
+            return Ok(CurrentBundle {
+                revision,
+                etag: None,
+                manifest: None,
+                object_key: None,
+                size_bytes: 0,
+            });
+        };
+
+        let bundle: BundleMetadataRow = self
+            .database
+            .prepare(
+                "SELECT object_key, etag, manifest_json, size_bytes
+                 FROM bundles
+                 WHERE bundle_id = ?",
+            )
+            .bind(&[worker::wasm_bindgen::JsValue::from_str(&bundle_id)])?
+            .first(None)
+            .await?
+            .ok_or_else(|| {
+                Error::RustError(format!(
+                    "inbox references missing bundle metadata for {bundle_id}"
+                ))
+            })?;
+        let manifest = serde_json::from_str(&bundle.manifest_json)
+            .map_err(|error| Error::RustError(format!("stored manifest is invalid: {error}")))?;
+        let etag =
+            EntityTag::new(bundle.etag).map_err(|error| Error::RustError(error.to_string()))?;
+
+        Ok(CurrentBundle {
+            revision,
+            etag: Some(etag),
+            manifest: Some(manifest),
+            object_key: Some(bundle.object_key),
+            size_bytes: u64::try_from(bundle.size_bytes)
+                .map_err(|_| Error::RustError("stored bundle size is negative".into()))?,
+        })
+    }
+
+    /// Opens the current bundle body for a reader. No route receives the R2
+    /// binding or an object key supplied by the caller.
+    pub(crate) async fn current_object(&self, current: &CurrentBundle) -> Result<Option<Object>> {
+        let Some(object_key) = current.object_key.clone() else {
+            return Ok(None);
+        };
+        self.bucket.get(object_key).execute().await
     }
 
     async fn current_bundle(&self) -> Result<Option<StoredBundle>> {
@@ -189,6 +253,16 @@ pub(crate) struct PublishedBundle {
     pub(crate) size_bytes: u64,
 }
 
+/// Current inbox metadata and the private key for its R2 object.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CurrentBundle {
+    pub(crate) revision: InboxRevision,
+    pub(crate) etag: Option<EntityTag>,
+    pub(crate) manifest: Option<Manifest>,
+    pub(crate) object_key: Option<String>,
+    pub(crate) size_bytes: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct StoredBundle {
     object_key: String,
@@ -200,12 +274,32 @@ struct InboxRow {
 }
 
 #[derive(Debug, Deserialize)]
+struct CurrentInboxRow {
+    revision: i32,
+    current_bundle_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BundleMetadataRow {
+    object_key: String,
+    etag: String,
+    manifest_json: String,
+    size_bytes: i32,
+}
+
+#[derive(Debug, Deserialize)]
 struct BundleRow {
     object_key: String,
 }
 
 fn number(value: u64) -> worker::wasm_bindgen::JsValue {
     worker::wasm_bindgen::JsValue::from_f64(value as f64)
+}
+
+fn revision(value: i32) -> Result<InboxRevision> {
+    Ok(InboxRevision::new(u64::try_from(value).map_err(|_| {
+        Error::RustError("inbox revision is negative".into())
+    })?))
 }
 
 fn candidate_id() -> Result<String> {

@@ -148,6 +148,7 @@ pub enum AuthenticatedCapability {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthorizationFailure {
     NotFound,
+    CredentialAlreadyExists,
     WrongAuthorizationKind,
     InvalidPollingSecret,
     Expired,
@@ -161,6 +162,7 @@ impl fmt::Display for AuthorizationFailure {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
             Self::NotFound => "authorization request or credential not found",
+            Self::CredentialAlreadyExists => "an active sender credential already uses this name",
             Self::WrongAuthorizationKind => "authorization kind does not match the operation",
             Self::InvalidPollingSecret => "invalid polling secret",
             Self::Expired => "authorization request has expired",
@@ -268,6 +270,21 @@ impl AuthorizationService {
         credential_name: &SenderCredentialName,
         now: Timestamp,
     ) -> Result<AuthorizationStart> {
+        let args = [D1Type::Text(credential_name.as_str())];
+        if self
+            .database
+            .prepare(
+                "SELECT credential_id
+                 FROM sender_credentials
+                 WHERE name = ?1 AND revoked_at IS NULL",
+            )
+            .bind_refs(args.iter())?
+            .first::<CredentialRow>(None)
+            .await?
+            .is_some()
+        {
+            return Err(AuthorizationFailure::CredentialAlreadyExists.into());
+        }
         self.create(AuthorizationKind::Sender, Some(credential_name), now)
             .await
     }
@@ -472,6 +489,47 @@ impl AuthorizationService {
             session_id: row.session_id()?,
             scope: reader_scope(),
         })
+    }
+
+    /// List sender credential metadata without selecting bearer-token hashes.
+    /// Revoked credentials remain visible so callers can distinguish a
+    /// revoked name from a name that has never existed.
+    pub async fn list_sender_credentials(&self) -> Result<Vec<SenderCredentialMetadata>> {
+        let rows = self
+            .database
+            .prepare(
+                "SELECT credential_id, name, created_at, last_used_at, revoked_at
+                 FROM sender_credentials
+                 ORDER BY created_at ASC, credential_id ASC",
+            )
+            .all()
+            .await?
+            .results::<CredentialMetadataRow>()?;
+        rows.into_iter()
+            .map(CredentialMetadataRow::metadata)
+            .collect()
+    }
+
+    /// Revoke the active credential with the supplied name. The bearer-token
+    /// hash is never returned to the route layer or the client.
+    pub async fn revoke_sender_credential(
+        &self,
+        name: &SenderCredentialName,
+        now: Timestamp,
+    ) -> Result<bool> {
+        let now = database_timestamp(now)?;
+        let args = [D1Type::Integer(now), D1Type::Text(name.as_str())];
+        let result = self
+            .database
+            .prepare(
+                "UPDATE sender_credentials
+                 SET revoked_at = ?1
+                 WHERE name = ?2 AND revoked_at IS NULL",
+            )
+            .bind_refs(args.iter())?
+            .run()
+            .await?;
+        changed_rows(&result).map(|changed| changed == 1)
     }
 
     async fn create(
@@ -881,6 +939,30 @@ impl CredentialRow {
 }
 
 #[derive(Debug, Deserialize)]
+struct CredentialMetadataRow {
+    credential_id: String,
+    name: String,
+    created_at: i32,
+    last_used_at: Option<i32>,
+    revoked_at: Option<i32>,
+}
+
+impl CredentialMetadataRow {
+    fn metadata(self) -> Result<SenderCredentialMetadata> {
+        Ok(SenderCredentialMetadata {
+            credential_id: CredentialId::new(self.credential_id)
+                .map_err(|error| worker::Error::RustError(error.to_string()))?,
+            name: SenderCredentialName::new(self.name)
+                .map_err(|error| worker::Error::RustError(error.to_string()))?,
+            created_at: timestamp(self.created_at)?,
+            last_used_at: self.last_used_at.map(timestamp).transpose()?,
+            revoked_at: self.revoked_at.map(timestamp).transpose()?,
+            scope: sender_scope(),
+        })
+    }
+}
+
+#[derive(Debug, Deserialize)]
 struct SessionRow {
     session_id: String,
 }
@@ -959,6 +1041,12 @@ fn changed_rows(result: &D1Result) -> Result<usize> {
 fn database_timestamp(timestamp: Timestamp) -> Result<i32> {
     Ok(i32::try_from(timestamp.value())
         .map_err(|_| worker::Error::RustError("timestamp does not fit D1 INTEGER".to_owned()))?)
+}
+
+fn timestamp(value: i32) -> Result<Timestamp> {
+    Ok(Timestamp::new(u64::try_from(value).map_err(|_| {
+        worker::Error::RustError("database timestamp is negative".to_owned())
+    })?))
 }
 
 fn add_seconds(timestamp: Timestamp, seconds: u64) -> Result<Timestamp> {
