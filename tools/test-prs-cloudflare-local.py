@@ -10,6 +10,7 @@ import shutil
 import signal
 import socket
 import subprocess
+import sys
 import tarfile
 import tempfile
 import time
@@ -595,4 +596,9 @@ def stop_process(process: subprocess.Popen[bytes]) -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as error:
+        message = str(error).replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+        print(f"::error title=Local Worker end-to-end test::{message}", file=sys.stderr)
+        raise
