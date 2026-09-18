@@ -110,9 +110,11 @@ adb shell '/data/local/tmp/prs-t1-agent capture > /data/local/tmp/t1-screen.pgm'
 adb pull /data/local/tmp/t1-screen.pgm ./t1-screen.pgm
 ```
 
-The native UI's status bar opens a details page. The home reading surface
-renders the configured development Markdown document through the shared
-`prs-markdown` reader; see
+The native UI's status bar opens a details page. The Details / Settings page
+includes a Display test action that opens the full-screen grayscale calibration
+pattern. Use a short MENU press to return to Details / Settings. The home
+reading surface renders the configured development Markdown document through
+the shared `prs-markdown` reader; see
 [`crates/prs-t1-agent/README.md`](crates/prs-t1-agent/README.md) for staging and
 environment overrides. The details page groups the device
 snapshot under Power, Connectivity, System, Storage, and Input and provides

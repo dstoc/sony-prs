@@ -318,6 +318,18 @@ fn redraw(
         plan.force_refresh(),
         plan.is_cleanup(),
     );
+    if state.page == UiPage::DisplayTest {
+        let result = display::draw_interactive_display_test(
+            display,
+            plan.waveform(),
+            plan.wait_for_completion(),
+            plan.force_refresh(),
+        );
+        if result.is_ok() {
+            refresh_policy.record_success(reason, plan);
+        }
+        return result;
+    }
     if state.page == UiPage::Home {
         let status_line = lines.first().map(String::as_str).unwrap_or_default();
         let result = markdown_reader.draw(
@@ -584,6 +596,9 @@ fn screen_lines(state: &UiState, wake_lock_held: bool) -> Vec<String> {
             "Tap status for details".into(),
         ];
     }
+    if state.page == UiPage::DisplayTest {
+        return vec![header, "Display Test".into(), state.message.clone()];
+    }
 
     let mut lines = vec![header, "Details / Settings".into()];
     lines.extend([
@@ -739,8 +754,8 @@ fn sleep_cycle(
     )
     .map_err(|error| display_error("pre-suspend redraw", error))?;
     let standby_lines = screen_lines(state, wake_lock.is_held());
-    let standby = if state.page == UiPage::Home {
-        markdown_reader.render_frame(
+    let standby = match state.page {
+        UiPage::Home => markdown_reader.render_frame(
             standby_lines
                 .first()
                 .map(String::as_str)
@@ -748,13 +763,16 @@ fn sleep_cycle(
             &state.message,
             display.width(),
             display.height(),
-        )?
-    } else {
-        display::standby_screen(
+        )?,
+        UiPage::DisplayTest => display::render_interactive_display_test(
+            display.width() as usize,
+            display.height() as usize,
+        ),
+        UiPage::Details => display::standby_screen(
             &standby_lines,
             display.width() as usize,
             display.height() as usize,
-        )
+        ),
     };
     display
         .write_standby(&standby)
@@ -1182,6 +1200,7 @@ enum ReaderOperation {
 enum UiPage {
     Home,
     Details,
+    DisplayTest,
 }
 
 struct UiState {
@@ -1379,6 +1398,9 @@ impl UiState {
     }
 
     fn touch_release_dirty(&self) -> DirtyArea {
+        if self.page == UiPage::DisplayTest {
+            return DirtyArea::Full;
+        }
         if self.page == UiPage::Home && self.touch_y >= display::STATUS_BAR_HEIGHT as i32 {
             // The reader will refine this into a page-turn tone or a retained
             // interaction message. Keep the status bar out of the initial
@@ -1441,6 +1463,10 @@ impl UiState {
                 self.menu_hold_triggered = false;
                 if !already_triggered && duration >= MENU_HOLD_MICROS {
                     (Some(self.trigger_menu_redraw()), PowerAction::None)
+                } else if !already_triggered && self.page == UiPage::DisplayTest {
+                    self.page = UiPage::Details;
+                    self.message = "Returned to Details / Settings".into();
+                    (Some(DirtyArea::Full), PowerAction::None)
                 } else if !already_triggered && self.page == UiPage::Home {
                     self.reader_operation = Some(ReaderOperation::Back);
                     self.message = "Reader back".into();
@@ -1466,15 +1492,24 @@ impl UiState {
     }
 
     fn activate_tap(&mut self) -> PowerAction {
+        if self.page == UiPage::DisplayTest {
+            return PowerAction::None;
+        }
         let y = self.touch_y;
         if y < display::STATUS_BAR_HEIGHT as i32 {
             self.page = match self.page {
                 UiPage::Home => UiPage::Details,
                 UiPage::Details => UiPage::Home,
+                UiPage::DisplayTest => {
+                    unreachable!("display-test taps return before the status bar")
+                }
             };
             self.message = match self.page {
                 UiPage::Home => "Returned to reading".into(),
                 UiPage::Details => "Details open".into(),
+                UiPage::DisplayTest => {
+                    unreachable!("display-test taps return before the status bar")
+                }
             };
             return PowerAction::None;
         }
@@ -1486,6 +1521,14 @@ impl UiState {
             && self.touch_x
                 < (display::SCREEN_WIDTH.saturating_sub(display::DETAILS_ACTION_MARGIN)) as i32;
         if !within_action_x {
+            return PowerAction::None;
+        }
+
+        let within_display_test_row = y >= display::DETAILS_DISPLAY_TEST_TOP as i32
+            && y < (display::DETAILS_DISPLAY_TEST_TOP + display::DETAILS_ACTION_HEIGHT) as i32;
+        if within_display_test_row {
+            self.page = UiPage::DisplayTest;
+            self.message = "Display test open".into();
             return PowerAction::None;
         }
 
@@ -1766,6 +1809,35 @@ mod tests {
         let (_, action) = state.observe(InputSourceKind::Touch, event(BTN_TOUCH, 0, 4_000_000));
         assert_eq!(action, super::PowerAction::None);
         assert_eq!(state.page, UiPage::Details);
+    }
+
+    #[test]
+    fn details_display_test_tap_opens_calibration_screen() {
+        let mut state = UiState::new();
+        state.page = UiPage::Details;
+        state.touch_down = true;
+        state.touch_x = 100;
+        state.touch_y = super::display::DETAILS_DISPLAY_TEST_TOP as i32 + 10;
+
+        let (dirty, action) = state.observe(InputSourceKind::Touch, event(BTN_TOUCH, 0, 1_000_000));
+
+        assert_eq!(action, super::PowerAction::None);
+        assert_eq!(dirty, Some(DirtyArea::Full));
+        assert_eq!(state.page, UiPage::DisplayTest);
+    }
+
+    #[test]
+    fn short_menu_press_returns_from_display_test_to_details() {
+        let mut state = UiState::new();
+        state.page = UiPage::DisplayTest;
+        state.observe(InputSourceKind::Keys, event(KEY_MENU, 1, 1_000_000));
+
+        let (dirty, action) = state.observe(InputSourceKind::Keys, event(KEY_MENU, 0, 1_100_000));
+
+        assert_eq!(action, super::PowerAction::None);
+        assert_eq!(dirty, Some(DirtyArea::Full));
+        assert_eq!(state.page, UiPage::Details);
+        assert_eq!(state.take_reader_operation(), None);
     }
 
     #[test]

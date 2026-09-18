@@ -30,10 +30,11 @@ pub const CONTENT_TOP: usize = 76;
 pub const CONTENT_LINE_STEP: usize = 25;
 pub const DETAILS_LINE_STEP: usize = 21;
 pub const DETAILS_ACTION_MARGIN: usize = 24;
-pub const DETAILS_REBOOT_TOP: usize = 616;
-pub const DETAILS_POWER_OFF_TOP: usize = 674;
-pub const DETAILS_BACK_TOP: usize = 732;
-pub const DETAILS_ACTION_HEIGHT: usize = 48;
+pub const DETAILS_DISPLAY_TEST_TOP: usize = 620;
+pub const DETAILS_REBOOT_TOP: usize = 664;
+pub const DETAILS_POWER_OFF_TOP: usize = 708;
+pub const DETAILS_BACK_TOP: usize = 752;
+pub const DETAILS_ACTION_HEIGHT: usize = 40;
 pub const SCREEN_WIDTH: usize = 600;
 
 const STATUS_BAR_SIDE_MARGIN: usize = 16;
@@ -74,20 +75,11 @@ pub fn display_test_to(
     waveform: WaveformMode,
 ) -> std::io::Result<()> {
     let mut display = NativeDisplay::open(path)?;
-    let width = display.width();
-    let height = display.height();
-    let frame = render_display_test(width as usize, height as usize);
-    display.draw_frame_with_waveform(
-        &frame,
-        DisplayRegion::full(width, height),
-        waveform,
-        true,
-        true,
-    )?;
+    draw_display_test(&mut display, waveform, true, true)?;
     eprintln!(
         "display-test: pattern={}x{} waveform={} wait_seconds={}",
-        width,
-        height,
+        display.width(),
+        display.height(),
         waveform.label(),
         wait_after_update.as_secs(),
     );
@@ -96,16 +88,65 @@ pub fn display_test_to(
     Ok(())
 }
 
+/// Draw the full-screen calibration pattern into an already-open display.
+pub fn draw_display_test(
+    display: &mut NativeDisplay,
+    waveform: WaveformMode,
+    wait_for_completion: bool,
+    force_refresh: bool,
+) -> std::io::Result<()> {
+    draw_display_test_frame(display, waveform, wait_for_completion, force_refresh, false)
+}
+
+/// Draw the interactive calibration pattern used by the native shell.
+pub(crate) fn draw_interactive_display_test(
+    display: &mut NativeDisplay,
+    waveform: WaveformMode,
+    wait_for_completion: bool,
+    force_refresh: bool,
+) -> std::io::Result<()> {
+    draw_display_test_frame(display, waveform, wait_for_completion, force_refresh, true)
+}
+
+fn draw_display_test_frame(
+    display: &mut NativeDisplay,
+    waveform: WaveformMode,
+    wait_for_completion: bool,
+    force_refresh: bool,
+    show_return_hint: bool,
+) -> std::io::Result<()> {
+    let frame = if show_return_hint {
+        render_interactive_display_test(display.width() as usize, display.height() as usize)
+    } else {
+        render_display_test(display.width() as usize, display.height() as usize)
+    };
+    display.draw_frame_with_waveform(
+        &frame,
+        DisplayRegion::full(display.width(), display.height()),
+        waveform,
+        wait_for_completion,
+        force_refresh,
+    )
+}
+
 /// Build the packed RGB565 frame used by `display-test`.
 pub fn render_display_test(width: usize, height: usize) -> Vec<u8> {
+    render_display_test_frame(width, height, false)
+}
+
+pub(crate) fn render_interactive_display_test(width: usize, height: usize) -> Vec<u8> {
+    render_display_test_frame(width, height, true)
+}
+
+fn render_display_test_frame(width: usize, height: usize, show_return_hint: bool) -> Vec<u8> {
     let frame_len = width.saturating_mul(height).saturating_mul(2);
     let mut frame = vec![0u8; frame_len];
     let mut canvas = DisplayCanvas::new(&mut frame, width, height, width.saturating_mul(2), 0, 0);
-    draw_display_test_contents(&mut canvas);
+    draw_display_test_contents(&mut canvas, show_return_hint);
     frame
 }
 
-fn draw_display_test_contents(canvas: &mut DisplayCanvas<'_>) {
+fn draw_display_test_contents(canvas: &mut DisplayCanvas<'_>, show_return_hint: bool) {
     let width = canvas.width();
     let margin = width.min(16);
 
@@ -220,6 +261,18 @@ fn draw_display_test_contents(canvas: &mut DisplayCanvas<'_>) {
         &FONT_8X13,
         Rgb565::BLACK,
     );
+    if show_return_hint {
+        draw_text_font(
+            canvas,
+            margin,
+            DISPLAY_TEST_RAMP_TOP
+                .saturating_add(DISPLAY_TEST_RAMP_HEIGHT)
+                .saturating_add(30),
+            "Short MENU press returns to Details / Settings.",
+            &FONT_8X13,
+            Rgb565::BLACK,
+        );
+    }
 }
 
 fn draw_contrast_swatches(canvas: &mut DisplayCanvas<'_>, margin: usize) {
@@ -540,6 +593,7 @@ fn draw_details_actions(canvas: &mut DisplayCanvas<'_>) {
     let width = canvas.width();
     let button_width = width.saturating_sub(margin * 2);
     for (top, label) in [
+        (DETAILS_DISPLAY_TEST_TOP, "Display test"),
         (DETAILS_REBOOT_TOP, "Reboot"),
         (DETAILS_POWER_OFF_TOP, "Power off"),
         (DETAILS_BACK_TOP, "Back to reading"),

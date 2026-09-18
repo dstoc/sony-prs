@@ -152,6 +152,10 @@ bar, the home page renders the current paginated Markdown document. The page
 viewport starts at y=76, leaving a small separation below the bar and a bottom
 margin for the reader.
 
+Tap the status bar to open Details / Settings. Tap Display test to show the
+full-screen grayscale calibration pattern. Press MENU briefly to return to
+Details / Settings. A long MENU press still requests a full EPDC redraw.
+
 ### Development Markdown document
 
 The integration opens one configured file rather than providing a document
