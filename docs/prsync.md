@@ -4,13 +4,13 @@ PRSync is a document-delivery system for the Sony PRS-T1 Markdown reader.
 
 Its purpose is to make the PRS-T1 behave like a distraction-free, offline-first Markdown appliance:
 
-1. Send Markdown documents from a trusted computer.
-2. Store them in a small hosted inbox.
+1. Send a Markdown bundle from a trusted computer.
+2. Store the current bundle in a small hosted inbox.
 3. Boot the PRS-T1.
 4. Authorize that boot from another trusted device by scanning a QR code.
-5. Download the current document library.
+5. Download the current bundle.
 6. Read entirely offline.
-7. Lose all downloaded documents and reader credentials when the PRS-T1 reboots.
+7. Lose the downloaded bundle and reader credentials when the PRS-T1 reboots.
 
 PRSync is intentionally not a general filesystem synchronization system, cloud drive, feed reader, or continuously connected application.
 
@@ -18,8 +18,8 @@ PRSync is intentionally not a general filesystem synchronization system, cloud d
 
 PRSync should provide:
 
-- a simple CLI for publishing Markdown documents and their images;
-- a small hosted inbox;
+- a simple CLI for publishing a Markdown bundle and its images;
+- a small hosted inbox containing one current bundle;
 - secure human authorization of a PRS-T1 after each boot;
 - no persistent reader credential;
 - no persistent plaintext synchronized documents on the reader;
@@ -46,13 +46,23 @@ The first version does not need:
 - permanent reader credentials;
 - persistent plaintext document storage on the reader;
 - account management on the PRS-T1;
-- multi-user sharing;
+- multi-user sharing or delegated approval;
 - general cloud storage;
 - real-time synchronization;
 - remote deletion of files from an offline reader;
+- Wi-Fi credential provisioning or network configuration on the PRS-T1;
 - protection of documents while an already-authorized reader remains powered on.
 
 These can be reconsidered later without being requirements for the initial system.
+
+## User model
+
+The initial PRSync deployment is single-user.
+
+One human owner controls one hosted inbox and is the only human authorized to
+approve sender and reader authorization requests. The owner may use multiple
+trusted sender computers and may authorize multiple reader boots, but the
+inbox is not shared with other people and approval authority is not delegated.
 
 ## System overview
 
@@ -89,7 +99,7 @@ PRSync consists of five main parts:
     |   authorization client   |
     |   QR UI                  |
     |   synchronization        |
-    |   tmpfs library          |
+    |   tmpfs bundle           |
     |   Markdown reader        |
     +--------------------------+
 
@@ -105,10 +115,7 @@ A shared Rust crate defines the wire protocol and common identifiers.
 
 It should contain protocol-level types such as:
 
-- document identifiers;
-- document versions;
 - manifests;
-- hashes;
 - authorization requests;
 - authorization status;
 - session information;
@@ -127,14 +134,41 @@ It runs on a normal computer and is allowed to modify the hosted inbox.
 
 Expected commands include:
 
-    prs-send login
-    prs-send logout
-    prs-send push document.md
-    prs-send list
+    prs-send credentials create --name NAME
+    prs-send push ENTRYPOINT [FILE ...]
+    prs-send clear
+    prs-send credentials list
+    prs-send credentials revoke NAME
 
-A sender credential may persist on this computer.
+`prs-send` does not persist sender credentials automatically. The user may
+store the printed credential externally, such as in the
+`PRSYNC_SENDER_TOKEN` environment variable, for later commands.
+
+The owner may use multiple trusted sender computers. Each installation may hold
+its own named sender credential, but all sender credentials belong to the same
+owner. `--name` is mandatory for `prs-send credentials create`; the owner
+supplies a name for each credential, such as `laptop` or `desktop`. Names must
+be unique among active credentials, but may be reused after a credential is
+revoked. The command must fail if the name is omitted or already belongs to an
+active credential.
 
 That credential is specific to PRSync. It must not be a Cloudflare API token, R2 credential, D1 credential, or other infrastructure credential.
+
+`prs-send push` accepts an explicit list of files. The first path must be a
+Markdown file and becomes the bundle's default entry point. Every subsequent
+path is included in the bundle as an additional Markdown file or resource.
+The CLI computes the common parent directory of the supplied files and strips
+that directory from each archive path while preserving the remaining directory
+structure. For example, supplying `docs/index.md`, `docs/chapters/one.md`, and
+`docs/images/diagram.png` produces `index.md`, `chapters/one.md`, and
+`images/diagram.png` in the bundle. The first entry point is recorded using its
+resulting bundle path.
+
+The CLI generates `manifest.json`; it is not supplied as one of the input files.
+
+The CLI does not discover or include unlisted files, and does not validate
+whether links resolve to supplied files. Absolute archive paths, `..`
+traversal, duplicate bundle paths, and other unsafe paths must be rejected.
 
 ### Cloudflare Worker
 
@@ -145,7 +179,7 @@ Responsibilities include:
 - sender authorization;
 - reader authorization;
 - human approval;
-- document upload;
+- bundle upload;
 - inbox manifests;
 - document download;
 - authentication and authorization;
@@ -160,7 +194,7 @@ D1 stores small structured state.
 
 Expected state includes:
 
-- document metadata;
+- current bundle metadata;
 - inbox revisions;
 - pending authorization requests;
 - hashed authorization secrets;
@@ -168,17 +202,18 @@ Expected state includes:
 - sender credentials;
 - sender credential revocation state.
 
-D1 does not store document bundles.
+D1 does not store bundle contents.
 
 ### R2
 
-R2 stores immutable document bundles.
+R2 stores immutable bundle objects.
 
 The R2 bucket remains private.
 
 All object access occurs through the Worker.
 
-A reader must only be able to retrieve objects referenced by the inbox visible to its current session.
+A reader must only be able to retrieve the bundle object referenced by the inbox
+visible to its current session.
 
 ### PRS-T1 synchronization client
 
@@ -191,8 +226,8 @@ Its responsibilities include:
 - QR generation;
 - waiting for authorization;
 - fetching the inbox manifest;
-- downloading bundles;
-- validating hashes and limits;
+- downloading the current bundle;
+- validating paths, sizes, and limits;
 - extracting documents into temporary storage.
 
 It should remain separate from Markdown parsing and rendering.
@@ -224,6 +259,11 @@ This boundary is intentional:
 
 A synchronized document is an immutable bundle.
 
+The bundle is represented as an uncompressed tar archive. It contains a
+`manifest.json` generated by `prs-send` at its root, followed by the entry
+point and explicitly supplied files. The tar archive is extracted as a stream
+so the PRS-T1 does not need random access to the complete bundle.
+
 A bundle has one Markdown entry point and may contain additional resources.
 
 For example:
@@ -239,12 +279,8 @@ For example:
 The bundle manifest identifies:
 
 - bundle format version;
-- document identifier;
-- document version;
-- title;
 - Markdown entry point;
 - contained files;
-- content hashes;
 - sizes.
 
 Relative links within the bundle should continue to work using normal filesystem semantics.
@@ -263,31 +299,50 @@ Bundle validation must prevent:
 
 - absolute paths;
 - `..` path traversal;
+- symlinks, hard links, device files, FIFOs, and other special entries;
 - duplicate output paths;
 - writing outside the destination directory;
-- oversized individual files;
 - oversized archives;
 - excessive extracted size;
-- hash mismatches;
 - unsupported bundle versions.
 
 Extraction should be bounded and preferably streaming.
 
 The PRS-T1 must not need to hold an entire bundle in RAM before extracting it.
 
+Production HTTPS provides transport integrity. The initial bundle format relies
+on format, path, size, and limit validation rather than content hashes.
+
 ## Inbox model
 
-The hosted service exposes a logical inbox.
-
-The inbox is a set of currently published document versions plus a monotonically changing revision identifier.
+The hosted service exposes a logical inbox containing at most one currently
+published bundle plus a monotonically changing revision identifier.
 
 A reader can request the manifest and determine whether anything has changed.
 
 The protocol should support conditional requests using a revision or HTTP ETag so an unchanged inbox is inexpensive to check.
 
-Publishing a new version of a document creates a new immutable bundle and changes the manifest.
+Publishing a new bundle first deletes the current R2 object and clears the
+current inbox reference. The new bundle is then stored and becomes the current
+inbox object. If storing the replacement fails, the inbox remains empty and a
+later push is required to repopulate it.
 
-Storage objects are immutable even when a logical document is replaced.
+The sender CLI validates the bundle before upload, but the Worker validates the
+bundle only after the current object has been deleted. An invalid upload is
+therefore rejected and leaves the inbox empty.
+
+Concurrent pushes require no conflict handling. The last push to successfully
+publish a replacement wins.
+
+The sender may also clear the current bundle, leaving the inbox empty.
+
+Storage objects are immutable while they are current. A replaced object is
+deleted before the replacement is stored. Cleanup of abandoned replacement
+objects is a separate storage-retention concern.
+
+A reader holding a manifest for a deleted object may fail to retrieve it. The
+reader treats this as a failed synchronization, keeps its existing local
+bundle, and fetches a fresh manifest on the next attempt.
 
 ## Sender authorization
 
@@ -299,14 +354,43 @@ The user opens the URL in a normal browser and authenticates to the human-facing
 
 After approval, the CLI receives a sender-scoped credential.
 
+The CLI retains a high-entropy polling secret in memory while waiting for
+approval. After the human approves the request, the CLI polls with that secret
+and claims the sender credential. The service returns the credential only to a
+successful polling request and marks the authorization request consumed.
+
+The CLI prints the resulting sender bearer credential once to standard output
+and does not persist it. Progress and other non-secret status messages must be
+written to standard error so the credential can be captured separately.
+
 The sender credential:
 
-- may be persisted on the trusted computer;
-- may upload documents;
-- may list the inbox;
-- may replace documents;
-- may remove documents from the inbox;
+- may upload a bundle;
+- may replace the current bundle;
+- may clear the inbox;
+- may list named sender credentials and their metadata;
+- may revoke a named sender credential;
 - may be revoked.
+
+Sender-credential management is metadata-only. A sender credential is
+write-only with respect to bundle content: it must not be able to fetch the
+current manifest, current bundle, or historical bundle objects. An upload
+response may acknowledge success and return upload metadata, but must not
+return hosted content.
+
+Any active sender credential may list and revoke any sender credential. This is
+an owner-level management capability within the single-user deployment, but it
+does not grant access to bundle content.
+
+Sender credentials do not expire automatically. They remain valid until
+explicitly revoked.
+
+Credential listing returns names and management metadata, such as credential
+identifier, creation time, last-use time, and revocation state. It never
+returns bearer credentials. A credential name is immutable after creation, and
+the stable credential identifier distinguishes historical credentials when a
+name is reused. Revocation takes effect for subsequent requests,
+including requests made with the revoked credential itself.
 
 The sender credential must not grant reader authorization or infrastructure access.
 
@@ -347,9 +431,9 @@ The intended flow is:
          v
     PRS-T1 polling request succeeds
          |
-         | receive short-lived read-only session
+         | receive read-only session for this boot
          v
-    synchronize documents
+    synchronize the current bundle
 
 The reader stores the resulting session credential only in RAM.
 
@@ -379,7 +463,7 @@ Anyone may be able to see or photograph this URL.
 
 That must not be sufficient to approve the request.
 
-Approval requires authentication as an authorized human.
+Approval requires authentication as the configured human owner.
 
 The PRS-T1 separately retains a high-entropy polling secret that is required to claim the approved session.
 
@@ -395,13 +479,18 @@ for protocol endpoints used by `prs-send` and the PRS-T1, and:
 
     reader.example.com
 
-for authenticated human approval.
+for authenticated human approval. The human-facing hostname is protected by
+Cloudflare Access for both sender and reader authorization.
 
 The protocol hostname cannot require interactive Cloudflare Access authentication because unauthenticated clients must be able to initiate authorization.
 
-The human-facing hostname can be protected by Cloudflare Access.
+Cloudflare Access authenticates the human owner. The Worker must validate the
+authenticated Access identity and allow approval only for the configured owner
+identity. Access authentication does not replace the PRSync authorization
+request, polling-secret, or client-credential checks.
 
-Only explicitly allowed identities should be permitted to approve authorization requests.
+Only the configured owner identity should be permitted to approve authorization
+requests.
 
 ## Reader session scope
 
@@ -410,44 +499,47 @@ A reader session is read-only.
 It may:
 
 - fetch the current inbox manifest;
-- retrieve document bundles referenced by that manifest.
+- retrieve the current bundle referenced by that manifest.
 
 It may not:
 
-- upload documents;
-- replace documents;
-- delete documents;
+- upload a bundle;
+- replace the current bundle;
+- clear the inbox;
 - create sender credentials;
 - administer the service.
 
-The session should expire after a bounded period.
-
-Expiration does not need to stop offline reading of documents already present in tmpfs.
+The reader session remains valid for the lifetime of the powered-on boot
+session. It does not require periodic reauthorization while the reader remains
+powered on. Rebooting the reader destroys the session credential in RAM and
+requires fresh authorization.
 
 ## Temporary document storage
 
-Synchronized documents are stored in a RAM-backed filesystem on the PRS-T1.
+The current bundle is stored in a RAM-backed filesystem on the PRS-T1.
 
 For example:
 
     /mnt/prs-reader/
         library/
-            <document-id>/
-                index.md
-                images/
-                    ...
+            index.md
+            chapters/
+                details.md
+            images/
+                diagram.png
 
 The exact mount path is an implementation detail.
 
-The temporary filesystem must have an explicit size limit.
+The temporary filesystem must have an explicit device-specific size limit.
 
 Synchronization must also enforce:
 
-- a maximum downloaded bundle size;
-- a maximum extracted bundle size;
-- a maximum total library size.
+- a maximum downloaded bundle size of 16 MiB;
 
-Documents disappear when the reader reboots.
+The 16 MiB bundle limit is a fixed protocol constant enforced by the Worker and
+PRS-T1 client. The reader independently enforces its configured tmpfs capacity.
+
+The bundle disappears when the reader reboots.
 
 If the reader application itself restarts without an OS reboot, the mounted library may remain available.
 
@@ -465,14 +557,34 @@ The expected flow is:
     synchronize
         |
         v
-    optionally disable Wi-Fi
+    disable Wi-Fi
         |
         v
     read locally
 
+Wi-Fi is enabled only for a synchronization attempt, including any authorization
+needed for that attempt, then disabled again when the attempt finishes,
+including after a failure. Normal reading and waiting between synchronization
+triggers occur with Wi-Fi off.
+
 The reader should not maintain an idle WebSocket, MQTT connection, or other persistent network channel.
 
 The service is a document-delivery mechanism, not part of the active reading path.
+
+## Synchronization triggers
+
+The reader checks for the current bundle at explicit times:
+
+- during boot, after reader authorization;
+- asynchronously after the device has been idle for a configured period
+  (15 minutes by default);
+- when the user selects `Sync now` from the details/settings page.
+
+For each check, the reader enables Wi-Fi and attempts to connect using its
+existing configuration. Idle and manual synchronization occur only when the
+reader has an authorized session. Wi-Fi is disabled after the attempt.
+Synchronization must not interrupt active reading. If the reader already has
+the current bundle, the check performs no download.
 
 ## Lost-device security
 
@@ -504,9 +616,8 @@ This is similar to the distinction between a locked and already-unlocked compute
 
 ### Allowed on the sender computer
 
-The sender may persist:
-
-- its PRSync sender bearer credential.
+The user may persist the PRSync sender bearer credential outside the CLI, such
+as in an environment variable or operating-system secret store.
 
 ### Allowed in PRS-T1 RAM
 
@@ -584,6 +695,10 @@ This allows operation through:
 
 The architecture does not require inbound connections to the device.
 
+PRSync assumes that the PRS-T1 already has usable Wi-Fi configuration and
+stored network credentials. Provisioning and managing those credentials are
+outside the scope of PRSync.
+
 ## HTTPS
 
 Production communication must use HTTPS.
@@ -606,7 +721,7 @@ The production hosted service is expected to use:
 
 - a Rust Cloudflare Worker;
 - D1 for metadata and authorization state;
-- R2 for immutable document bundles;
+- R2 for immutable bundle objects;
 - Cloudflare Access for the human approval application.
 
 These resources should use consistent names such as:
@@ -689,6 +804,10 @@ Local development should support:
 
 Human authentication should be isolated behind a clear trusted-principal boundary so tests can supply an authenticated test identity without weakening production authentication.
 
+In production, the trusted human principal is supplied by Cloudflare Access on
+the human-facing approval hostname. Local tests may inject an authenticated test
+identity at the same boundary without requiring Cloudflare Access.
+
 ## Failure handling
 
 Network failures are expected.
@@ -698,14 +817,15 @@ The device client must handle:
 - inability to create an authorization request;
 - network loss while waiting for approval;
 - authorization expiry;
-- session expiry;
+- invalidated reader sessions;
 - interrupted downloads;
 - corrupt downloads;
 - insufficient tmpfs capacity;
 - invalid bundles;
 - server errors.
 
-A partially downloaded or partially extracted bundle must never become visible as a valid library document.
+A partially downloaded or partially extracted bundle must never become visible as
+the current library state.
 
 Download into staging storage, verify it, and expose it atomically.
 
@@ -716,15 +836,28 @@ Synchronization occurs at explicit boundaries rather than continuously changing 
 A synchronization operation should conceptually:
 
 1. fetch one manifest revision;
-2. determine the desired library for that revision;
-3. obtain missing bundles;
-4. verify and extract them;
-5. commit the resulting library state;
-6. notify the reader that a new library state is available.
+2. determine the current bundle for that revision;
+3. do nothing if the reader already has that bundle;
+4. otherwise obtain the current bundle, or prepare an empty state if the inbox is empty;
+5. verify and extract the replacement bundle into staging storage;
+6. atomically replace the reader's current bundle state;
+7. notify the reader that a new bundle state is available.
 
-A document that is currently open should not silently change underneath the reader.
+The current bundle should not silently change underneath the reader while a
+document is open. The exact UI behaviour for a newly available bundle can be
+decided by the reader integration.
 
-The exact UI behaviour for a newly available version can be decided by the reader integration.
+An idle synchronization may commit a verified replacement immediately because
+the reader is not being used. Replacement remains atomic and must not interrupt
+an active reading session.
+
+A failed synchronization leaves the current bundle unchanged. The reader does
+not retry automatically; another boot, idle period, or manual `Sync now` action
+starts the next attempt.
+
+Synchronization failures are recorded on the details/settings page. The reader
+does not interrupt reading with a failure notification; status is shown while
+an attempt is actively running.
 
 ## Reader user experience
 
@@ -750,12 +883,11 @@ A normal boot may look like:
 
          ↓
 
-    Synchronizing…
-    3 documents
+    Synchronizing current bundle…
 
          ↓
 
-    last document / library
+    current document
 
 The normal reading interface should not contain persistent connectivity indicators, notification feeds, badges, recommendations, or other attention-oriented UI.
 
@@ -763,15 +895,14 @@ A small status indication is appropriate while authorization or synchronization 
 
 ## Library model
 
-The initial library can remain deliberately small.
+The synchronized library contains one current bundle.
 
 At minimum the device should support:
 
-- list synchronized documents;
-- open a document;
+- open the current bundle's Markdown entry point;
 - navigate linked Markdown files within its bundle;
 - display bundled images;
-- return to the library;
+- return to the bundle entry point;
 - reopen the last document during the current boot.
 
 The reader does not need cloud-specific concepts such as R2 object IDs or synchronization revisions in its normal UI.
@@ -856,7 +987,7 @@ The intended development order is:
 8. implement the sender CLI;
 9. validate HTTPS on the real PRS-T1;
 10. implement temporary storage and reader authorization;
-11. synchronize documents;
+11. synchronize the current bundle;
 12. integrate the library UI;
 13. complete CI and local integration tests;
 14. bootstrap production Cloudflare resources;
