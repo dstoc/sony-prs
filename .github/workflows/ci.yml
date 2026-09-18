@@ -28,6 +28,11 @@ jobs:
   host:
     name: Host checks
     runs-on: ubuntu-24.04
+    env:
+      CLOUDFLARE_API_TOKEN: ""
+      CLOUDFLARE_ACCOUNT_ID: ""
+      WORKER_BUILD_VERSION: "0.8.6"
+      WRANGLER_VERSION: "4.40.0"
     steps:
       - name: Check out source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -62,6 +67,18 @@ jobs:
       - name: Check formatting
         run: cargo +"${{ steps.build-pins.outputs.rust_toolchain }}" fmt --all --check
 
+      - name: Check CI workflow regression contract
+        run: tools/test-ci-workflow.sh
+
+      - name: Record tested PRSync versions
+        run: |
+          mkdir -p ci-artifacts
+          tools/prsync-version-report.sh ci-artifacts/prsync-versions.txt
+          {
+            printf '%s\n' '### PRSync versions'
+            cat ci-artifacts/prsync-versions.txt
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Check Release Please workspace configuration
         run: tools/test-release-please-workflow.sh
 
@@ -74,11 +91,20 @@ jobs:
       - name: Test Cloudflare authorization state machine
         run: python3 tools/test-prs-cloudflare-authorization.py
 
+      - name: Test PRSync protocol serialization
+        run: cargo +"${{ steps.build-pins.outputs.rust_toolchain }}" test -p prs-sync-protocol --lib
+
+      - name: Test PRSync bundle validation
+        run: cargo +"${{ steps.build-pins.outputs.rust_toolchain }}" test -p prs-sync-bundle --lib
+
+      - name: Test sender CLI
+        run: cargo +"${{ steps.build-pins.outputs.rust_toolchain }}" test -p prs-send --test cli
+
       - name: Install worker-build for local Worker tests
-        run: cargo +"${{ steps.build-pins.outputs.rust_toolchain }}" install worker-build --version 0.8.6 --locked
+        run: cargo +"${{ steps.build-pins.outputs.rust_toolchain }}" install worker-build --version "$WORKER_BUILD_VERSION" --locked
 
       - name: Install Wrangler for local Worker tests
-        run: npm install --global wrangler@4
+        run: npm install --global "wrangler@$WRANGLER_VERSION"
 
       - name: Run local Cloudflare Worker end-to-end test
         run: python3 tools/test-prs-cloudflare-local.py
@@ -88,6 +114,15 @@ jobs:
 
       - name: Run workspace tests
         run: cargo +"${{ steps.build-pins.outputs.rust_toolchain }}" test --workspace
+
+      - name: Upload PRSync version report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: prsync-versions
+          path: ci-artifacts/prsync-versions.txt
+          if-no-files-found: error
+          retention-days: 7
 
   prs-t1-cross-build:
     name: PRS-T1 ARMv7 build

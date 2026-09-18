@@ -14,9 +14,19 @@ grep -Fq 'cache: false' "$workflow"
 grep -Fq 'shellcheck: false' "$workflow"
 grep -Fq 'pyflakes: false' "$workflow"
 grep -Fq 'cargo +"${{ steps.build-pins.outputs.rust_toolchain }}" fmt --all --check' "$workflow"
+grep -Fq 'run: tools/test-ci-workflow.sh' "$workflow"
+grep -Fq 'tools/prsync-version-report.sh ci-artifacts/prsync-versions.txt' "$workflow"
+grep -Fq 'name: Test PRSync protocol serialization' "$workflow"
+grep -Fq 'cargo +"${{ steps.build-pins.outputs.rust_toolchain }}" test -p prs-sync-protocol --lib' "$workflow"
+grep -Fq 'name: Test PRSync bundle validation' "$workflow"
+grep -Fq 'cargo +"${{ steps.build-pins.outputs.rust_toolchain }}" test -p prs-sync-bundle --lib' "$workflow"
+grep -Fq 'name: Test sender CLI' "$workflow"
+grep -Fq 'cargo +"${{ steps.build-pins.outputs.rust_toolchain }}" test -p prs-send --test cli' "$workflow"
 grep -Fq 'cargo +"${{ steps.build-pins.outputs.rust_toolchain }}" test --workspace' "$workflow"
-grep -Fq 'cargo +"${{ steps.build-pins.outputs.rust_toolchain }}" install worker-build --version 0.8.6 --locked' "$workflow"
-grep -Fq 'npm install --global wrangler@4' "$workflow"
+grep -Fq 'WORKER_BUILD_VERSION: "0.8.6"' "$workflow"
+grep -Fq 'WRANGLER_VERSION: "4.40.0"' "$workflow"
+grep -Fq 'cargo +"${{ steps.build-pins.outputs.rust_toolchain }}" install worker-build --version "$WORKER_BUILD_VERSION" --locked' "$workflow"
+grep -Fq 'npm install --global "wrangler@$WRANGLER_VERSION"' "$workflow"
 grep -Fq 'python3 tools/test-prs-cloudflare-local.py' "$workflow"
 grep -Fq 'cargo +"${{ steps.build-pins.outputs.rust_toolchain }}" install cargo-zigbuild' "$workflow"
 grep -Fq 'tools/prs-t1-agent-build.sh build-and-verify' "$workflow"
@@ -33,6 +43,24 @@ grep -Fq 'cache-bin: true' "$workflow"
 grep -Fq "manifests-\${{ hashFiles('**/Cargo.toml', '**/Cargo.lock') }}" "$workflow"
 grep -Fq 'build-${{ steps.build-pins.outputs.build_config_hash }}' "$workflow"
 grep -Fq 'if [[ ! -x "$cargo_zigbuild_bin" ]]' "$workflow"
+grep -Fq 'uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2' "$workflow"
+grep -Fq 'name: prsync-versions' "$workflow"
+grep -Fq 'path: ci-artifacts/prsync-versions.txt' "$workflow"
+
+for variable in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID; do
+  grep -Fq "$variable: \"\"" "$workflow"
+done
+
+if grep -Eq 'secrets\.(CLOUDFLARE|CF_)' "$workflow"; then
+  printf '%s\n' 'CI workflow references a production Cloudflare secret' >&2
+  exit 1
+fi
+
+version_report=$(mktemp)
+trap 'rm -f "$version_report"' EXIT
+tools/prsync-version-report.sh "$version_report"
+grep -Eq '^protocol_version=[0-9]+\.[0-9]+$' "$version_report"
+grep -Eq '^bundle_format_version=[0-9]+$' "$version_report"
 
 if grep -Eq 'armv5te|arm926ej-s' "$workflow"; then
   printf '%s\n' 'CI workflow contains stale T1 ARMv5 settings' >&2
