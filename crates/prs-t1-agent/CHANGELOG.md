@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.0](https://github.com/dstoc/sony-prs/compare/prs-t1-agent-v0.7.0...prs-t1-agent-v0.8.0) (2026-09-18)
+
+
+### Features
+
+* **t1:** add display calibration test ([4dde8c3](https://github.com/dstoc/sony-prs/commit/4dde8c3352943fe03818df8cf56107e578a22a00))
+
 ## [0.7.0](https://github.com/dstoc/sony-prs/compare/prs-t1-agent-v0.6.1...prs-t1-agent-v0.7.0) (2026-09-18)
 
 
