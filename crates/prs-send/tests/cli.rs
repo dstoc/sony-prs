@@ -47,6 +47,43 @@ fn create_prints_the_claimed_token_only_to_stdout() {
 }
 
 #[test]
+fn create_ignores_an_invalid_sender_token() {
+    let (base_url, requests, server) = mock_server(vec![
+        (
+            200,
+            r#"{"protocol_version":{"major":1,"minor":0},"request":{"protocol_version":{"major":1,"minor":0},"request_id":"auth-1","kind":"sender","credential_name":"laptop","approval_url":"https://reader.example/a/auth-1","created_at":100,"expires_at":160},"polling_secret":"poll-secret"}"#
+                .into(),
+        ),
+        (
+            200,
+            r#"{"protocol_version":{"major":1,"minor":0},"outcome":{"kind":"sender","credential":{"bearer_token":"sender-secret","metadata":{"credential_id":"credential-1","name":"laptop","created_at":100,"scope":{"capabilities":["upload_bundle","clear_inbox","manage_credentials"]}}}}}"#
+                .into(),
+        ),
+    ]);
+    let (stdout, stderr, result) = run(
+        ["credentials", "create", "--name", "laptop"],
+        Config {
+            base_url,
+            sender_token: Some("bad token".into()),
+        },
+    );
+    assert!(result.is_ok(), "create failed: {result:?}");
+    assert_eq!(stdout, "sender-secret\n");
+    assert!(stderr.contains("https://reader.example/a/auth-1"));
+    assert!(!stderr.contains("sender-secret"));
+
+    let start_request = requests.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert_eq!(start_request.method, "POST");
+    assert_eq!(start_request.path, "/api/v1/authorization/sender");
+    assert!(start_request.header("authorization").is_none());
+    let poll_request = requests.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert_eq!(poll_request.method, "POST");
+    assert_eq!(poll_request.path, "/api/v1/authorization/poll");
+    assert!(poll_request.header("authorization").is_none());
+    server.join().unwrap();
+}
+
+#[test]
 fn create_surfaces_an_active_duplicate_name_as_a_server_conflict() {
     let (base_url, requests, server) = mock_server(vec![
         (

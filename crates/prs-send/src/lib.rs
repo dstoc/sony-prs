@@ -222,7 +222,7 @@ struct CredentialListResponse {
 struct ServiceClient {
     http: HttpClient,
     base_url: Url,
-    sender_token: Option<BearerToken>,
+    sender_token: Option<String>,
 }
 
 impl ServiceClient {
@@ -234,12 +234,6 @@ impl ServiceClient {
                 "{BASE_URL_ENV} must use http or https"
             )));
         }
-        let sender_token = config
-            .sender_token
-            .map(|token| {
-                BearerToken::new(token).map_err(|error| CliError::Configuration(error.to_string()))
-            })
-            .transpose()?;
         let http = HttpClient::builder()
             .user_agent("prs-send/0.1")
             .build()
@@ -247,7 +241,7 @@ impl ServiceClient {
         Ok(Self {
             http,
             base_url,
-            sender_token,
+            sender_token: config.sender_token,
         })
     }
 
@@ -263,18 +257,12 @@ impl ServiceClient {
         path: &str,
     ) -> Result<reqwest::blocking::RequestBuilder, CliError> {
         let token = self.sender_token.as_ref().ok_or_else(missing_token)?;
+        let token = BearerToken::new(token.clone())
+            .map_err(|error| CliError::Configuration(error.to_string()))?;
         Ok(self
             .http
             .request(method, self.endpoint(path)?)
             .bearer_auth(token.as_str()))
-    }
-
-    fn require_token(&self) -> Result<(), CliError> {
-        if self.sender_token.is_some() {
-            Ok(())
-        } else {
-            Err(missing_token())
-        }
     }
 
     fn create_authorization(&self, name: &str) -> Result<AuthorizationStart, CliError> {
@@ -311,7 +299,6 @@ impl ServiceClient {
     }
 
     fn push(&self, bundle: Vec<u8>) -> Result<BundlePushResponse, CliError> {
-        self.require_token()?;
         let response = self
             .sender_request(Method::PUT, "/api/v1/sender/bundle")?
             .header(reqwest::header::CONTENT_TYPE, "application/x-tar")
