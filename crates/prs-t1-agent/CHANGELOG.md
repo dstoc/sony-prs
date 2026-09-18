@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.0](https://github.com/dstoc/sony-prs/compare/prs-t1-agent-v0.8.0...prs-t1-agent-v0.9.0) (2026-09-18)
+
+
+### Features
+
+* **t1:** open display test from details ([341cbfc](https://github.com/dstoc/sony-prs/commit/341cbfc6b695f4c601b96a01aa9f84d9f14939f6))
+
 ## [0.8.0](https://github.com/dstoc/sony-prs/compare/prs-t1-agent-v0.7.0...prs-t1-agent-v0.8.0) (2026-09-18)
 
 
