@@ -10,6 +10,7 @@ MIGRATIONS_DIRECTORY = REPO_ROOT / "crates" / "prs-cloudflare" / "migrations"
 MIGRATIONS = sorted(MIGRATIONS_DIRECTORY.glob("*.sql"))
 INITIAL_MIGRATION = MIGRATIONS_DIRECTORY / "0001_initial.sql"
 UPGRADE_MIGRATION = MIGRATIONS_DIRECTORY / "0002_metadata_schema_upgrade.sql"
+AUTHORIZATION_NAME_MIGRATION = MIGRATIONS_DIRECTORY / "0003_authorization_credential_name.sql"
 
 
 def database() -> sqlite3.Connection:
@@ -60,11 +61,13 @@ def digest(byte: int) -> bytes:
 def add_request(
     connection: sqlite3.Connection, request_id: str, kind: str
 ) -> None:
+    credential_name = request_id if kind == "sender" else None
     connection.execute(
         """
         INSERT INTO authorization_requests
-            (request_id, kind, polling_secret_hash, approval_url, created_at, expires_at)
-        VALUES (?, ?, ?, ?, ?, ?)
+            (request_id, kind, polling_secret_hash, approval_url, created_at,
+             expires_at, credential_name)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
         (
             request_id,
@@ -73,6 +76,7 @@ def add_request(
             f"https://example.test/{request_id}",
             100,
             200,
+            credential_name,
         ),
     )
 
@@ -148,6 +152,7 @@ def verify_upgrade_path() -> None:
     apply_migration(connection, INITIAL_MIGRATION)
     seed_legacy_database(connection)
     apply_migration(connection, UPGRADE_MIGRATION)
+    apply_migration(connection, AUTHORIZATION_NAME_MIGRATION)
 
     assert columns(connection, "inbox") == {
         "singleton",
@@ -155,6 +160,7 @@ def verify_upgrade_path() -> None:
         "current_bundle_id",
         "updated_at",
     }
+    assert "credential_name" in columns(connection, "authorization_requests")
     assert dict(
         connection.execute(
             "SELECT revision, current_bundle_id FROM inbox"
@@ -184,6 +190,15 @@ def verify_upgrade_path() -> None:
             """
         ).fetchone()
     ) == ("consumed", 30, 35, 35)
+    assert tuple(
+        connection.execute(
+            """
+            SELECT credential_name
+            FROM authorization_requests
+            WHERE request_id = 'legacy-claimed'
+            """
+        ).fetchone()
+    ) == ("legacy-legacy-claimed",)
 
 
 def verify_current_schema_behavior() -> None:
@@ -329,6 +344,29 @@ def verify_current_schema_behavior() -> None:
         ).fetchone()
     ) == ("consumed", "session-1")
 
+    assert tuple(
+        connection.execute(
+            "SELECT credential_name FROM authorization_requests WHERE request_id = 'consumed'"
+        ).fetchone()
+    ) == ("consumed",)
+
+    # A reader request cannot smuggle a sender credential name into the
+    # approval flow, and a sender request must retain one for claim.
+    try:
+        connection.execute(
+            """
+            INSERT INTO authorization_requests
+                (request_id, kind, polling_secret_hash, approval_url,
+                 created_at, expires_at, credential_name)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("reader-named", "reader", digest(12), "https://example.test/reader-named", 180, 280, "wrong"),
+        )
+    except sqlite3.IntegrityError as error:
+        assert "invalid authorization credential name" in str(error)
+    else:
+        raise AssertionError("reader request accepted a sender credential name")
+
     # Active names are unique, but a revoked name can be registered again.
     try:
         connection.execute(
@@ -395,6 +433,7 @@ def main() -> None:
         raise AssertionError("at least one D1 migration is required")
     assert INITIAL_MIGRATION in MIGRATIONS
     assert UPGRADE_MIGRATION in MIGRATIONS
+    assert AUTHORIZATION_NAME_MIGRATION in MIGRATIONS
 
     assert_fresh_schema_is_deterministic()
     assert_d1_reapplication_is_a_noop()

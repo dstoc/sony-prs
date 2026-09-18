@@ -404,6 +404,8 @@ pub struct AuthorizationRequest {
     pub protocol_version: ProtocolVersion,
     pub request_id: AuthorizationRequestId,
     pub kind: AuthorizationKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credential_name: Option<SenderCredentialName>,
     pub approval_url: String,
     pub created_at: Timestamp,
     pub expires_at: Timestamp,
@@ -705,6 +707,7 @@ mod tests {
                 protocol_version: version(),
                 request_id: request_id("auth-1"),
                 kind: AuthorizationKind::Reader,
+                credential_name: None,
                 approval_url: "https://reader.example/a/auth-1".into(),
                 created_at: Timestamp::new(100),
                 expires_at: Timestamp::new(160),
@@ -718,6 +721,23 @@ mod tests {
             serde_json::to_string(&start).unwrap(),
             r#"{"protocol_version":{"major":1,"minor":0},"request":{"protocol_version":{"major":1,"minor":0},"request_id":"auth-1","kind":"reader","approval_url":"https://reader.example/a/auth-1","created_at":100,"expires_at":160},"polling_secret":"secret-123"}"#
         );
+    }
+
+    #[test]
+    fn sender_authorization_request_carries_name_but_not_polling_secret() {
+        let request = AuthorizationRequest {
+            protocol_version: version(),
+            request_id: request_id("auth-sender"),
+            kind: AuthorizationKind::Sender,
+            credential_name: Some(sender_name("laptop")),
+            approval_url: "https://reader.example/a/auth-sender".into(),
+            created_at: Timestamp::new(100),
+            expires_at: Timestamp::new(160),
+        };
+        let json = serde_json::to_string(&request).unwrap();
+        assert!(json.contains("laptop"));
+        assert!(!json.contains("polling_secret"));
+        assert!(!json.contains("secret-123"));
     }
 
     #[test]

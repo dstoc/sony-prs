@@ -78,7 +78,8 @@ The resulting schema contains:
 
 - one current inbox revision and an optional current bundle reference;
 - immutable bundle metadata and its private R2 object key;
-- sender and reader authorization requests;
+- sender and reader authorization requests, including the requested sender
+  credential name;
 - 32-byte polling-secret, sender-token, and reader-session hashes;
 - boot-scoped reader sessions;
 - named sender credentials with revocation timestamps; and
@@ -103,6 +104,21 @@ identifies objects that cleanup may inspect. A cleanup operation resolves
 inbox.current_bundle_id through bundles.object_key and keeps that object. All
 other objects under the prefix are abandoned replacement objects. The prefix
 remains on a current object because R2 has no rename operation.
+## Authorization boundary
+
+`src/authorization.rs` implements the D1-backed authorization state machine.
+Request creation generates 32-byte polling secrets and request identifiers with
+the Workers Web Crypto API. D1 stores only SHA-256 hashes. Approval URLs contain
+the public request identifier but never the polling secret.
+
+The service exposes separate typed paths for pending polling, sender
+write/credential management, owner approval, and reader read-only access. The
+sender and reader authentication queries are separate, so a sender token cannot
+resolve to a reader session and a reader token cannot resolve to sender
+operations. A successful claim uses an atomic D1 batch to create exactly one
+child credential or session and consume the approved request. Approval methods
+return no bearer credential; only the corresponding pending polling capability
+receives the claim result.
 
 Run the dependency-free local migration regression test from the repository
 root with:
