@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0](https://github.com/dstoc/sony-prs/compare/prs-t1-agent-v0.6.1...prs-t1-agent-v0.7.0) (2026-09-18)
+
+
+### Features
+
+* **t1:** build reader for ARMv7 Cortex-A8 ([66bf99a](https://github.com/dstoc/sony-prs/commit/66bf99a98664a2f8f998f0792c1e22fac04be0a3))
+
 ## [0.6.1](https://github.com/dstoc/sony-prs/compare/prs-t1-agent-v0.6.0...prs-t1-agent-v0.6.1) (2026-09-17)
 
 ## [0.6.0](https://github.com/dstoc/sony-prs/compare/prs-t1-agent-v0.5.0...prs-t1-agent-v0.6.0) (2026-09-17)
