@@ -206,10 +206,10 @@ fn print_usage() {
     );
 }
 
-// The first T1 build uses the workspace's ARMv5 musl target so its static
-// binary can run on the ARMv7 Android kernel without depending on Android's
-// dynamic linker. That target needs these single-threaded bootstrap shims;
-// replace them with proper ARM atomic support before adding worker threads.
+// The T1 build uses the workspace's ARMv7 musl target so its static binary can
+// run without depending on Android's dynamic linker. That target needs these
+// single-threaded bootstrap shims; replace them with proper ARM atomic support
+// before adding worker threads.
 #[no_mangle]
 pub unsafe extern "C" fn __sync_val_compare_and_swap_4(
     pointer: *mut i32,

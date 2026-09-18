@@ -226,7 +226,7 @@ Linux host run (debug test binary, 600x800 viewport) measured 29 KiB source,
 ms, page-directory construction 2.0 ms, open/time-to-first-page 568.8 ms, ten
 next-page turns 0.465 ms total, and previous-page 0.0006 ms. The process RSS
 sample was 35 MiB. These are regression observations, not T1 guarantees;
-on-device ARMv5TE measurements remain authoritative, especially for image
+on-device measurements remain authoritative, especially for image
 decode and first-page latency.
 
 `Reader::new` remains an eager-pagination compatibility constructor for host

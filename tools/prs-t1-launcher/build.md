@@ -82,7 +82,7 @@ adb wait-for-device
 Copy the agent and its privileged handoff script, then install the APK:
 
 ```sh
-adb push target/armv5te-unknown-linux-musleabi/release/prs-t1-agent \
+adb push target/armv7-unknown-linux-musleabi/release/prs-t1-agent \
   /data/local/tmp/prs-t1-agent
 adb shell chmod 755 /data/local/tmp/prs-t1-agent
 

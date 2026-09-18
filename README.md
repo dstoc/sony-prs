@@ -49,11 +49,11 @@ The workspace test command covers the protocol crates and the pure T1 display,
 input, status, runtime, and pixel-damage tests. The regular release build is a
 host build; it does not produce a T1-compatible ARM executable. See the
 [T1 build and deployment guide](crates/prs-t1-agent/build.md) for the
-ARMv5TE/musl cross-build and the optional
+ARMv7/musl cross-build and the optional
 [tap-to-launch APK](tools/prs-t1-launcher/build.md).
 
 Merging a Release Please PR publishes the matching ARM executable in the
-`prs-t1-agent-vX.Y.Z` GitHub Release as `prs-t1-agent-armv5te`. See the
+`prs-t1-agent-vX.Y.Z` GitHub Release as `prs-t1-agent-armv7`. See the
 [automated release notes](crates/prs-t1-agent/build.md#automated-github-releases)
 for the Conventional Commit rules and artifact checks.
 
@@ -82,7 +82,7 @@ running:
 
 ```sh
 adb wait-for-device
-adb push target/armv5te-unknown-linux-musleabi/release/prs-t1-agent \
+adb push target/armv7-unknown-linux-musleabi/release/prs-t1-agent \
   /data/local/tmp/prs-t1-agent
 adb shell chmod 755 /data/local/tmp/prs-t1-agent
 ```

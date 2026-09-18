@@ -6,10 +6,10 @@ set -euo pipefail
 readonly RUST_TOOLCHAIN="1.98.1"
 readonly ZIG_VERSION="0.16.0"
 readonly CARGO_ZIGBUILD_VERSION="0.23.4"
-readonly TARGET="armv5te-unknown-linux-musleabi"
+readonly TARGET="armv7-unknown-linux-musleabi"
 readonly MANIFEST="crates/prs-t1-agent/Cargo.toml"
 readonly PACKAGE="prs-t1-agent"
-readonly DIST_ARTIFACT="dist/prs-t1-agent-armv5te"
+readonly DIST_ARTIFACT="dist/prs-t1-agent-armv7"
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 repo_root=${PRS_T1_AGENT_REPO_ROOT:-$(cd -- "$script_dir/.." && pwd)}
@@ -93,7 +93,7 @@ build() {
   # Force onig_sys to compile its bundled source instead of probing a host
   # Oniguruma installation; the production reader must remain self-contained.
   RUSTONIG_SYSTEM_LIBONIG=0 \
-  RUSTFLAGS='-C target-cpu=arm926ej-s -C link-arg=-mcpu=arm926ej-s' \
+  RUSTFLAGS='-C target-cpu=cortex-a8 -C link-arg=-mcpu=cortex-a8' \
     cargo +"$RUST_TOOLCHAIN" zigbuild \
     --manifest-path "$MANIFEST" \
     --release \
@@ -137,6 +137,7 @@ verify() {
   grep -Eq '^  Class:.*ELF32' "$inspection_dir/header.txt"
   grep -Eq '^  Machine:.*ARM' "$inspection_dir/header.txt"
   grep -Eq '^  Flags:.*Version5 EABI, soft-float ABI' "$inspection_dir/header.txt"
+  grep -Eq '^  Tag_CPU_arch: v7' "$inspection_dir/attributes.txt"
 
   if grep -q 'INTERP' "$inspection_dir/program-headers.txt"; then
     printf '%s\n' 'the production executable has a dynamic loader' >&2

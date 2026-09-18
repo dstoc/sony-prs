@@ -81,7 +81,7 @@ requires a reader-side recovery route and physical observation of the panel.
 
 ## Build and deploy
 
-The T1 expects an ARMv5TE soft-float executable. The release build is statically
+The T1 expects an ARMv7-A/Cortex-A8 soft-float executable. The release build is statically
 linked against musl so it does not depend on Android's old dynamic linker.
 Follow [`build.md`](build.md) for the host toolchain, cross-build, artifact
 checks, ADB copy, and detached test helper.
@@ -90,7 +90,7 @@ After building, the basic deployment is:
 
 ```sh
 adb wait-for-device
-adb push target/armv5te-unknown-linux-musleabi/release/prs-t1-agent \
+adb push target/armv7-unknown-linux-musleabi/release/prs-t1-agent \
   /data/local/tmp/prs-t1-agent
 adb shell chmod 755 /data/local/tmp/prs-t1-agent
 ```

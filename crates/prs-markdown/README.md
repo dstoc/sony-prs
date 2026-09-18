@@ -132,7 +132,7 @@ rasterization.
 
 The CLI output is a host preview, not a T1 deployment artifact. To build the
 device binary, follow the [T1 build guide](../prs-t1-agent/build.md) and use
-the ARMv5TE/musl cross-build.
+the ARMv7/musl cross-build.
 
 ## Content model
 

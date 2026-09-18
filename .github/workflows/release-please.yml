@@ -97,7 +97,7 @@ jobs:
         if: ${{ steps.release-tag.outputs.tag != '' }}
         uses: Swatinem/rust-cache@63fed3e2fecf6f7b51dc6f043341b79ef82a9ae7 # v2.9.2
         with:
-          shared-key: prs-t1-armv5te
+          shared-key: prs-t1-armv7
           add-job-id-key: false
           key: >-
             arm-rust-${{ steps.build-pins.outputs.rust_toolchain }}-
@@ -138,5 +138,5 @@ jobs:
         run: |
           gh release upload \
             "${{ steps.release-tag.outputs.tag }}" \
-            dist/prs-t1-agent-armv5te \
+            dist/prs-t1-agent-armv7 \
             --clobber

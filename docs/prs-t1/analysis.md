@@ -271,7 +271,7 @@ events.
 
 ## Native probe and screenshot
 
-The first `prs-t1-agent` ARMv5-musl build was copied to
+The first, historical `prs-t1-agent` ARMv5-musl build was copied to
 `/data/local/tmp/prs-t1-agent` and run through root ADB while Android remained
 running. The read-only `probe` completed without stopping any Android process.
 It confirmed the framebuffer metadata above and observed `dispd`, `netd`,
@@ -1405,7 +1405,7 @@ table, adds lowercase and punctuation coverage, and lets status, heading, and
 button labels use measured text bounds for horizontal and vertical centering.
 The details actions now use three stacked full-width touch targets so their
 visual and hit-test geometry share the same rectangles. The dependency remains
-`default-features = false`; the current optimized ARMv5 release binary is
+`default-features = false`; the historical optimized ARMv5 release binary was
 623,112 bytes. A general-purpose renderer such as `tiny-skia` would bring
 more capability than this shell needs and its default feature set is less
 appropriate for the T1's small ARMv5 runtime.

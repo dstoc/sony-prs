@@ -56,7 +56,7 @@ Then push the agent and handoff script, and install the APK. The
 enabled:
 
 ```sh
-adb push target/armv5te-unknown-linux-musleabi/release/prs-t1-agent /data/local/tmp/prs-t1-agent
+adb push target/armv7-unknown-linux-musleabi/release/prs-t1-agent /data/local/tmp/prs-t1-agent
 adb shell chmod 755 /data/local/tmp/prs-t1-agent
 adb push tools/prs-t1-launcher/prs-t1-launch /data/local/tmp/prs-t1-launch
 adb shell chmod 755 /data/local/tmp/prs-t1-launch

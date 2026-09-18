@@ -1,7 +1,7 @@
 # Build and deploy `prs-t1-agent`
 
 `prs-t1-agent` is the native ARM binary that runs on the PRS-T1. The device
-expects an ARMv5TE, soft-float executable, and the release build is statically
+expects an ARMv7-A/Cortex-A8, soft-float executable, and the release build is statically
 linked against musl so it does not need Android or other target-side runtime
 libraries.
 
@@ -16,7 +16,7 @@ crate are ready to release. Merging that PR updates the crate version and
 The CI and release workflows call the shared
 [`tools/prs-t1-agent-build.sh`](../../tools/prs-t1-agent-build.sh) production
 build and ELF-validation script. CI stops after validation; the release
-workflow additionally uploads the resulting `dist/prs-t1-agent-armv5te` file
+workflow additionally uploads the resulting `dist/prs-t1-agent-armv7` file
 to the matching GitHub Release. Download it from that release rather than from
 crates.io; this crate is not published there.
 
@@ -72,31 +72,38 @@ If `cargo-zigbuild` is not installed, it can be installed with Cargo. Install
 Zig separately using the host's package manager or the official Zig release,
 then ensure its `zig` executable is on `PATH`.
 
+Install the Rust target before the cross-build:
+
+```sh
+rustup target add armv7-unknown-linux-musleabi
+```
+
 ## Cross-build
 
 From the repository root, run:
 
 ```sh
-RUSTFLAGS='-C target-cpu=arm926ej-s -C link-arg=-mcpu=arm926ej-s' \
+RUSTFLAGS='-C target-cpu=cortex-a8 -C link-arg=-mcpu=cortex-a8' \
   cargo zigbuild \
   --manifest-path crates/prs-t1-agent/Cargo.toml \
   --release \
-  --target armv5te-unknown-linux-musleabi
+  --target armv7-unknown-linux-musleabi
 ```
 
 The deployable binary is:
 
 ```text
-target/armv5te-unknown-linux-musleabi/release/prs-t1-agent
+target/armv7-unknown-linux-musleabi/release/prs-t1-agent
 ```
 
 For a quick sanity check, confirm that the result is ARM, EABI5, soft-float,
 and static:
 
 ```sh
-file target/armv5te-unknown-linux-musleabi/release/prs-t1-agent
-readelf -h target/armv5te-unknown-linux-musleabi/release/prs-t1-agent
-readelf -d target/armv5te-unknown-linux-musleabi/release/prs-t1-agent
+file target/armv7-unknown-linux-musleabi/release/prs-t1-agent
+readelf -h target/armv7-unknown-linux-musleabi/release/prs-t1-agent
+readelf -A target/armv7-unknown-linux-musleabi/release/prs-t1-agent
+readelf -d target/armv7-unknown-linux-musleabi/release/prs-t1-agent
 ```
 
 The repository-wide `cargo build --workspace --release` command is useful for
@@ -107,7 +114,7 @@ host-side compilation, but does not produce the T1 ARM artifact.
 With the reader booted into Android and ADB available:
 
 ```sh
-AGENT_BINARY=target/armv5te-unknown-linux-musleabi/release/prs-t1-agent
+AGENT_BINARY=target/armv7-unknown-linux-musleabi/release/prs-t1-agent
 
 adb wait-for-device
 adb push "$AGENT_BINARY" /data/local/tmp/prs-t1-agent

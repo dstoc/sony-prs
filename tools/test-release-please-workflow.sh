@@ -39,7 +39,7 @@ if ! awk '
 fi
 grep -Fq 'version: "${{ steps.build-pins.outputs.zig_version }}"' "$workflow"
 grep -Fq 'uses: Swatinem/rust-cache@63fed3e2fecf6f7b51dc6f043341b79ef82a9ae7 # v2.9.2' "$workflow"
-grep -Fq 'shared-key: prs-t1-armv5te' "$workflow"
+grep -Fq 'shared-key: prs-t1-armv7' "$workflow"
 grep -Fq 'add-job-id-key: false' "$workflow"
 grep -Fq 'cache-targets: true' "$workflow"
 grep -Fq 'cache-all-crates: true' "$workflow"
@@ -51,11 +51,20 @@ grep -Fq 'build_config_hash=' "$build_script"
 grep -Fq 'readonly RUST_TOOLCHAIN="1.98.1"' "$build_script"
 grep -Fq 'readonly ZIG_VERSION="0.16.0"' "$build_script"
 grep -Fq 'readonly CARGO_ZIGBUILD_VERSION="0.23.4"' "$build_script"
-grep -Fq 'readonly TARGET="armv5te-unknown-linux-musleabi"' "$build_script"
+grep -Fq 'readonly TARGET="armv7-unknown-linux-musleabi"' "$build_script"
+grep -Fq "RUSTFLAGS='-C target-cpu=cortex-a8 -C link-arg=-mcpu=cortex-a8'" "$build_script"
+grep -Fq "grep -Eq '^  Tag_CPU_arch: v7' \"\$inspection_dir/attributes.txt\"" "$build_script"
+grep -Fq 'dist/prs-t1-agent-armv7' "$build_script"
 grep -Fq 'cargo +"$RUST_TOOLCHAIN" zigbuild' "$build_script"
 grep -Fq 'readelf -h "$artifact"' "$build_script"
 grep -Fq "grep -q 'INTERP'" "$build_script"
 grep -Fq 'Tag_ABI_VFP_args: VFP registers' "$build_script"
+grep -Fq 'dist/prs-t1-agent-armv7' "$workflow"
+
+if grep -Eq 'armv5te|arm926ej-s' "$workflow" "$build_script"; then
+  printf '%s\n' 'release build contains stale T1 ARMv5 settings' >&2
+  exit 1
+fi
 
 if grep -Fq 'cargo +"$RUST_TOOLCHAIN" zigbuild' "$workflow"; then
   printf '%s\n' 'cross-build command is duplicated in the release workflow' >&2
@@ -70,7 +79,7 @@ fi
 test "$("$build_script" print rust-toolchain)" = '1.98.1'
 test "$("$build_script" print zig-version)" = '0.16.0'
 test "$("$build_script" print cargo-zigbuild-version)" = '0.23.4'
-test "$("$build_script" print target)" = 'armv5te-unknown-linux-musleabi'
+test "$("$build_script" print target)" = 'armv7-unknown-linux-musleabi'
 test "$("$build_script" print-github-actions | sed -n '/^build_config_hash=/p')" = \
   "build_config_hash=$(sha256sum "$build_script" | cut -d ' ' -f1)"
 

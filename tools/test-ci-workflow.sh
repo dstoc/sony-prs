@@ -21,7 +21,8 @@ grep -Fq 'version: "${{ steps.build-pins.outputs.zig_version }}"' "$workflow"
 grep -Fq -- '--target "${{ steps.build-pins.outputs.target }}"' "$workflow"
 grep -Fq 'uses: Swatinem/rust-cache@63fed3e2fecf6f7b51dc6f043341b79ef82a9ae7 # v2.9.2' "$workflow"
 grep -Fq 'shared-key: prs-workspace-host' "$workflow"
-grep -Fq 'shared-key: prs-t1-armv5te' "$workflow"
+grep -Fq 'name: PRS-T1 ARMv7 build' "$workflow"
+grep -Fq 'shared-key: prs-t1-armv7' "$workflow"
 grep -Fq 'add-job-id-key: false' "$workflow"
 grep -Fq 'cache-targets: true' "$workflow"
 grep -Fq 'cache-all-crates: true' "$workflow"
@@ -29,6 +30,11 @@ grep -Fq 'cache-bin: true' "$workflow"
 grep -Fq "manifests-\${{ hashFiles('**/Cargo.toml', '**/Cargo.lock') }}" "$workflow"
 grep -Fq 'build-${{ steps.build-pins.outputs.build_config_hash }}' "$workflow"
 grep -Fq 'if [[ ! -x "$cargo_zigbuild_bin" ]]' "$workflow"
+
+if grep -Eq 'armv5te|arm926ej-s' "$workflow"; then
+  printf '%s\n' 'CI workflow contains stale T1 ARMv5 settings' >&2
+  exit 1
+fi
 
 if grep -vF 'tools/test-release-please-workflow.sh' "$workflow" |
   grep -Eq 'release-please|gh release|workflow_dispatch|release upload'; then

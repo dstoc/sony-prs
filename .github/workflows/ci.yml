@@ -68,7 +68,7 @@ jobs:
         run: cargo +"${{ steps.build-pins.outputs.rust_toolchain }}" test --workspace
 
   prs-t1-cross-build:
-    name: PRS-T1 ARMv5TE build
+    name: PRS-T1 ARMv7 build
     runs-on: ubuntu-24.04
     steps:
       - name: Check out source
@@ -96,7 +96,7 @@ jobs:
       - name: Cache ARM Rust dependencies and tooling
         uses: Swatinem/rust-cache@63fed3e2fecf6f7b51dc6f043341b79ef82a9ae7 # v2.9.2
         with:
-          shared-key: prs-t1-armv5te
+          shared-key: prs-t1-armv7
           add-job-id-key: false
           key: >-
             arm-rust-${{ steps.build-pins.outputs.rust_toolchain }}-
