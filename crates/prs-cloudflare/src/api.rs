@@ -9,7 +9,7 @@ use crate::authorization::{
     AuthorizationConfig, AuthorizationError, AuthorizationFailure, AuthorizationService,
     PendingPollingCapability,
 };
-use crate::storage::{BundleStore, CurrentBundle};
+use crate::storage::{BundlePushError, BundleStore, CurrentBundle};
 use prs_sync_protocol::{
     ApiError, ApiErrorBody, ApiErrorCode, AuthorizationKind, AuthorizationRequestId,
     AuthorizationStart, AuthorizationStatus, BearerToken, EntityTag, InboxManifestResponse,
@@ -621,12 +621,15 @@ fn internal_error<T>(_error: T) -> ApiFailure {
     ApiFailure::internal()
 }
 
-fn map_bundle_error<T>(_error: T) -> ApiFailure {
-    ApiFailure::new(
-        422,
-        ApiErrorCode::InvalidRequest,
-        "the bundle is invalid or could not be published",
-    )
+fn map_bundle_error(error: BundlePushError) -> ApiFailure {
+    match error {
+        BundlePushError::InvalidBundle(_) => ApiFailure::new(
+            422,
+            ApiErrorCode::InvalidRequest,
+            "the bundle is invalid or exceeds the protocol size limit",
+        ),
+        BundlePushError::Storage(_) => ApiFailure::internal(),
+    }
 }
 
 fn map_authorization_error(error: AuthorizationError) -> ApiFailure {
@@ -741,5 +744,23 @@ mod tests {
         ));
         assert_eq!(error.status, 409);
         assert_eq!(error.code, ApiErrorCode::Conflict);
+    }
+
+    #[test]
+    fn invalid_bundle_errors_are_unprocessable_requests() {
+        let error = map_bundle_error(BundlePushError::InvalidBundle(worker::Error::RustError(
+            "invalid archive".into(),
+        )));
+        assert_eq!(error.status, 422);
+        assert_eq!(error.code, ApiErrorCode::InvalidRequest);
+    }
+
+    #[test]
+    fn storage_errors_are_internal_server_errors() {
+        let error = map_bundle_error(BundlePushError::Storage(worker::Error::RustError(
+            "database unavailable".into(),
+        )));
+        assert_eq!(error.status, 500);
+        assert_eq!(error.code, ApiErrorCode::Internal);
     }
 }

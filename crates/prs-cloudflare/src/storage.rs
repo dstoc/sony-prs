@@ -26,6 +26,19 @@ pub(crate) struct BundleStore {
     bucket: Bucket,
 }
 
+/// Errors from a bundle replacement, separated by client input and Worker
+/// storage or publication failures.
+pub(crate) enum BundlePushError {
+    InvalidBundle(Error),
+    Storage(Error),
+}
+
+impl From<Error> for BundlePushError {
+    fn from(error: Error) -> Self {
+        Self::Storage(error)
+    }
+}
+
 impl BundleStore {
     pub(crate) fn from_env(database: D1Database, bucket: Bucket) -> Self {
         Self { database, bucket }
@@ -36,14 +49,18 @@ impl BundleStore {
     /// The inbox is cleared before validation and storage. The final D1 batch
     /// inserts immutable metadata and publishes the reference together, so an
     /// invalid bundle or failed write cannot become current.
-    pub(crate) async fn push(&self, bytes: Vec<u8>, updated_at: u64) -> Result<PublishedBundle> {
+    pub(crate) async fn push(
+        &self,
+        bytes: Vec<u8>,
+        updated_at: u64,
+    ) -> std::result::Result<PublishedBundle, BundlePushError> {
         let previous = self.current_bundle().await?;
         self.clear_inbox(updated_at).await?;
         if let Some(previous) = previous {
             self.bucket.delete(previous.object_key).await?;
         }
 
-        let manifest = validate_for_publication(&bytes)?;
+        let manifest = validate_for_publication(&bytes).map_err(BundlePushError::InvalidBundle)?;
 
         let bundle_id = candidate_id()?;
         let object_key = candidate_object_key(&bundle_id);
@@ -64,7 +81,9 @@ impl BundleStore {
         let etag = object.etag();
         let size_bytes = object.size();
         let manifest_json = serde_json::to_string(&manifest).map_err(|error| {
-            Error::RustError(format!("failed to encode bundle manifest: {error}"))
+            BundlePushError::Storage(Error::RustError(format!(
+                "failed to encode bundle manifest: {error}"
+            )))
         })?;
 
         self.publish(
