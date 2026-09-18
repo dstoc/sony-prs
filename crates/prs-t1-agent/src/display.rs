@@ -7,9 +7,23 @@ use embedded_graphics::pixelcolor::{Rgb565, RgbColor};
 use embedded_graphics::prelude::*;
 use embedded_graphics::text::{Baseline, Text};
 use std::convert::Infallible;
+use std::path::Path;
+use std::thread;
+use std::time::Duration;
 
 const BLACK: u16 = 0x0000;
 const WHITE: u16 = 0xffff;
+
+const DISPLAY_TEST_HEADER_HEIGHT: usize = 52;
+const DISPLAY_TEST_GRID_TOP: usize = 78;
+const DISPLAY_TEST_GRID_TILE_HEIGHT: usize = 86;
+const DISPLAY_TEST_GRID_GAP: usize = 8;
+const DISPLAY_TEST_GRADIENT_TOP: usize = 395;
+const DISPLAY_TEST_GRADIENT_HEIGHT: usize = 36;
+const DISPLAY_TEST_PANELS_TOP: usize = 464;
+const DISPLAY_TEST_PANELS_HEIGHT: usize = 120;
+const DISPLAY_TEST_RAMP_TOP: usize = 620;
+const DISPLAY_TEST_RAMP_HEIGHT: usize = 48;
 
 pub const STATUS_BAR_HEIGHT: usize = 48;
 pub const CONTENT_TOP: usize = 76;
@@ -48,6 +62,305 @@ pub fn draw_screen(
         wait_for_completion,
         force_refresh,
     )
+}
+
+/// Render and present a bounded grayscale calibration pattern.
+///
+/// This command intentionally leaves the pattern in the framebuffer after the
+/// wait. It is a physical panel test, not a reversible framebuffer probe.
+pub fn display_test_to(
+    path: &Path,
+    wait_after_update: Duration,
+    waveform: WaveformMode,
+) -> std::io::Result<()> {
+    let mut display = NativeDisplay::open(path)?;
+    let width = display.width();
+    let height = display.height();
+    let frame = render_display_test(width as usize, height as usize);
+    display.draw_frame_with_waveform(
+        &frame,
+        DisplayRegion::full(width, height),
+        waveform,
+        true,
+        true,
+    )?;
+    eprintln!(
+        "display-test: pattern={}x{} waveform={} wait_seconds={}",
+        width,
+        height,
+        waveform.label(),
+        wait_after_update.as_secs(),
+    );
+    thread::sleep(wait_after_update);
+    eprintln!("display-test: pattern left visible; no framebuffer restore performed");
+    Ok(())
+}
+
+/// Build the packed RGB565 frame used by `display-test`.
+pub fn render_display_test(width: usize, height: usize) -> Vec<u8> {
+    let frame_len = width.saturating_mul(height).saturating_mul(2);
+    let mut frame = vec![0u8; frame_len];
+    let mut canvas = DisplayCanvas::new(&mut frame, width, height, width.saturating_mul(2), 0, 0);
+    draw_display_test_contents(&mut canvas);
+    frame
+}
+
+fn draw_display_test_contents(canvas: &mut DisplayCanvas<'_>) {
+    let width = canvas.width();
+    let margin = width.min(16);
+
+    canvas.fill(WHITE);
+    canvas.fill_rect(0, 0, width, DISPLAY_TEST_HEADER_HEIGHT, BLACK);
+    draw_text_font(
+        canvas,
+        margin,
+        15,
+        "PRS-T1 DISPLAY TEST",
+        &FONT_10X20,
+        Rgb565::WHITE,
+    );
+    draw_text_font(
+        canvas,
+        width.saturating_sub(112),
+        19,
+        "RGB565 / GRAY",
+        &FONT_8X13,
+        Rgb565::WHITE,
+    );
+
+    draw_text_font(
+        canvas,
+        margin,
+        58,
+        "FILL / TEXT CONTRAST",
+        &FONT_8X13_BOLD,
+        Rgb565::BLACK,
+    );
+    draw_contrast_swatches(canvas, margin);
+
+    draw_text_font(
+        canvas,
+        margin,
+        DISPLAY_TEST_GRADIENT_TOP.saturating_sub(20),
+        "HORIZONTAL GRADIENT  0 -> 255",
+        &FONT_8X13_BOLD,
+        Rgb565::BLACK,
+    );
+    draw_horizontal_gradient(
+        canvas,
+        margin,
+        DISPLAY_TEST_GRADIENT_TOP,
+        width.saturating_sub(margin.saturating_mul(2)),
+        DISPLAY_TEST_GRADIENT_HEIGHT,
+    );
+
+    let panel_gap = 8.min(width);
+    let panel_width = width
+        .saturating_sub(margin.saturating_mul(2))
+        .saturating_sub(panel_gap)
+        / 2;
+    let left_panel = margin;
+    let right_panel = left_panel
+        .saturating_add(panel_width)
+        .saturating_add(panel_gap);
+    draw_text_font(
+        canvas,
+        left_panel,
+        DISPLAY_TEST_PANELS_TOP.saturating_sub(20),
+        "VERTICAL GRADIENT",
+        &FONT_8X13_BOLD,
+        Rgb565::BLACK,
+    );
+    draw_text_font(
+        canvas,
+        right_panel,
+        DISPLAY_TEST_PANELS_TOP.saturating_sub(20),
+        "LINE THICKNESS",
+        &FONT_8X13_BOLD,
+        Rgb565::BLACK,
+    );
+    draw_vertical_gradient(
+        canvas,
+        left_panel,
+        DISPLAY_TEST_PANELS_TOP,
+        panel_width,
+        DISPLAY_TEST_PANELS_HEIGHT,
+    );
+    draw_line_samples(
+        canvas,
+        right_panel,
+        DISPLAY_TEST_PANELS_TOP,
+        panel_width,
+        DISPLAY_TEST_PANELS_HEIGHT,
+    );
+
+    draw_text_font(
+        canvas,
+        margin,
+        DISPLAY_TEST_RAMP_TOP.saturating_sub(20),
+        "16-LEVEL GRAYSCALE RAMP",
+        &FONT_8X13_BOLD,
+        Rgb565::BLACK,
+    );
+    draw_grayscale_ramp(
+        canvas,
+        margin,
+        DISPLAY_TEST_RAMP_TOP,
+        width.saturating_sub(margin.saturating_mul(2)),
+        DISPLAY_TEST_RAMP_HEIGHT,
+    );
+
+    draw_text_font(
+        canvas,
+        margin,
+        DISPLAY_TEST_RAMP_TOP
+            .saturating_add(DISPLAY_TEST_RAMP_HEIGHT)
+            .saturating_add(14),
+        "Compare framebuffer capture with the physical panel.",
+        &FONT_8X13,
+        Rgb565::BLACK,
+    );
+}
+
+fn draw_contrast_swatches(canvas: &mut DisplayCanvas<'_>, margin: usize) {
+    let width = canvas.width();
+    let available = width.saturating_sub(margin.saturating_mul(2));
+    let gap = DISPLAY_TEST_GRID_GAP.min(available);
+    let tile_width = available.saturating_sub(gap.saturating_mul(2)) / 3;
+    let values = [0u8, 32, 64, 96, 128, 160, 192, 224, 255];
+
+    for (index, gray) in values.into_iter().enumerate() {
+        let column = index % 3;
+        let row = index / 3;
+        let left = margin.saturating_add(column.saturating_mul(tile_width.saturating_add(gap)));
+        let top = DISPLAY_TEST_GRID_TOP
+            .saturating_add(row.saturating_mul(DISPLAY_TEST_GRID_TILE_HEIGHT.saturating_add(gap)));
+        let fill = gray565(gray);
+        canvas.fill_rect(left, top, tile_width, DISPLAY_TEST_GRID_TILE_HEIGHT, fill);
+        canvas.stroke_rect(
+            left,
+            top,
+            tile_width,
+            DISPLAY_TEST_GRID_TILE_HEIGHT,
+            if gray < 128 { WHITE } else { BLACK },
+        );
+        draw_text_font(
+            canvas,
+            left.saturating_add(8),
+            top.saturating_add(8),
+            "BLACK TEXT",
+            &FONT_8X13,
+            Rgb565::BLACK,
+        );
+        draw_text_font(
+            canvas,
+            left.saturating_add(8),
+            top.saturating_add(29),
+            "WHITE TEXT",
+            &FONT_8X13,
+            Rgb565::WHITE,
+        );
+        let label = format!("FILL {gray:03}");
+        draw_text_font(
+            canvas,
+            left.saturating_add(8),
+            top.saturating_add(50),
+            &label,
+            &FONT_8X13_BOLD,
+            if gray < 128 {
+                Rgb565::WHITE
+            } else {
+                Rgb565::BLACK
+            },
+        );
+    }
+}
+
+fn draw_horizontal_gradient(
+    canvas: &mut DisplayCanvas<'_>,
+    left: usize,
+    top: usize,
+    width: usize,
+    height: usize,
+) {
+    for column in 0..width {
+        let gray = gradient_value(column, width);
+        canvas.fill_rect(left.saturating_add(column), top, 1, height, gray565(gray));
+    }
+}
+
+fn draw_vertical_gradient(
+    canvas: &mut DisplayCanvas<'_>,
+    left: usize,
+    top: usize,
+    width: usize,
+    height: usize,
+) {
+    for row in 0..height {
+        let gray = gradient_value(row, height);
+        canvas.fill_rect(left, top.saturating_add(row), width, 1, gray565(gray));
+    }
+}
+
+fn draw_line_samples(
+    canvas: &mut DisplayCanvas<'_>,
+    left: usize,
+    top: usize,
+    width: usize,
+    height: usize,
+) {
+    canvas.fill_rect(left, top, width, height, WHITE);
+    canvas.stroke_rect(left, top, width, height, BLACK);
+    let line_left = left.saturating_add(64.min(width));
+    let line_width = width.saturating_sub(76.min(width));
+    for (index, thickness) in [1usize, 2, 4, 8].into_iter().enumerate() {
+        let line_top = top.saturating_add(12 + index.saturating_mul(27));
+        draw_text_font(
+            canvas,
+            left.saturating_add(8),
+            line_top.saturating_sub(3),
+            &format!("{thickness} px"),
+            &FONT_8X13,
+            Rgb565::BLACK,
+        );
+        canvas.fill_rect(line_left, line_top, line_width, thickness, BLACK);
+    }
+}
+
+fn draw_grayscale_ramp(
+    canvas: &mut DisplayCanvas<'_>,
+    left: usize,
+    top: usize,
+    width: usize,
+    height: usize,
+) {
+    for step in 0..16 {
+        let start = width.saturating_mul(step) / 16;
+        let end = width.saturating_mul(step + 1) / 16;
+        canvas.fill_rect(
+            left.saturating_add(start),
+            top,
+            end.saturating_sub(start),
+            height,
+            gray565((step * 255 / 15) as u8),
+        );
+    }
+    canvas.stroke_rect(left, top, width, height, BLACK);
+}
+
+fn gradient_value(position: usize, length: usize) -> u8 {
+    if length <= 1 {
+        0
+    } else {
+        (position.saturating_mul(255) / (length - 1)) as u8
+    }
+}
+
+fn gray565(gray: u8) -> u16 {
+    let gray = u16::from(gray);
+    let red_blue = (gray.saturating_mul(31) + 127) / 255;
+    let green = (gray.saturating_mul(63) + 127) / 255;
+    (red_blue << 11) | (green << 5) | red_blue
 }
 
 fn draw_screen_contents(canvas: &mut DisplayCanvas<'_>, lines: &[String]) {
@@ -350,7 +663,12 @@ impl DrawTarget for DisplayCanvas<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::standby_screen;
+    use super::{gray565, render_display_test, standby_screen};
+
+    fn pixel(frame: &[u8], width: usize, x: usize, y: usize) -> u16 {
+        let offset = (y * width + x) * 2;
+        u16::from_ne_bytes([frame[offset], frame[offset + 1]])
+    }
 
     #[test]
     fn standby_screen_is_unpadded_rgb565() {
@@ -367,5 +685,49 @@ mod tests {
             &image[header_offset..header_offset + 2],
             &0u16.to_ne_bytes()
         );
+    }
+
+    #[test]
+    fn display_test_contains_contrast_swatches_and_gradients() {
+        let frame = render_display_test(600, 800);
+
+        assert_eq!(frame.len(), 600 * 800 * 2);
+        assert_eq!(pixel(&frame, 600, 1, 1), gray565(0));
+        assert_eq!(pixel(&frame, 600, 180, 100), gray565(0));
+        assert_eq!(pixel(&frame, 600, 360, 100), gray565(32));
+        assert_eq!(pixel(&frame, 600, 560, 100), gray565(64));
+        assert_eq!(pixel(&frame, 600, 180, 190), gray565(96));
+        assert_eq!(pixel(&frame, 600, 180, 278), gray565(192));
+        assert_eq!(pixel(&frame, 600, 16, 395), gray565(0));
+        assert_eq!(pixel(&frame, 600, 583, 395), gray565(255));
+        assert_eq!(pixel(&frame, 600, 20, 464), gray565(0));
+        assert_eq!(pixel(&frame, 600, 20, 583), gray565(255));
+    }
+
+    #[test]
+    fn display_test_line_samples_have_requested_thicknesses() {
+        let frame = render_display_test(600, 800);
+
+        for y in 476..477 {
+            assert_eq!(pixel(&frame, 600, 380, y), gray565(0));
+        }
+        assert_eq!(pixel(&frame, 600, 380, 477), gray565(255));
+        for y in 503..505 {
+            assert_eq!(pixel(&frame, 600, 380, y), gray565(0));
+        }
+        assert_eq!(pixel(&frame, 600, 380, 505), gray565(255));
+        for y in 530..534 {
+            assert_eq!(pixel(&frame, 600, 380, y), gray565(0));
+        }
+        assert_eq!(pixel(&frame, 600, 380, 534), gray565(255));
+        for y in 557..565 {
+            assert_eq!(pixel(&frame, 600, 380, y), gray565(0));
+        }
+        assert_eq!(pixel(&frame, 600, 380, 565), gray565(255));
+    }
+
+    #[test]
+    fn display_test_handles_empty_frame() {
+        assert!(render_display_test(0, 0).is_empty());
     }
 }
