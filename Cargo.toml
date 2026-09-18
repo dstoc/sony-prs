@@ -8,5 +8,6 @@ members = [
     "crates/prs350-agent",
     "crates/prs-t1-agent",
     "crates/prs-markdown",
+    "crates/prs-sync-protocol",
 ]
 resolver = "2"

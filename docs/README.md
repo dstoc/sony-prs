@@ -23,6 +23,10 @@
 - [Build and deployment guide](../crates/prs-t1-agent/build.md)
 - [Tap-to-launch APK guide](../tools/prs-t1-launcher/README.md)
 
+## PRSync
+
+- [`prs-sync-protocol` wire types](../crates/prs-sync-protocol/README.md)
+
 The Markdown-reader documents describe the implementation in layers: the
 library README covers host use and tests, the architecture guide covers the
 shared pipeline and content contract, the development document is the staged
