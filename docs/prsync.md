@@ -158,6 +158,22 @@ Expected commands include:
 store the printed credential externally, such as in the
 `PRSYNC_SENDER_TOKEN` environment variable, for later commands.
 
+The CLI reads the Worker base URL from `PRSYNC_URL`. It reads the sender
+bearer token from `PRSYNC_SENDER_TOKEN` for push, clear, list, and revoke.
+The create command does not require a sender token because it uses the human
+approval flow.
+
+For example:
+
+    export PRSYNC_URL=https://sync.example.com
+    prs-send credentials create --name laptop
+    export PRSYNC_SENDER_TOKEN='the-token-printed-by-create'
+    prs-send push docs/index.md docs/images/diagram.png
+
+The create command writes the bearer token only to standard output. It writes
+the approval URL and progress messages to standard error. The other commands
+write metadata or status messages and never print a bearer token.
+
 The owner may use multiple trusted sender computers. Each installation may hold
 its own named sender credential, but all sender credentials belong to the same
 owner. `--name` is mandatory for `prs-send credentials create`; the owner
