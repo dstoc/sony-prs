@@ -89,6 +89,21 @@ requests use the states `pending`, `approved`, `denied`, `expired`, and
 `consumed`. The state trigger prevents rewinds. The Worker must insert the
 credential or session and mark the request `consumed` in one D1 transaction.
 
+## Bundle publication
+
+The Worker owns the BUNDLES binding. Clients never receive an R2 binding or
+an R2 credential. A push clears the D1 inbox reference before it deletes the
+old object, validates the received archive, and stores a new immutable object.
+The Worker publishes the new bundles row and the inbox reference in one D1
+batch. After the clear step, validation, R2, or final D1 failure leaves the
+inbox empty.
+
+New objects use the bundles/candidates/<random-id>.tar prefix. The prefix
+identifies objects that cleanup may inspect. A cleanup operation resolves
+inbox.current_bundle_id through bundles.object_key and keeps that object. All
+other objects under the prefix are abandoned replacement objects. The prefix
+remains on a current object because R2 has no rename operation.
+
 Run the dependency-free local migration regression test from the repository
 root with:
 

@@ -6,13 +6,21 @@
 use prs_sync_protocol::CURRENT_PROTOCOL_VERSION;
 use worker::*;
 
+mod storage;
+
 pub const D1_BINDING: &str = "DB";
 pub const R2_BINDING: &str = "BUNDLES";
 
 fn require_bindings(env: &Env) -> Result<()> {
-    let _database = env.d1(D1_BINDING)?;
-    let _bucket = env.bucket(R2_BINDING)?;
+    let _store = bundle_store(env)?;
     Ok(())
+}
+
+pub(crate) fn bundle_store(env: &Env) -> Result<storage::BundleStore> {
+    Ok(storage::BundleStore::from_env(
+        env.d1(D1_BINDING)?,
+        env.bucket(R2_BINDING)?,
+    ))
 }
 
 #[event(fetch)]
