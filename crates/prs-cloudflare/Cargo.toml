@@ -1,0 +1,15 @@
+[package]
+name = "prs-cloudflare"
+version = "0.1.0"
+edition = "2021"
+description = "Cloudflare Worker for the PRSync service"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+prs-sync-protocol = { path = "../prs-sync-protocol" }
+worker = { version = "0.8.6", features = ["d1"] }
+worker-macros = "0.8.6"

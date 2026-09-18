@@ -1,0 +1,45 @@
+# The production section references existing resources. Resource creation is
+# performed only by tools/prs-cloudflare-bootstrap.sh.
+name = "prs-reader"
+main = "build/worker/shim.mjs"
+compatibility_date = "2026-09-18"
+
+[build]
+command = "worker-build --release"
+
+[env.local]
+name = "prs-reader-local"
+workers_dev = true
+
+[env.local.vars]
+PRS_ENVIRONMENT = "local"
+
+[[env.local.d1_databases]]
+binding = "DB"
+database_name = "prs-reader-local"
+# This ID is only a local configuration identifier. Wrangler's default local
+# mode stores the database in .wrangler/state and does not contact Cloudflare.
+database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "migrations"
+
+[[env.local.r2_buckets]]
+binding = "BUNDLES"
+bucket_name = "prs-reader-local"
+
+[env.production]
+name = "prs-reader"
+workers_dev = false
+
+[env.production.vars]
+PRS_ENVIRONMENT = "production"
+
+[[env.production.d1_databases]]
+binding = "DB"
+database_name = "prs-reader-db"
+# Replace this placeholder with the ID returned by the bootstrap script.
+database_id = "REPLACE_WITH_PRODUCTION_D1_DATABASE_ID"
+migrations_dir = "migrations"
+
+[[env.production.r2_buckets]]
+binding = "BUNDLES"
+bucket_name = "prs-reader-documents"

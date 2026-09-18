@@ -1,4 +1,7 @@
 /target/
+.wrangler/
+.dev.vars
+.dev.vars.*
 *.img
 *.dump
 *.pcap

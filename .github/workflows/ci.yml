@@ -42,6 +42,7 @@ jobs:
           rustup toolchain install "${{ steps.build-pins.outputs.rust_toolchain }}" \
             --profile minimal \
             --component rustfmt \
+            --target wasm32-unknown-unknown \
             --no-self-update
           rustup run "${{ steps.build-pins.outputs.rust_toolchain }}" rustc --version
           rustup run "${{ steps.build-pins.outputs.rust_toolchain }}" cargo --version
@@ -63,6 +64,12 @@ jobs:
 
       - name: Check Release Please workspace configuration
         run: tools/test-release-please-workflow.sh
+
+      - name: Check Cloudflare Worker configuration
+        run: tools/test-prs-cloudflare-config.sh
+
+      - name: Build Cloudflare Worker WebAssembly
+        run: cargo +"${{ steps.build-pins.outputs.rust_toolchain }}" build -p prs-cloudflare --target wasm32-unknown-unknown --release
 
       - name: Run workspace tests
         run: cargo +"${{ steps.build-pins.outputs.rust_toolchain }}" test --workspace
