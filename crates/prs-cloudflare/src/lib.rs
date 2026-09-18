@@ -3,6 +3,13 @@
 //! The Worker owns all D1 and R2 access. The protocol crate remains a
 //! Cloudflare-independent collection of wire types.
 
+mod authorization;
+
+pub use authorization::{
+    AuthenticatedCapability, AuthorizationConfig, AuthorizationError, AuthorizationFailure,
+    AuthorizationResult, AuthorizationService, OwnerApprovalCapability, PendingPollingCapability,
+    ReaderAuthorization, SenderAuthorization,
+};
 use prs_sync_protocol::CURRENT_PROTOCOL_VERSION;
 use worker::*;
 
