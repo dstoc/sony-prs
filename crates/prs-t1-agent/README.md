@@ -72,12 +72,17 @@ different device.
 | `events [EVENT_DEVICE] [SECONDS]` | Read-only | Logs a finite raw evdev stream. It defaults to `/dev/input/event1` for 10 seconds and never calls `EVIOCGRAB`. |
 | `capture [FRAMEBUFFER]` | Read-only | Maps the visible RGB565 framebuffer with read access and emits an 8-bit grayscale PGM to stdout. |
 | `render-test [FRAMEBUFFER] [SECONDS] [WAVEFORM] [WAIT\|NOWAIT]` | Writes framebuffer | Draws a centered 200x120 RGB565 marker, requests a bounded EPDC update, captures the mapping, waits, and restores the original rectangle. Defaults to 3 seconds, `GC16`, and `WAIT`. |
+| `display-test [FRAMEBUFFER] [SECONDS] [WAVEFORM]` | Writes framebuffer | Draws a full-screen grayscale calibration pattern with fill/text swatches, gradients, a grayscale ramp, and 1-, 2-, 4-, and 8-pixel lines. Defaults to 60 seconds and `GC16`; it leaves the pattern visible and does not restore the previous framebuffer. |
 | `standalone-test [FRAMEBUFFER] [standby\|mem]` | Owns framebuffer/input | Runs the long-lived native shell after `zygote` and `system_server` have stopped. The default suspend mode is T1 EINK `standby`. |
 | `launch-standalone [FRAMEBUFFER] [standby\|mem]` | Stops Android framework | Root `su` entry point. It detaches into a new session, stops zygote, waits for the framework to exit, and enters `standalone-test`. |
 
-Only `render-test`, `standalone-test`, and `launch-standalone` mutate device
-state. `render-test` is bounded and restores the bytes it changes, but it still
-requires a reader-side recovery route and physical observation of the panel.
+Only `render-test`, `display-test`, `standalone-test`, and `launch-standalone`
+mutate device state. `render-test` is bounded and restores the bytes it changes,
+but it still requires a reader-side recovery route and physical observation of
+the panel. `display-test` is bounded but leaves its full-screen pattern visible
+when it exits. Use `capture` during its wait to record the framebuffer and use a
+physical camera to compare the panel output. The command does not stop Android
+display services, so another display owner can repaint the screen.
 
 ## Build and deploy
 
@@ -107,6 +112,21 @@ adb pull /data/local/tmp/t1-screen.pgm ./t1-screen.pgm
 The old T1 ADB daemon closes the `exec-out` channel and `adb shell` can
 translate binary output through a PTY. Redirect the PGM on the reader and pull
 it as shown above.
+
+To run the display calibration pattern, keep Android active for a bounded
+framebuffer probe:
+
+```sh
+# Shell 1: keep the pattern on the panel for 60 seconds.
+adb shell /data/local/tmp/prs-t1-agent display-test /dev/graphics/fb0 60 GC16
+# Shell 2: capture the framebuffer during that wait.
+adb shell '/data/local/tmp/prs-t1-agent capture > /data/local/tmp/display-test.pgm'
+adb pull /data/local/tmp/display-test.pgm ./display-test.pgm
+```
+
+The pattern remains in the framebuffer after `display-test` exits. A running
+Android display service can repaint it, so capture the screen during the wait.
+The command does not restore the previous framebuffer contents.
 
 For a manual native ownership test, the helper pushes the binary, stops the
 framework, launches a detached process, reports status, and provides the

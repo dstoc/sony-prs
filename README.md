@@ -97,6 +97,7 @@ The agent commands are split by risk:
 | `events` | Read-only | Finite raw evdev capture; never grabs or injects events. |
 | `capture` | Read-only | RGB565 framebuffer capture as an 8-bit grayscale PGM. |
 | `render-test` | Writes framebuffer | Bounded marker update followed by restoration of the original rectangle. |
+| `display-test` | Writes framebuffer | Bounded full-screen grayscale calibration pattern with contrast swatches, gradients, a grayscale ramp, and line-width samples. |
 | `standalone-test` | Owns framebuffer/input | Long-running UI test after Android framework ownership has been stopped. |
 | `launch-standalone` | Stops Android framework | Root `su` handoff that detaches, stops zygote, and enters the native UI test. |
 
