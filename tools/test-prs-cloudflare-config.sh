@@ -17,7 +17,7 @@ required_config=(
     'command = "worker-build --release"'
 )
 for expected in "${required_config[@]}"; do
-    if ! rg -Fq "$expected" "$config"; then
+    if ! grep -Fq "$expected" "$config"; then
         echo "missing Worker configuration: $expected" >&2
         exit 1
     fi
@@ -37,7 +37,7 @@ if grep -Fq 'REPLACE_WITH_PRODUCTION_D1_DATABASE_ID' <<<"$local_environment"; th
     exit 1
 fi
 
-if rg -n -i 'public|allow_public' "$config"; then
+if grep -Eni 'public|allow_public' "$config"; then
     echo "production R2 configuration must remain private" >&2
     exit 1
 fi
@@ -47,21 +47,21 @@ for expected in \
     'CREATE TABLE authorization_requests' \
     'CREATE TABLE sender_credentials' \
     'CREATE TABLE reader_sessions'; do
-    if ! rg -Fq "$expected" "$migration"; then
+    if ! grep -Fq "$expected" "$migration"; then
         echo "missing D1 migration statement: $expected" >&2
         exit 1
     fi
 done
 
 for expected in '--confirm-production' 'wrangler d1 create prs-reader-db' 'wrangler r2 bucket create prs-reader-documents'; do
-    if ! rg -Fq -- "$expected" "$bootstrap"; then
+    if ! grep -Fq -- "$expected" "$bootstrap"; then
         echo "missing bootstrap guard or resource creation: $expected" >&2
         exit 1
     fi
 done
 
 for expected in '--production' 'wrangler d1 migrations apply DB --remote --env production --no-x-provision' 'wrangler deploy --env production --no-x-provision'; do
-    if ! rg -Fq -- "$expected" "$deploy"; then
+    if ! grep -Fq -- "$expected" "$deploy"; then
         echo "missing safe deployment guard or command: $expected" >&2
         exit 1
     fi

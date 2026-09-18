@@ -23,7 +23,7 @@ repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 worker_dir="$repo_root/crates/prs-cloudflare"
 config="$worker_dir/wrangler.toml"
 
-if rg -Fq 'REPLACE_WITH_PRODUCTION_D1_DATABASE_ID' "$config"; then
+if grep -Fq 'REPLACE_WITH_PRODUCTION_D1_DATABASE_ID' "$config"; then
     echo "replace the production D1 ID before deploying" >&2
     exit 1
 fi
