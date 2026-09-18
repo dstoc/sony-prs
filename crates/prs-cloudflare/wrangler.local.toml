@@ -1,0 +1,23 @@
+# Local-only configuration for the end-to-end test harness.
+#
+# This file enables the local-test owner boundary. It must not be used for a
+# production deployment.
+name = "prs-reader-local-e2e"
+main = "build/worker/shim.mjs"
+compatibility_date = "2026-09-18"
+
+[build]
+command = "worker-build --release --features local-test"
+
+[vars]
+PRS_ENVIRONMENT = "local"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "prs-reader-local-e2e"
+database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "migrations"
+
+[[r2_buckets]]
+binding = "BUNDLES"
+bucket_name = "prs-reader-local-e2e"

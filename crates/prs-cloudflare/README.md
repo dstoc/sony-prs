@@ -46,6 +46,21 @@ The local bindings do not require a Cloudflare account or production
 credentials. Local R2 object operations can use Wrangler's `--local` mode with
 the `prs-reader-local` bucket.
 
+Run the complete local workflow test from the repository root after installing
+the two local development tools:
+
+```sh
+cargo install worker-build --version 0.8.6 --locked
+npm install --global wrangler@4
+python3 tools/test-prs-cloudflare-local.py
+```
+
+The test uses `wrangler.local.toml`, a temporary local D1/R2 state directory,
+and a test-only owner identity. It does not contact Cloudflare. It covers
+sender and reader approval, bundle replacement, failed replacement clearing,
+conditional manifest reads, bundle download, inbox clearing, credential
+listing and revocation, and capability rejection.
+
 ## Production bootstrap and deployment
 
 Production resource creation is a separate, deliberate operation:

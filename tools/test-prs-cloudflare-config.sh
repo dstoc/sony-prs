@@ -3,6 +3,7 @@ set -euo pipefail
 
 repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 config="$repo_root/crates/prs-cloudflare/wrangler.toml"
+local_test_config="$repo_root/crates/prs-cloudflare/wrangler.local.toml"
 migrations_directory="$repo_root/crates/prs-cloudflare/migrations"
 bootstrap="$repo_root/tools/prs-cloudflare-bootstrap.sh"
 deploy="$repo_root/tools/prs-cloudflare-deploy.sh"
@@ -19,6 +20,18 @@ required_config=(
 for expected in "${required_config[@]}"; do
     if ! grep -Fq "$expected" "$config"; then
         echo "missing Worker configuration: $expected" >&2
+        exit 1
+    fi
+done
+
+for expected in \
+    'name = "prs-reader-local-e2e"' \
+    'command = "worker-build --release --features local-test"' \
+    'PRS_ENVIRONMENT = "local"' \
+    'binding = "DB"' \
+    'binding = "BUNDLES"'; do
+    if ! grep -Fq "$expected" "$local_test_config"; then
+        echo "missing local end-to-end Worker configuration: $expected" >&2
         exit 1
     fi
 done

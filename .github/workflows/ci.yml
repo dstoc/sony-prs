@@ -74,6 +74,15 @@ jobs:
       - name: Test Cloudflare authorization state machine
         run: python3 tools/test-prs-cloudflare-authorization.py
 
+      - name: Install worker-build for local Worker tests
+        run: cargo +"${{ steps.build-pins.outputs.rust_toolchain }}" install worker-build --version 0.8.6 --locked
+
+      - name: Install Wrangler for local Worker tests
+        run: npm install --global wrangler@4
+
+      - name: Run local Cloudflare Worker end-to-end test
+        run: python3 tools/test-prs-cloudflare-local.py
+
       - name: Build Cloudflare Worker WebAssembly
         run: cargo +"${{ steps.build-pins.outputs.rust_toolchain }}" build -p prs-cloudflare --target wasm32-unknown-unknown --release
 
