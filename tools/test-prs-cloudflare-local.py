@@ -440,7 +440,14 @@ def main() -> None:
             finally:
                 stop_process(process)
 
-        if process.returncode not in (0, -signal.SIGTERM, -signal.SIGINT):
+        expected_shutdown_codes = {
+            0,
+            -signal.SIGTERM,
+            -signal.SIGINT,
+            128 + signal.SIGTERM,
+            128 + signal.SIGINT,
+        }
+        if process.returncode not in expected_shutdown_codes:
             raise RuntimeError(f"Wrangler exited with status {process.returncode}; see {log_path}")
 
     print("prs-cloudflare local end-to-end workflow passed")
