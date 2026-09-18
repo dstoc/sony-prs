@@ -355,6 +355,7 @@ dependencies = [
  "memchr",
  "pin-project-lite",
  "slab",
+]
 
 [[package]]
 name = "getrandom"
