@@ -509,7 +509,7 @@ fn append_bytes<W: Write>(
     path: &str,
     bytes: &[u8],
 ) -> Result<(), BundleError> {
-    let mut header = Header::new_gnu();
+    let mut header = Header::new_ustar();
     header.set_size(bytes.len() as u64);
     header.set_mode(0o644);
     header.set_entry_type(EntryType::Regular);
@@ -525,7 +525,7 @@ fn append_source<W: Write>(
 ) -> Result<(), BundleError> {
     let mut file = File::open(&source.source).map_err(BundleError::Io)?;
     let mut bounded_file = (&mut file).take(source.size);
-    let mut header = Header::new_gnu();
+    let mut header = Header::new_ustar();
     header.set_size(source.size);
     header.set_mode(0o644);
     header.set_entry_type(EntryType::Regular);
@@ -552,7 +552,7 @@ fn process_archive<R: Read>(
     let mut counted = CountingReader::new(reader, MAX_ARCHIVE_SIZE);
     let (manifest, expected, seen) = {
         let mut archive = Archive::new(&mut counted);
-        let entries = archive.entries().map_err(BundleError::Io)?;
+        let entries = archive.entries().map_err(BundleError::Io)?.raw(true);
         let mut manifest: Option<Manifest> = None;
         let mut expected: HashMap<BundlePath, u64> = HashMap::new();
         let mut seen = HashMap::new();
@@ -560,14 +560,14 @@ fn process_archive<R: Read>(
 
         for entry_result in entries {
             let mut entry = entry_result.map_err(BundleError::Io)?;
-            let path = archive_path(&entry)?;
             let entry_type = entry.header().entry_type();
             if entry_type != EntryType::Regular {
                 return Err(BundleError::UnsupportedEntry {
-                    path: path.as_str().to_owned(),
+                    path: String::from_utf8_lossy(entry.path_bytes().as_ref()).into_owned(),
                     entry_type: format_entry_type(entry_type),
                 });
             }
+            let path = archive_path(&entry)?;
             if seen.insert(path.clone(), ()).is_some() {
                 return Err(BundleError::DuplicateArchivePath(path));
             }
@@ -987,6 +987,31 @@ mod tests {
     }
 
     #[test]
+    fn generated_long_paths_use_only_regular_ustar_entries() {
+        let root = temp_dir();
+        let entry = write_file(root.path(), "docs/index.md", b"index");
+        let long_relative = format!("{}asset.bin", "nested/".repeat(20));
+        let asset = write_file(root.path(), &format!("docs/{long_relative}"), b"asset");
+        let mut archive_bytes = Vec::new();
+        let mut builder = BundleBuilder::new(entry);
+        builder.add_file(asset);
+        builder.write(&mut archive_bytes).unwrap();
+
+        let manifest = validate(Cursor::new(&archive_bytes))
+            .unwrap()
+            .into_manifest();
+        assert!(manifest
+            .files
+            .iter()
+            .any(|file| file.path.as_str() == long_relative));
+
+        let mut archive = Archive::new(Cursor::new(archive_bytes));
+        for entry in archive.entries().unwrap().raw(true) {
+            assert_eq!(entry.unwrap().header().entry_type(), EntryType::Regular);
+        }
+    }
+
+    #[test]
     fn duplicate_bundle_paths_are_rejected() {
         let root = temp_dir();
         let first = write_file(root.path(), "docs/index.md", b"one");
@@ -1103,6 +1128,51 @@ mod tests {
                 Err(BundleError::UnsupportedEntry { .. })
             ));
         }
+    }
+
+    #[test]
+    fn pax_extension_members_are_rejected() {
+        let valid_manifest = manifest_bytes(&[("index.md", 1)], "index.md");
+        let mut archive = Vec::new();
+        let mut builder = Builder::new(&mut archive);
+        append_bytes(&mut builder, MANIFEST_PATH, &valid_manifest).unwrap();
+        builder
+            .append_pax_extensions([("comment", b"metadata".as_slice())])
+            .unwrap();
+        append_bytes(&mut builder, "index.md", b"x").unwrap();
+        builder.finish().unwrap();
+        drop(builder);
+
+        assert!(matches!(
+            validate(Cursor::new(archive)),
+            Err(BundleError::UnsupportedEntry { .. })
+        ));
+    }
+
+    #[test]
+    fn gnu_long_name_members_are_rejected() {
+        let long_path = format!("{}index.md", "nested/".repeat(20));
+        let valid_manifest =
+            manifest_bytes(&[("index.md", 1), (long_path.as_str(), 1)], "index.md");
+        let mut archive = Vec::new();
+        let mut builder = Builder::new(&mut archive);
+        append_bytes(&mut builder, MANIFEST_PATH, &valid_manifest).unwrap();
+        append_bytes(&mut builder, "index.md", b"x").unwrap();
+
+        let mut header = Header::new_gnu();
+        header.set_size(1);
+        header.set_entry_type(EntryType::Regular);
+        header.set_cksum();
+        builder
+            .append_data(&mut header, &long_path, Cursor::new(b"x"))
+            .unwrap();
+        builder.finish().unwrap();
+        drop(builder);
+
+        assert!(matches!(
+            validate(Cursor::new(archive)),
+            Err(BundleError::UnsupportedEntry { .. })
+        ));
     }
 
     #[test]
