@@ -427,6 +427,12 @@ def main() -> None:
             try:
                 wait_for_health(process, port, log_path)
                 run_workflow(f"http://127.0.0.1:{port}")
+            except Exception as error:
+                log.flush()
+                log.seek(0)
+                raise RuntimeError(
+                    f"local Worker test failed: {error}\nWrangler log:\n{log.read()}"
+                ) from error
             finally:
                 stop_process(process)
 
