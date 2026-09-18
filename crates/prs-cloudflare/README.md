@@ -69,7 +69,25 @@ outside pull request jobs.
 
 ## Schema
 
-`migrations/0001_initial.sql` creates metadata tables for the inbox,
-authorization requests, sender credentials, and reader sessions. It does not
-store bundle bytes. The Worker will add the protocol endpoints in later
-issues.
+`migrations/0001_initial.sql` creates idempotent metadata tables for:
+
+- one current inbox revision and an optional current bundle reference;
+- immutable bundle metadata and its private R2 object key;
+- sender and reader authorization requests;
+- 32-byte polling-secret, sender-token, and reader-session hashes;
+- boot-scoped reader sessions;
+- named sender credentials with revocation timestamps; and
+- one configured Cloudflare Access owner identity.
+
+The migration does not store bundle bytes or bearer credentials. Authorization
+requests use the states `pending`, `approved`, `denied`, `expired`, and
+`consumed`. The state trigger prevents rewinds. The Worker must insert the
+claimed credential or session and mark the request `consumed` in one D1
+transaction.
+
+Run the dependency-free local migration regression test from the repository
+root with:
+
+```sh
+python3 tools/test-prs-cloudflare-migrations.py
+```

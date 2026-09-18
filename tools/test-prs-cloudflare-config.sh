@@ -43,10 +43,14 @@ if grep -Eni 'public|allow_public' "$config"; then
 fi
 
 for expected in \
-    'CREATE TABLE inbox' \
-    'CREATE TABLE authorization_requests' \
-    'CREATE TABLE sender_credentials' \
-    'CREATE TABLE reader_sessions'; do
+    'CREATE TABLE IF NOT EXISTS bundles' \
+    'CREATE TABLE IF NOT EXISTS inbox' \
+    'CREATE TABLE IF NOT EXISTS authorization_requests' \
+    'CREATE TABLE IF NOT EXISTS sender_credentials' \
+    'CREATE TABLE IF NOT EXISTS reader_sessions' \
+    'CREATE TABLE IF NOT EXISTS owner_identity' \
+    "state IN ('pending', 'approved', 'denied', 'expired', 'consumed')" \
+    'CREATE TRIGGER IF NOT EXISTS authorization_requests_state_transition'; do
     if ! grep -Fq "$expected" "$migration"; then
         echo "missing D1 migration statement: $expected" >&2
         exit 1
