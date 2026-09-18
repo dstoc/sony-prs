@@ -3,7 +3,7 @@ set -euo pipefail
 
 repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 config="$repo_root/crates/prs-cloudflare/wrangler.toml"
-migration="$repo_root/crates/prs-cloudflare/migrations/0001_initial.sql"
+migrations_directory="$repo_root/crates/prs-cloudflare/migrations"
 bootstrap="$repo_root/tools/prs-cloudflare-bootstrap.sh"
 deploy="$repo_root/tools/prs-cloudflare-deploy.sh"
 
@@ -44,14 +44,14 @@ fi
 
 for expected in \
     'CREATE TABLE IF NOT EXISTS bundles' \
-    'CREATE TABLE IF NOT EXISTS inbox' \
-    'CREATE TABLE IF NOT EXISTS authorization_requests' \
-    'CREATE TABLE IF NOT EXISTS sender_credentials' \
-    'CREATE TABLE IF NOT EXISTS reader_sessions' \
+    'CREATE TABLE inbox' \
+    'CREATE TABLE authorization_requests' \
+    'CREATE TABLE sender_credentials' \
+    'CREATE TABLE reader_sessions' \
     'CREATE TABLE IF NOT EXISTS owner_identity' \
     "state IN ('pending', 'approved', 'denied', 'expired', 'consumed')" \
-    'CREATE TRIGGER IF NOT EXISTS authorization_requests_state_transition'; do
-    if ! grep -Fq "$expected" "$migration"; then
+    'CREATE TRIGGER authorization_requests_state_transition'; do
+    if ! grep -R -Fq "$expected" "$migrations_directory"; then
         echo "missing D1 migration statement: $expected" >&2
         exit 1
     fi

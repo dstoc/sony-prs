@@ -69,7 +69,12 @@ outside pull request jobs.
 
 ## Schema
 
-`migrations/0001_initial.sql` creates idempotent metadata tables for:
+`migrations/0001_initial.sql` creates the original metadata tables. The
+numbered `0002_metadata_schema_upgrade.sql` migration upgrades those tables
+for existing local and production databases. A fresh database applies both
+migrations in order.
+
+The resulting schema contains:
 
 - one current inbox revision and an optional current bundle reference;
 - immutable bundle metadata and its private R2 object key;
@@ -79,11 +84,10 @@ outside pull request jobs.
 - named sender credentials with revocation timestamps; and
 - one configured Cloudflare Access owner identity.
 
-The migration does not store bundle bytes or bearer credentials. Authorization
+The migrations do not store bundle bytes or bearer credentials. Authorization
 requests use the states `pending`, `approved`, `denied`, `expired`, and
 `consumed`. The state trigger prevents rewinds. The Worker must insert the
-claimed credential or session and mark the request `consumed` in one D1
-transaction.
+credential or session and mark the request `consumed` in one D1 transaction.
 
 Run the dependency-free local migration regression test from the repository
 root with:
