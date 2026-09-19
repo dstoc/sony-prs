@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.10.0](https://github.com/dstoc/sony-prs/compare/prs-t1-agent-v0.9.0...prs-t1-agent-v0.10.0) (2026-09-19)
+
+
+### Features
+
+* **prs-t1-agent:** add network capability probe ([7c81c70](https://github.com/dstoc/sony-prs/commit/7c81c706e57ef26b7d026fe46821bf7c76a0a13d))
+
+
+### Bug Fixes
+
+* **prs-t1-agent:** avoid probe worker threads ([5fe1c00](https://github.com/dstoc/sony-prs/commit/5fe1c00979fd0ccd37fc4dfcab680e15cf47f2a0))
+* **prs-t1-agent:** bound DNS and validate negative probe ([e0d6f9d](https://github.com/dstoc/sony-prs/commit/e0d6f9d28f5d3eaea3d77ff2f31cffabbddb5494))
+
 ## [0.9.0](https://github.com/dstoc/sony-prs/compare/prs-t1-agent-v0.8.0...prs-t1-agent-v0.9.0) (2026-09-18)
 
 
