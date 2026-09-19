@@ -939,6 +939,21 @@ def run_workflow(base_url: str) -> None:
     response = request(base_url, "GET", "/health")
     assert_status(response, 200, "Worker health")
 
+    response = request(base_url, "GET", "/ready")
+    assert_status(response, 200, "Worker schema readiness")
+    readiness = response.json()
+    if readiness["status"] != "ready":
+        raise AssertionError("Worker reported an unexpected ready response")
+    requirement = readiness["schema_requirement"]
+    if requirement != {
+        "migration_id": 7,
+        "migration_name": "0007_remove_owner_identity.sql",
+    }:
+        raise AssertionError("Worker readiness did not report its release requirement")
+    applied = readiness["applied_migration"]
+    if applied["migration_id"] != 7 or applied["migration_name"] != requirement["migration_name"]:
+        raise AssertionError("Worker readiness did not report the applied migration")
+
     oversized_authorization = request(
         base_url,
         "POST",

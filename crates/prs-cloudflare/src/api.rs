@@ -9,6 +9,7 @@ use crate::authorization::{
     AuthorizationConfig, AuthorizationError, AuthorizationFailure, AuthorizationService,
     PendingPollingCapability, RateLimitDecision,
 };
+use crate::schema::{self, AppliedMigration, SchemaReadiness, SchemaRequirement};
 use crate::storage::{BundlePushError, BundleStore, PublishedBundle};
 use futures_util::StreamExt;
 use prs_sync_protocol::{
@@ -134,11 +135,21 @@ struct TestMaintenanceResponse {
     bundles: crate::storage::CleanupReport,
 }
 
+#[derive(Debug, Serialize)]
+struct ReadinessResponse {
+    service: &'static str,
+    status: &'static str,
+    reason: Option<&'static str>,
+    schema_requirement: SchemaRequirement,
+    applied_migration: Option<AppliedMigration>,
+}
+
 /// Adds the public health and versioned protocol routes to a Worker router.
 pub fn register(router: Router<'static, ()>) -> Router<'static, ()> {
     let router = router
         .get_async("/", root)
         .get_async("/health", health)
+        .get_async("/ready", readiness)
         .post_async("/api/v1/authorization/sender", create_sender)
         .post_async("/api/v1/authorization/reader", create_reader)
         .post_async("/api/v1/authorization/poll", poll_authorization)
@@ -189,6 +200,34 @@ async fn test_maintenance(request: Request, context: RouteContext<()>) -> Result
         authorization,
         bundles,
     })
+}
+
+async fn readiness(_request: Request, context: RouteContext<()>) -> Result<Response> {
+    let readiness = match context.env.d1(crate::D1_BINDING) {
+        Ok(database) => match schema::inspect(database).await {
+            Ok(readiness) => readiness,
+            Err(_) => SchemaReadiness::unavailable(),
+        },
+        Err(_) => SchemaReadiness::unavailable(),
+    };
+    let status = if readiness.is_ready() { 200 } else { 503 };
+    let mut response = json_response(&readiness_response(readiness), status)?;
+    response.headers_mut().set("Cache-Control", "no-store")?;
+    Ok(response)
+}
+
+fn readiness_response(readiness: SchemaReadiness) -> ReadinessResponse {
+    ReadinessResponse {
+        service: "prs-cloudflare",
+        status: if readiness.is_ready() {
+            "ready"
+        } else {
+            "not_ready"
+        },
+        reason: readiness.failure.map(|failure| failure.as_str()),
+        schema_requirement: readiness.requirement,
+        applied_migration: readiness.applied_migration,
+    }
 }
 
 async fn create_sender(mut request: Request, context: RouteContext<()>) -> Result<Response> {
@@ -998,5 +1037,14 @@ mod tests {
         )));
         assert_eq!(error.status, 500);
         assert_eq!(error.code, ApiErrorCode::Internal);
+    }
+
+    #[test]
+    fn unavailable_schema_readiness_is_not_ready() {
+        let response = readiness_response(SchemaReadiness::unavailable());
+        assert_eq!(response.status, "not_ready");
+        assert_eq!(response.reason, Some("migration_history_unavailable"));
+        assert_eq!(response.schema_requirement.migration_id, 7);
+        assert!(response.applied_migration.is_none());
     }
 }

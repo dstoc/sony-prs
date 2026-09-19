@@ -9,6 +9,7 @@ mod authorization;
 mod identity;
 #[cfg(feature = "local-test")]
 mod test_support;
+mod schema;
 
 use prs_sync_protocol::Timestamp;
 
@@ -159,5 +160,10 @@ mod tests {
     fn approval_routes_are_separate_explicit_actions() {
         assert_ne!("/a/:request_id/approve", "/a/:request_id/deny");
         assert_ne!("/a/:request_id", "/a/:request_id/approve");
+    }
+
+    #[test]
+    fn readiness_is_distinct_from_process_health() {
+        assert_ne!("/health", "/ready");
     }
 }

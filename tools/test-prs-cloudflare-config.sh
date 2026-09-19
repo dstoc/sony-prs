@@ -6,7 +6,9 @@ config="$repo_root/crates/prs-cloudflare/wrangler.toml"
 local_test_config="$repo_root/crates/prs-cloudflare/wrangler.local.toml"
 migrations_directory="$repo_root/crates/prs-cloudflare/migrations"
 bootstrap="$repo_root/tools/prs-cloudflare-bootstrap.sh"
+migrate="$repo_root/tools/prs-cloudflare-migrate.sh"
 deploy="$repo_root/tools/prs-cloudflare-deploy.sh"
+readiness="$repo_root/tools/prs-cloudflare-readiness.sh"
 
 required_config=(
     'name = "prs-reader-local"'
@@ -103,6 +105,19 @@ for expected in \
     fi
 done
 
+for expected in \
+    'RELEASE_SCHEMA_REQUIREMENT' \
+    'migration_id: 7' \
+    'migration_name: "0007_remove_owner_identity.sql"' \
+    'SELECT id, name FROM d1_migrations ORDER BY id ASC' \
+    'get_async("/ready", readiness)'; do
+    if ! grep -R -Fq "$expected" \
+        "$repo_root/crates/prs-cloudflare/src" "$repo_root/crates/prs-cloudflare/README.md"; then
+        echo "missing schema readiness contract: $expected" >&2
+        exit 1
+    fi
+done
+
 for expected in '--confirm-production' 'wrangler d1 create prs-reader-db' 'wrangler r2 bucket create prs-reader-documents'; do
     if ! grep -Fq -- "$expected" "$bootstrap"; then
         echo "missing bootstrap guard or resource creation: $expected" >&2
@@ -110,9 +125,31 @@ for expected in '--confirm-production' 'wrangler d1 create prs-reader-db' 'wrang
     fi
 done
 
-for expected in '--production' 'wrangler d1 migrations apply DB --remote --env production --no-x-provision' 'wrangler deploy --env production --no-x-provision'; do
+for expected in '--production' 'wrangler deploy --env production --no-x-provision'; do
     if ! grep -Fq -- "$expected" "$deploy"; then
         echo "missing safe deployment guard or command: $expected" >&2
+        exit 1
+    fi
+done
+if grep -Fq 'wrangler d1' "$deploy"; then
+    echo "Worker deployment must not run D1 management commands" >&2
+    exit 1
+fi
+
+for expected in \
+    '--production' \
+    'wrangler d1 migrations list prs-reader-db --remote --env production' \
+    'wrangler d1 migrations apply prs-reader-db --remote --env production --no-x-provision' \
+    'prs-cloudflare-migrations.lock'; do
+    if ! grep -Fq -- "$expected" "$migrate"; then
+        echo "missing operator migration guard or command: $expected" >&2
+        exit 1
+    fi
+done
+
+for expected in '/ready' 'curl --silent --show-error --max-time 10' 'status" != "200"'; do
+    if ! grep -Fq -- "$expected" "$readiness"; then
+        echo "missing read-only readiness check: $expected" >&2
         exit 1
     fi
 done

@@ -5,11 +5,15 @@ if [[ "${1:-}" != "--production" || "$#" -ne 1 ]]; then
     cat >&2 <<'USAGE'
 Deploy the existing production PRSync resources.
 
-This command never creates a D1 database or R2 bucket. Use
-tools/prs-cloudflare-bootstrap.sh for the one-time resource bootstrap.
+This command only publishes the Worker. It never applies migrations and never
+creates a D1 database or R2 bucket. Use the operator migration command and
+tools/prs-cloudflare-bootstrap.sh separately.
 
 Usage:
   tools/prs-cloudflare-deploy.sh --production
+
+Optional readiness check:
+  PRS_READER_URL=https://reader.example.com tools/prs-cloudflare-deploy.sh --production
 USAGE
     exit 2
 fi
@@ -29,5 +33,15 @@ if grep -Fq 'REPLACE_WITH_PRODUCTION_D1_DATABASE_ID' "$config"; then
 fi
 
 cd "$worker_dir"
-wrangler d1 migrations apply DB --remote --env production --no-x-provision
 wrangler deploy --env production --no-x-provision
+
+if [[ -n "${PRS_READER_URL:-}" ]]; then
+    "$repo_root/tools/prs-cloudflare-readiness.sh" "$PRS_READER_URL"
+else
+    cat <<'NEXT'
+
+Deployment completed. Check the new release before serving traffic:
+  tools/prs-cloudflare-readiness.sh <worker-url>
+The response must report status "ready" and this release's schema requirement.
+NEXT
+fi

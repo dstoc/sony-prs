@@ -34,11 +34,17 @@ wrangler d1 migrations apply DB --local --env local
 wrangler dev --env local
 ```
 
-The local Worker listens on Wrangler's default address. Check the scaffold
+The local Worker listens on Wrangler's default address. Check the process
 health endpoint in another shell:
 
 ```sh
 curl http://localhost:8787/health
+```
+
+Check schema readiness after applying local migrations:
+
+```sh
+curl http://localhost:8787/ready
 ```
 
 The local bindings do not require a Cloudflare account or production
@@ -75,16 +81,45 @@ Production resource creation is a separate, deliberate operation:
 
 The script creates the named D1 database and R2 bucket. Copy the returned D1
 ID into `wrangler.toml`, review the production account and resource names, and
-apply the migration:
+apply migrations with the operator command:
+
+```sh
+../../tools/prs-cloudflare-migrate.sh --production
+```
+
+The migration command locks concurrent runs, lists pending migrations, applies
+the checked-in files, and lists the history again. Do not continue when a
+migration fails or when the final list still has pending work. Inspect the D1
+database and Wrangler history before retrying a failed migration.
+
+After migration verification, publish the Worker with the restricted deploy
+credential:
 
 ```sh
 ../../tools/prs-cloudflare-deploy.sh --production
 ```
 
-The deploy script disables Wrangler's automatic resource provisioning. The
-commands only use the resources named in the configuration. They do not create
-a database or a bucket. Keep Cloudflare credentials outside the repository and
-outside pull request jobs.
+The deploy script does not run D1 management commands. It disables Wrangler's
+automatic resource provisioning and only publishes the Worker that uses the
+existing bindings. Set `PRS_READER_URL` on the command to run the readiness
+check immediately after publish:
+
+```sh
+PRS_READER_URL=https://reader.example.com \
+  ../../tools/prs-cloudflare-deploy.sh --production
+```
+
+Without that variable, run the check explicitly:
+
+```sh
+../../tools/prs-cloudflare-readiness.sh https://reader.example.com
+```
+
+The check reads `d1_migrations` through the Worker `DB` binding. It does not
+use D1 API credentials and it never applies a migration.
+
+Keep operator and deployment credentials outside the repository and outside
+pull-request jobs.
 
 Before the production Worker can serve approval requests, configure
 `PRS_APPROVAL_BASE_URL` with the HTTPS base URL for the human approval
@@ -109,6 +144,27 @@ coordination for bundle publication and cleanup. Migration
 rate-limit state table. Migration `0007_remove_owner_identity.sql` removes the
 obsolete D1 owner-identity policy. A fresh database applies all migrations in
 order.
+
+The Worker release declares its schema requirement in
+`src/schema.rs` as `RELEASE_SCHEMA_REQUIREMENT`. The current release requires
+migration `0007_remove_owner_identity.sql`. The `/ready` endpoint reads the
+Wrangler `d1_migrations` history through `DB` and returns HTTP 200 only when
+the required migration prefix is contiguous and has the expected names. It
+returns HTTP 503 for missing, unavailable, incomplete, outdated, or mismatched
+history. Readiness is read-only and never runs migrations.
+
+`/health` reports only that the Worker process responds. It is not a schema
+check. An old Worker can report readiness for its own requirement after a
+compatible additive migration. That response is not proof that a newer
+release is ready. Always inspect `/ready` after the new Worker is published
+and confirm the response contains that release's requirement.
+
+Schema changes must preserve old Worker behavior during the migration and
+deployment window. Prefer additive columns, indexes, tables, and nullable
+fields. Defer drops, renames, and other destructive cleanup until old Worker
+releases no longer need the schema. If a migration changes the required
+schema, update `RELEASE_SCHEMA_REQUIREMENT` in the same release and apply and
+verify the migration before publishing that release.
 
 The resulting schema contains:
 

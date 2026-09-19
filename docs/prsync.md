@@ -811,7 +811,7 @@ Cloudflare integration tests should use local/emulated resources rather than pro
 
 ## Deployment
 
-Production Worker deployment should occur from GitHub Actions after changes reach `main` and required checks pass.
+Production Worker deployment should occur after changes reach `main` and required checks pass.
 
 Production deployment credentials are stored in protected GitHub secrets or an equivalent protected deployment environment.
 
@@ -820,15 +820,32 @@ Expected secrets include:
     CLOUDFLARE_ACCOUNT_ID
     CLOUDFLARE_API_TOKEN
 
-The Cloudflare API token should have only the permissions needed to deploy this application and manage the resources required by its deployment workflow.
+The deployment API token should have only the permission needed to publish the
+Worker. It must not have D1 management permission. The operator migration
+command uses a separate protected credential.
 
-Deployment should:
+Deployment should follow this order:
 
-1. build the Worker;
-2. apply pending D1 migrations;
-3. deploy the Worker;
-4. retain the configured D1 and R2 bindings;
-5. perform a small non-destructive health check.
+1. review each checked-in migration for compatibility with the old Worker;
+2. apply compatible migrations with the operator credential;
+3. verify the complete Wrangler history and database integrity;
+4. publish the Worker with the restricted deployment credential;
+5. inspect `/ready` through the Worker D1 binding;
+6. serve traffic only when the new release reports `ready`.
+
+The readiness endpoint is read-only. It must not use D1 API credentials or run
+migrations. `/health` only confirms that the Worker responds. An old Worker
+can report readiness for its own requirement, but that response is not proof
+that a newer release is ready. The operator must inspect `/ready` after the
+new Worker is published.
+
+Prefer additive schema changes. Defer destructive cleanup until old Worker
+releases no longer need the affected schema. If publication fails after a
+compatible migration, restore the last Worker release and keep the additive
+schema. If a migration is incomplete or destructive, stop traffic, inspect
+D1 history and foreign-key integrity, and recover with the operator credential
+before publishing the matching Worker. Never delete migration-history rows or
+edit an applied migration.
 
 Production deployment must not expose Cloudflare credentials to pull-request jobs.
 
