@@ -1,13 +1,16 @@
-use reqwest::blocking::{Client, Response};
+use hickory_resolver::config::{ResolverConfig, GOOGLE};
+use hickory_resolver::net::runtime::TokioRuntimeProvider;
+use hickory_resolver::TokioResolver;
 use reqwest::redirect::Policy;
-use reqwest::Url;
+use reqwest::{Client, Response, Url};
 use std::error::Error as StdError;
 use std::fmt;
-use std::io::{self, Read};
-use std::net::{SocketAddr, ToSocketAddrs};
-use std::sync::mpsc::{self, RecvTimeoutError};
-use std::thread;
+use std::future::Future;
+use std::io;
+use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
+use tokio::runtime::Builder as RuntimeBuilder;
+use tokio::time::timeout;
 
 const DNS_TIMEOUT: Duration = Duration::from_secs(10);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -114,6 +117,14 @@ impl ProbeFailure {
         }
     }
 
+    fn runtime(detail: impl Into<String>) -> Self {
+        Self {
+            stage: "runtime",
+            kind: "runtime_failed",
+            detail: detail.into(),
+        }
+    }
+
     fn dns(detail: impl Into<String>) -> Self {
         Self {
             stage: "dns",
@@ -148,10 +159,26 @@ impl ProbeFailure {
         }
     }
 
+    fn request_timeout(detail: impl Into<String>) -> Self {
+        Self {
+            stage: "https",
+            kind: "timeout",
+            detail: detail.into(),
+        }
+    }
+
     fn response(detail: impl Into<String>) -> Self {
         Self {
             stage: "response",
             kind: "response_failed",
+            detail: detail.into(),
+        }
+    }
+
+    fn response_timeout(detail: impl Into<String>) -> Self {
+        Self {
+            stage: "response",
+            kind: "timeout",
             detail: detail.into(),
         }
     }
@@ -181,7 +208,16 @@ pub fn run(args: Vec<String>) -> io::Result<()> {
         }
     };
 
-    match probe(&config) {
+    let runtime = RuntimeBuilder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| {
+            let failure = ProbeFailure::runtime(format!("could not create async runtime: {error}"));
+            print_failure(&failure);
+            io::Error::other(failure)
+        })?;
+
+    match runtime.block_on(probe(&config)) {
         Ok(response) => {
             print_success(&config, &response);
             Ok(())
@@ -197,7 +233,7 @@ pub fn run(args: Vec<String>) -> io::Result<()> {
     }
 }
 
-fn probe(config: &ProbeConfig) -> Result<HealthResponse, ProbeFailure> {
+async fn probe(config: &ProbeConfig) -> Result<HealthResponse, ProbeFailure> {
     let source_host = config
         .endpoint
         .host_str()
@@ -205,7 +241,7 @@ fn probe(config: &ProbeConfig) -> Result<HealthResponse, ProbeFailure> {
     let port = config.endpoint.port_or_known_default().ok_or_else(|| {
         ProbeFailure::configuration("endpoint must use a known HTTPS port or specify one")
     })?;
-    let addresses = resolve_host(source_host, port)?;
+    let addresses = resolve_host(source_host, port).await?;
 
     let url = config.health_url()?;
     let request_host = url
@@ -216,6 +252,7 @@ fn probe(config: &ProbeConfig) -> Result<HealthResponse, ProbeFailure> {
         .tls_certs_only(trusted_certificates()?)
         .connect_timeout(CONNECT_TIMEOUT)
         .timeout(REQUEST_TIMEOUT)
+        .read_timeout(RESPONSE_TIMEOUT)
         .redirect(Policy::none())
         .user_agent(concat!("prs-t1-agent/", env!("CARGO_PKG_VERSION")))
         // Pin the request to the addresses reported above. The negative test
@@ -223,72 +260,67 @@ fn probe(config: &ProbeConfig) -> Result<HealthResponse, ProbeFailure> {
         .resolve_to_addrs(request_host, &addresses)
         .build()
         .map_err(ProbeFailure::request)?;
-    let response = client
-        .get(url)
-        .timeout(RESPONSE_TIMEOUT)
-        .send()
+    let response = timeout(REQUEST_TIMEOUT, client.get(url).send())
+        .await
+        .map_err(|_| ProbeFailure::request_timeout("HTTPS request exceeded 20 seconds"))?
         .map_err(ProbeFailure::request)?;
-    let response = read_response(response)?;
+    let response = read_response(response).await?;
     Ok(HealthResponse {
         addresses,
         ..response
     })
 }
 
-fn resolve_host(host: &str, port: u16) -> Result<Vec<SocketAddr>, ProbeFailure> {
-    let host = host.to_owned();
-    resolve_host_with_timeout(host.clone(), port, DNS_TIMEOUT, move || {
-        (host.as_str(), port)
-            .to_socket_addrs()
-            .map(Iterator::collect)
+async fn resolve_host(host: &str, port: u16) -> Result<Vec<SocketAddr>, ProbeFailure> {
+    // Hickory performs DNS over Tokio I/O. The current-thread runtime keeps
+    // the probe single-threaded, which is required by the T1 bootstrap target.
+    let mut builder = match TokioResolver::builder_tokio() {
+        Ok(builder) => builder,
+        Err(_) => TokioResolver::builder_with_config(
+            ResolverConfig::udp_and_tcp(&GOOGLE),
+            TokioRuntimeProvider::default(),
+        ),
+    };
+    builder.options_mut().timeout = DNS_TIMEOUT;
+    builder.options_mut().attempts = 1;
+    let resolver = builder
+        .build()
+        .map_err(|error| ProbeFailure::dns(format!("could not create resolver: {error}")))?;
+    let host_for_error = host.to_owned();
+    let query_host = host.to_owned();
+    resolve_host_with_timeout(host_for_error, port, DNS_TIMEOUT, move || async move {
+        let lookup = resolver
+            .lookup_ip(query_host.as_str())
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok(lookup.iter().collect())
     })
+    .await
 }
 
-fn resolve_host_with_timeout<F>(
+async fn resolve_host_with_timeout<F, Fut>(
     host: String,
     port: u16,
-    timeout: Duration,
+    duration: Duration,
     resolver: F,
 ) -> Result<Vec<SocketAddr>, ProbeFailure>
 where
-    F: FnOnce() -> io::Result<Vec<SocketAddr>> + Send + 'static,
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<Vec<IpAddr>, String>>,
 {
-    let (sender, receiver) = mpsc::sync_channel(1);
-    let resolver_thread = thread::Builder::new()
-        .name("prs-t1-dns".into())
-        .spawn(move || {
-            let _ = sender.send(resolver());
-        })
-        .map_err(|error| {
-            ProbeFailure::dns(format!("{host}:{port}: could not start resolver: {error}"))
-        })?;
-
-    match receiver.recv_timeout(timeout) {
-        Ok(result) => {
-            let _ = resolver_thread.join();
-            match result {
-                Ok(addresses) if addresses.is_empty() => Err(ProbeFailure::dns(format!(
-                    "{host}:{port}: resolver returned no addresses"
-                ))),
-                Ok(addresses) => Ok(addresses),
-                Err(error) => Err(ProbeFailure::dns(format!("{host}:{port}: {error}"))),
-            }
-        }
-        Err(RecvTimeoutError::Timeout) => {
-            // std::net::ToSocketAddrs has no cancellation hook. Drop the
-            // handle so a stalled system resolver cannot block this probe.
-            drop(resolver_thread);
-            Err(ProbeFailure::dns_timeout(format!(
-                "{host}:{port}: resolver did not return within {} seconds",
-                timeout.as_secs()
-            )))
-        }
-        Err(RecvTimeoutError::Disconnected) => {
-            let _ = resolver_thread.join();
-            Err(ProbeFailure::dns(format!(
-                "{host}:{port}: resolver worker stopped"
-            )))
-        }
+    match timeout(duration, resolver()).await {
+        Ok(Ok(addresses)) if addresses.is_empty() => Err(ProbeFailure::dns(format!(
+            "{host}:{port}: resolver returned no addresses"
+        ))),
+        Ok(Ok(addresses)) => Ok(addresses
+            .into_iter()
+            .map(|address| SocketAddr::new(address, port))
+            .collect()),
+        Ok(Err(error)) => Err(ProbeFailure::dns(format!("{host}:{port}: {error}"))),
+        Err(_) => Err(ProbeFailure::dns_timeout(format!(
+            "{host}:{port}: resolver did not return within {} seconds",
+            duration.as_secs()
+        ))),
     }
 }
 
@@ -337,10 +369,18 @@ fn trusted_certificates() -> Result<Vec<reqwest::Certificate>, ProbeFailure> {
         .collect()
 }
 
-fn read_response(mut response: Response) -> Result<HealthResponse, ProbeFailure> {
+async fn read_response(response: Response) -> Result<HealthResponse, ProbeFailure> {
     let status = response.status().as_u16();
     let content_length = response.content_length();
-    let body = read_bounded_body(&mut response, content_length, status)?;
+    if content_length.is_some_and(|length| length > MAX_RESPONSE_BYTES) {
+        return Err(ProbeFailure::response(format!(
+            "HTTP {status} response exceeds {MAX_RESPONSE_BYTES} bytes"
+        )));
+    }
+
+    let body = timeout(RESPONSE_TIMEOUT, read_bounded_body(response, status))
+        .await
+        .map_err(|_| ProbeFailure::response_timeout("HTTP response exceeded 20 seconds"))??;
     if !(200..300).contains(&status) {
         return Err(ProbeFailure::response(format!(
             "health endpoint returned HTTP {status} with body {}",
@@ -354,30 +394,25 @@ fn read_response(mut response: Response) -> Result<HealthResponse, ProbeFailure>
     })
 }
 
-fn read_bounded_body<R: Read>(
-    reader: R,
-    content_length: Option<u64>,
-    status: u16,
-) -> Result<Vec<u8>, ProbeFailure> {
-    if content_length.is_some_and(|length| length > MAX_RESPONSE_BYTES) {
-        return Err(ProbeFailure::response(format!(
-            "HTTP {status} response exceeds {MAX_RESPONSE_BYTES} bytes"
-        )));
-    }
-
+async fn read_bounded_body(mut response: Response, status: u16) -> Result<Vec<u8>, ProbeFailure> {
     let mut body = Vec::new();
-    reader
-        .take(MAX_RESPONSE_BYTES + 1)
-        .read_to_end(&mut body)
-        .map_err(|error| {
-            ProbeFailure::response(format!("could not read HTTP {status} body: {error}"))
-        })?;
-    if body.len() as u64 > MAX_RESPONSE_BYTES {
-        return Err(ProbeFailure::response(format!(
-            "HTTP {status} response exceeds {MAX_RESPONSE_BYTES} bytes"
-        )));
+    while let Some(chunk) = response.chunk().await.map_err(|error| {
+        ProbeFailure::response(format!("could not read HTTP {status} body: {error}"))
+    })? {
+        append_bounded_body(&mut body, &chunk, status)?;
     }
     Ok(body)
+}
+
+fn append_bounded_body(body: &mut Vec<u8>, chunk: &[u8], status: u16) -> Result<(), ProbeFailure> {
+    let new_length = body.len().checked_add(chunk.len());
+    if new_length.is_none_or(|length| length as u64 > MAX_RESPONSE_BYTES) {
+        return Err(ProbeFailure::response(format!(
+            "HTTP {status} response exceeds {MAX_RESPONSE_BYTES} bytes"
+        )));
+    }
+    body.extend_from_slice(chunk);
+    Ok(())
 }
 
 fn print_success(config: &ProbeConfig, response: &HealthResponse) {
@@ -450,7 +485,14 @@ fn escape_bytes(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Cursor;
+    use std::net::IpAddr;
+
+    fn test_runtime() -> tokio::runtime::Runtime {
+        RuntimeBuilder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+    }
 
     #[test]
     fn accepts_a_hostname_and_forces_health_path() {
@@ -491,12 +533,12 @@ mod tests {
 
     #[test]
     fn response_body_limit_accepts_exact_limit_and_rejects_over_limit() {
-        let exact = Cursor::new(vec![b'x'; MAX_RESPONSE_BYTES as usize]);
-        let result = read_bounded_body(exact, Some(MAX_RESPONSE_BYTES), 200).unwrap();
-        assert_eq!(result.len() as u64, MAX_RESPONSE_BYTES);
+        let mut exact = Vec::new();
+        append_bounded_body(&mut exact, &vec![b'x'; MAX_RESPONSE_BYTES as usize], 200).unwrap();
+        assert_eq!(exact.len() as u64, MAX_RESPONSE_BYTES);
 
-        let over = Cursor::new(vec![b'x'; (MAX_RESPONSE_BYTES + 1) as usize]);
-        let error = read_bounded_body(over, None, 200).unwrap_err();
+        let mut over = exact;
+        let error = append_bounded_body(&mut over, b"x", 200).unwrap_err();
         assert_eq!(error.stage, "response");
     }
 
@@ -506,25 +548,23 @@ mod tests {
     }
 
     #[test]
-    fn response_reader_does_not_require_utf8() {
-        let mut reader = Cursor::new([0xff, b'a']);
-        let mut bytes = Vec::new();
-        reader.read_to_end(&mut bytes).unwrap();
-        assert_eq!(escape_bytes(&bytes), r#""\xffa""#);
+    fn output_escapes_non_utf8_response_bytes() {
+        assert_eq!(escape_bytes(&[0xff, b'a']), r#""\xffa""#);
     }
 
     #[test]
     fn dns_resolution_has_a_bounded_wait() {
-        let error = resolve_host_with_timeout(
+        let runtime = test_runtime();
+        let error = runtime.block_on(resolve_host_with_timeout(
             "reader.example.test".into(),
             443,
             Duration::from_millis(5),
-            || {
-                thread::sleep(Duration::from_millis(50));
-                Ok(vec![])
+            || async {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                Ok(Vec::<IpAddr>::new())
             },
-        )
-        .unwrap_err();
+        ));
+        let error = error.unwrap_err();
 
         assert_eq!(error.stage, "dns");
         assert_eq!(error.kind, "resolution_timeout");
@@ -532,13 +572,14 @@ mod tests {
 
     #[test]
     fn dns_resolution_reports_resolver_failures() {
-        let error = resolve_host_with_timeout(
+        let runtime = test_runtime();
+        let error = runtime.block_on(resolve_host_with_timeout(
             "reader.example.test".into(),
             443,
             Duration::from_secs(1),
-            || Err(io::Error::new(io::ErrorKind::NotFound, "no DNS answer")),
-        )
-        .unwrap_err();
+            || async { Err("no DNS answer".into()) },
+        ));
+        let error = error.unwrap_err();
 
         assert_eq!(error.stage, "dns");
         assert_eq!(error.kind, "resolution_failed");

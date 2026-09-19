@@ -121,13 +121,16 @@ full PRSync client exists. It does not enable Wi-Fi, read Wi-Fi credentials,
 send authorization data, or persist any data.
 
 The probe resolves the supplied hostname, pins the request to the resolved
-addresses, and performs one HTTPS `GET /health`. It uses reqwest with rustls,
+addresses, and performs one HTTPS `GET /health`. It uses reqwest's async
+client with rustls,
 bundles Mozilla public roots for the static T1 target, rejects redirects, and
-keeps certificate-chain and hostname validation enabled. DNS lookup runs in an
-isolated worker with a 10-second result limit. The probe uses a 10-second
-connect limit, a 20-second request and response-read limit, and a 64 KiB
-response-body limit. A DNS timeout reports `failure_stage=dns` and
-`failure_kind=resolution_timeout`; it does not continue to the HTTPS request.
+keeps certificate-chain and hostname validation enabled. DNS lookup uses
+Hickory's async resolver on a current-thread Tokio runtime. The lookup has a
+10-second result limit and adds no worker thread to the T1 binary. The probe
+uses a 10-second connect limit, a 20-second request and response-read limit,
+and a 64 KiB response-body limit. A DNS timeout reports
+`failure_stage=dns` and `failure_kind=resolution_timeout`; it does not
+continue to the HTTPS request.
 The command prints one-line fields such as `dns_addresses`,
 `tls_validation`, `http_status`, and `result`.
 

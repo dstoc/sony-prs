@@ -153,7 +153,9 @@ token, Cloudflare secret, or Wi-Fi credential. It does not change the device
 network configuration.
 
 The normal probe performs only `GET /health`. It resolves the hostname before
-the request, uses the bundled Mozilla root set with rustls chain and hostname
+the request with Hickory's async resolver on a current-thread Tokio runtime.
+The probe uses reqwest's async client and adds no worker thread to the T1
+binary. It uses the bundled Mozilla root set with rustls chain and hostname
 validation, rejects redirects, limits DNS lookup and connection setup to 10
 seconds, limits the request and response reads to 20 seconds, and accepts at
 most 64 KiB of response data. A DNS timeout is reported as
