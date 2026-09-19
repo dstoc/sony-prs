@@ -81,7 +81,7 @@ def expire_if_needed(connection: sqlite3.Connection, request_id: str, now: int) 
         """
         UPDATE authorization_requests
         SET state = 'expired', expired_at = ?
-        WHERE request_id = ? AND state = 'pending' AND expires_at <= ?
+        WHERE request_id = ? AND state IN ('pending', 'approved') AND expires_at <= ?
         """,
         (now, request_id, now),
     )
@@ -160,7 +160,7 @@ def claim(
         raise AuthorizationFailure("wrong authorization kind")
     if row["polling_secret_hash"] != digest(polling_secret):
         raise AuthorizationFailure("invalid polling secret")
-    if row["state"] == "pending" and now >= row["expires_at"]:
+    if row["state"] in {"pending", "approved"} and now >= row["expires_at"]:
         expire_if_needed(connection, request.request_id, now)
         return "expired"
     if row["state"] == "pending":
@@ -178,12 +178,13 @@ def claim(
         if expected_kind == "sender":
             connection.execute(
                 """
-                INSERT INTO sender_credentials
+                INSERT OR IGNORE INTO sender_credentials
                     (credential_id, name, bearer_token_hash, created_at)
                 SELECT ?, ?, ?, ?
                 WHERE EXISTS (
                     SELECT 1 FROM authorization_requests
-                    WHERE request_id = ? AND kind = 'sender' AND state = 'approved'
+                    WHERE request_id = ? AND kind = 'sender'
+                      AND state = 'approved' AND expires_at > ?
                 )
                 """,
                 (
@@ -192,6 +193,7 @@ def claim(
                     digest(bearer_token),
                     now,
                     request.request_id,
+                    now,
                 ),
             )
             cursor = connection.execute(
@@ -199,8 +201,12 @@ def claim(
                 UPDATE authorization_requests
                 SET state = 'consumed', consumed_at = ?, credential_id = ?
                 WHERE request_id = ? AND kind = 'sender' AND state = 'approved'
+                  AND expires_at > ?
+                  AND EXISTS (
+                      SELECT 1 FROM sender_credentials WHERE credential_id = ?
+                  )
                 """,
-                (now, child_id, request.request_id),
+                (now, child_id, request.request_id, now, child_id),
             )
         else:
             connection.execute(
@@ -210,20 +216,41 @@ def claim(
                 SELECT ?, ?, ?, ?
                 WHERE EXISTS (
                     SELECT 1 FROM authorization_requests
-                    WHERE request_id = ? AND kind = 'reader' AND state = 'approved'
+                    WHERE request_id = ? AND kind = 'reader'
+                      AND state = 'approved' AND expires_at > ?
                 )
                 """,
-                (child_id, digest(bearer_token), now, now + 3600, request.request_id),
+                (child_id, digest(bearer_token), now, now + 3600, request.request_id, now),
             )
             cursor = connection.execute(
                 """
                 UPDATE authorization_requests
                 SET state = 'consumed', consumed_at = ?, session_id = ?
                 WHERE request_id = ? AND kind = 'reader' AND state = 'approved'
+                  AND expires_at > ?
+                  AND EXISTS (
+                      SELECT 1 FROM reader_sessions WHERE session_id = ?
+                  )
                 """,
-                (now, child_id, request.request_id),
+                (now, child_id, request.request_id, now, child_id),
             )
-    return "claimed" if cursor.rowcount == 1 else "already_claimed"
+    if cursor.rowcount == 1:
+        return "claimed"
+    current = connection.execute(
+        "SELECT state FROM authorization_requests WHERE request_id = ?",
+        (request.request_id,),
+    ).fetchone()
+    if current["state"] == "approved" and now >= request.expires_at:
+        expire_if_needed(connection, request.request_id, now)
+        return "expired"
+    if current["state"] != "consumed":
+        name = row["credential_name"]
+        if name is not None and connection.execute(
+            "SELECT 1 FROM sender_credentials WHERE name = ? AND revoked_at IS NULL",
+            (name,),
+        ).fetchone():
+            raise AuthorizationFailure("credential name already exists")
+    return "already_claimed"
 
 
 def authenticate_sender(connection: sqlite3.Connection, token: str) -> bool:
@@ -303,7 +330,8 @@ def verify_reader_lifecycle() -> None:
     assert claim(connection, request, "reader", "reader-secret", 111) == "claimed"
     assert connection.execute("SELECT count(*) FROM reader_sessions").fetchone()[0] == 1
     assert connection.execute("SELECT count(*) FROM sender_credentials").fetchone()[0] == 0
-    assert authenticate_reader(connection, "reader-token-reader-request", 111)
+    assert authenticate_reader(connection, "reader-token-reader-request", 3710)
+    assert not authenticate_reader(connection, "reader-token-reader-request", 3711)
     assert not authenticate_sender(connection, "reader-token-reader-request")
     assert claim(connection, request, "reader", "reader-secret", 112) == "already_claimed"
 
@@ -336,6 +364,59 @@ def verify_denial_and_expiration() -> None:
     )
     assert connection.execute("SELECT count(*) FROM sender_credentials").fetchone()[0] == 0
 
+    approved = create_request(
+        connection,
+        "approved-expiry-request",
+        "reader",
+        "approved-expiry-secret",
+        100,
+        ttl=10,
+    )
+    transition(connection, approved.request_id, "reader", True, 105)
+    assert status(connection, approved.request_id, 109) == "approved"
+    assert status(connection, approved.request_id, 110) == "expired"
+    assert claim(connection, approved, "reader", "approved-expiry-secret", 110) == "expired"
+    assert tuple(
+        connection.execute(
+            "SELECT approved_at, expired_at FROM authorization_requests WHERE request_id = ?",
+            (approved.request_id,),
+        ).fetchone()
+    ) == (105, 110)
+
+
+def verify_same_name_claim_conflict() -> None:
+    connection = database()
+    first = create_request(
+        connection,
+        "same-name-first",
+        "sender",
+        "same-name-first-secret",
+        100,
+        credential_name="shared",
+    )
+    second = create_request(
+        connection,
+        "same-name-second",
+        "sender",
+        "same-name-second-secret",
+        100,
+        credential_name="shared",
+    )
+    transition(connection, first.request_id, "sender", True, 110)
+    transition(connection, second.request_id, "sender", True, 110)
+    assert claim(connection, first, "sender", "same-name-first-secret", 111) == "claimed"
+    expect_failure(
+        lambda: claim(connection, second, "sender", "same-name-second-secret", 111),
+        "credential name already exists",
+    )
+    assert connection.execute(
+        "SELECT state FROM authorization_requests WHERE request_id = ?",
+        (second.request_id,),
+    ).fetchone()[0] == "approved"
+    assert connection.execute(
+        "SELECT count(*) FROM sender_credentials WHERE name = 'shared'",
+    ).fetchone()[0] == 1
+
 
 def expect_failure(action, message: str) -> None:
     try:
@@ -350,6 +431,7 @@ def main() -> None:
     verify_sender_lifecycle()
     verify_reader_lifecycle()
     verify_denial_and_expiration()
+    verify_same_name_claim_conflict()
     print("prs-cloudflare authorization checks passed")
 
 

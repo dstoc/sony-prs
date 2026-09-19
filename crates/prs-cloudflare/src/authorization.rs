@@ -30,10 +30,10 @@ const DEFAULT_RETRY_AFTER_SECONDS: u32 = 2;
 pub struct AuthorizationConfig {
     /// Base URL for the human-facing approval application.
     pub approval_base_url: String,
-    /// Lifetime of a pending request.
+    /// Absolute lifetime of an unconsumed authorization request.
     pub request_ttl_seconds: u64,
-    /// Maximum server-side lifetime of a reader session. The reader still
-    /// discards its session when it reboots.
+    /// Maximum server-side lifetime of a reader session. The reader must also
+    /// discard its session when it reboots or when the service rejects it.
     pub reader_session_ttl_seconds: u64,
     /// Suggested delay for a pending poll.
     pub retry_after_seconds: u32,
@@ -386,8 +386,8 @@ impl AuthorizationService {
             .await
     }
 
-    /// Expire a pending request. The conditional update makes expiration safe
-    /// when it races with approval or denial.
+    /// Expire an unconsumed request at its deadline. The conditional update
+    /// makes expiration safe when it races with approval or denial.
     pub async fn expire(
         &self,
         request_id: &AuthorizationRequestId,
@@ -413,8 +413,9 @@ impl AuthorizationService {
     }
 
     /// Claim a read-only reader session with the private polling secret. The
-    /// session is server-expiring but is intended to be discarded on reboot
-    /// by the reader client.
+    /// session expires at the configured server deadline and must be
+    /// discarded by the reader client on reboot or when the service rejects
+    /// the token.
     pub async fn claim_reader(
         &self,
         polling: &PendingPollingCapability,
@@ -530,6 +531,19 @@ impl AuthorizationService {
             .run()
             .await?;
         changed_rows(&result).map(|changed| changed == 1)
+    }
+
+    async fn credential_name_exists(&self, name: &SenderCredentialName) -> Result<bool> {
+        let args = [D1Type::Text(name.as_str())];
+        Ok(self
+            .database
+            .prepare(
+                "SELECT credential_id\n                 FROM sender_credentials\n                 WHERE name = ?1 AND revoked_at IS NULL",
+            )
+            .bind_refs(args.iter())?
+            .first::<CredentialRow>(None)
+            .await?
+            .is_some())
     }
 
     async fn create(
@@ -669,6 +683,10 @@ impl AuthorizationService {
             RequestState::Denied => Ok(claim_result(ClaimOutcome::Denied)),
             RequestState::Expired => Ok(claim_result(ClaimOutcome::Expired)),
             RequestState::Consumed => Ok(claim_result(ClaimOutcome::AlreadyClaimed)),
+            RequestState::Approved if now_value >= row.expires_at as u64 => {
+                self.expire_if_needed(request_id, now).await?;
+                Ok(claim_result(ClaimOutcome::Expired))
+            }
             RequestState::Approved => {
                 if expected_kind == AuthorizationKind::Sender {
                     self.claim_sender_row(row, request_id, now).await
@@ -705,28 +723,41 @@ impl AuthorizationService {
             D1Type::Blob(&token_hash),
             D1Type::Integer(now),
             D1Type::Text(request_id.as_str()),
+            D1Type::Integer(now),
         ];
         let update_args = [
             D1Type::Integer(now),
             D1Type::Text(credential_id.as_str()),
             D1Type::Text(request_id.as_str()),
+            D1Type::Integer(now),
         ];
         let results = self
             .database
             .batch(vec![
                 self.database
                     .prepare(
-                        "INSERT INTO sender_credentials\n                         (credential_id, name, bearer_token_hash, created_at)\n                         SELECT ?1, ?2, ?3, ?4\n                         WHERE EXISTS (\n                           SELECT 1 FROM authorization_requests\n                           WHERE request_id = ?5 AND kind = 'sender' AND state = 'approved'\n                         )",
+                        "INSERT OR IGNORE INTO sender_credentials\n                         (credential_id, name, bearer_token_hash, created_at)\n                         SELECT ?1, ?2, ?3, ?4\n                         WHERE EXISTS (\n                           SELECT 1 FROM authorization_requests\n                           WHERE request_id = ?5 AND kind = 'sender'\n                             AND state = 'approved' AND expires_at > ?6\n                         )",
                     )
                     .bind_refs(insert_args.iter())?,
                 self.database
                     .prepare(
-                        "UPDATE authorization_requests\n                         SET state = 'consumed', consumed_at = ?1, credential_id = ?2\n                         WHERE request_id = ?3 AND kind = 'sender' AND state = 'approved'",
+                        "UPDATE authorization_requests\n                         SET state = 'consumed', consumed_at = ?1, credential_id = ?2\n                         WHERE request_id = ?3 AND kind = 'sender'\n                           AND state = 'approved' AND expires_at > ?4\n                           AND EXISTS (\n                             SELECT 1 FROM sender_credentials\n                             WHERE credential_id = ?2\n                           )",
                     )
                     .bind_refs(update_args.iter())?,
             ])
             .await?;
         if changed_rows(&results[1])? != 1 {
+            let current = self.load_request(request_id).await?;
+            if current.state()? == RequestState::Approved && current.expires_at <= now {
+                self.expire_if_needed(request_id, Timestamp::new(now as u64))
+                    .await?;
+                return Ok(claim_result(ClaimOutcome::Expired));
+            }
+            if current.state()? != RequestState::Consumed
+                && self.credential_name_exists(&credential_name).await?
+            {
+                return Err(AuthorizationFailure::CredentialAlreadyExists.into());
+            }
             return Ok(claim_result(ClaimOutcome::AlreadyClaimed));
         }
         Ok(claim_result(ClaimOutcome::Sender {
@@ -764,28 +795,35 @@ impl AuthorizationService {
             D1Type::Integer(issued_at),
             D1Type::Integer(expires_at),
             D1Type::Text(request_id.as_str()),
+            D1Type::Integer(issued_at),
         ];
         let update_args = [
             D1Type::Integer(issued_at),
             D1Type::Text(session_id.as_str()),
             D1Type::Text(request_id.as_str()),
+            D1Type::Integer(issued_at),
         ];
         let results = self
             .database
             .batch(vec![
                 self.database
                     .prepare(
-                        "INSERT INTO reader_sessions\n                         (session_id, bearer_token_hash, issued_at, expires_at)\n                         SELECT ?1, ?2, ?3, ?4\n                         WHERE EXISTS (\n                           SELECT 1 FROM authorization_requests\n                           WHERE request_id = ?5 AND kind = 'reader' AND state = 'approved'\n                         )",
+                        "INSERT INTO reader_sessions\n                         (session_id, bearer_token_hash, issued_at, expires_at)\n                         SELECT ?1, ?2, ?3, ?4\n                         WHERE EXISTS (\n                           SELECT 1 FROM authorization_requests\n                           WHERE request_id = ?5 AND kind = 'reader'\n                             AND state = 'approved' AND expires_at > ?6\n                         )",
                     )
                     .bind_refs(insert_args.iter())?,
                 self.database
                     .prepare(
-                        "UPDATE authorization_requests\n                         SET state = 'consumed', consumed_at = ?1, session_id = ?2\n                         WHERE request_id = ?3 AND kind = 'reader' AND state = 'approved'",
+                        "UPDATE authorization_requests\n                         SET state = 'consumed', consumed_at = ?1, session_id = ?2\n                         WHERE request_id = ?3 AND kind = 'reader'\n                           AND state = 'approved' AND expires_at > ?4\n                           AND EXISTS (\n                             SELECT 1 FROM reader_sessions\n                             WHERE session_id = ?2\n                           )",
                     )
                     .bind_refs(update_args.iter())?,
             ])
             .await?;
         if changed_rows(&results[1])? != 1 {
+            let current = self.load_request(request_id).await?;
+            if current.state()? == RequestState::Approved && current.expires_at <= issued_at {
+                self.expire_if_needed(request_id, now).await?;
+                return Ok(claim_result(ClaimOutcome::Expired));
+            }
             return Ok(claim_result(ClaimOutcome::AlreadyClaimed));
         }
         Ok(claim_result(ClaimOutcome::Reader {
@@ -793,6 +831,7 @@ impl AuthorizationService {
                 session_id,
                 bearer_token,
                 issued_at: Timestamp::new(issued_at as u64),
+                expires_at: Some(Timestamp::new(expires_at as u64)),
                 scope: reader_scope(),
             },
         }))
@@ -808,7 +847,7 @@ impl AuthorizationService {
         let result = self
             .database
             .prepare(
-                "UPDATE authorization_requests\n                 SET state = 'expired', expired_at = ?2\n                 WHERE request_id = ?1 AND state = 'pending' AND expires_at <= ?2",
+                "UPDATE authorization_requests\n                 SET state = 'expired', expired_at = ?2\n                 WHERE request_id = ?1 AND state IN ('pending', 'approved')\n                   AND expires_at <= ?2",
             )
             .bind_refs(args.iter())?
             .run()

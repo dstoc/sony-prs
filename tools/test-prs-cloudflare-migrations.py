@@ -11,6 +11,7 @@ MIGRATIONS = sorted(MIGRATIONS_DIRECTORY.glob("*.sql"))
 INITIAL_MIGRATION = MIGRATIONS_DIRECTORY / "0001_initial.sql"
 UPGRADE_MIGRATION = MIGRATIONS_DIRECTORY / "0002_metadata_schema_upgrade.sql"
 AUTHORIZATION_NAME_MIGRATION = MIGRATIONS_DIRECTORY / "0003_authorization_credential_name.sql"
+APPROVED_EXPIRY_MIGRATION = MIGRATIONS_DIRECTORY / "0004_approved_authorization_expiry.sql"
 
 
 def database() -> sqlite3.Connection:
@@ -153,6 +154,7 @@ def verify_upgrade_path() -> None:
     seed_legacy_database(connection)
     apply_migration(connection, UPGRADE_MIGRATION)
     apply_migration(connection, AUTHORIZATION_NAME_MIGRATION)
+    apply_migration(connection, APPROVED_EXPIRY_MIGRATION)
 
     assert columns(connection, "inbox") == {
         "singleton",
@@ -262,6 +264,21 @@ def verify_current_schema_behavior() -> None:
         "UPDATE authorization_requests SET state = 'expired', expired_at = ? WHERE request_id = ?",
         (202, "expired"),
     )
+    add_request(connection, "approved-expired", "reader")
+    connection.execute(
+        "UPDATE authorization_requests SET state = 'approved', approved_at = ? WHERE request_id = ?",
+        (140, "approved-expired"),
+    )
+    connection.execute(
+        "UPDATE authorization_requests SET state = 'expired', expired_at = ? WHERE request_id = ?",
+        (200, "approved-expired"),
+    )
+    assert tuple(
+        connection.execute(
+            "SELECT state, approved_at, expired_at FROM authorization_requests "
+            "WHERE request_id = 'approved-expired'"
+        ).fetchone()
+    ) == ("expired", 140, 200)
     assert [
         tuple(row)
         for row in connection.execute(
@@ -269,6 +286,7 @@ def verify_current_schema_behavior() -> None:
         ).fetchall()
     ] == [
         ("approved", "approved"),
+        ("approved-expired", "expired"),
         ("denied", "denied"),
         ("expired", "expired"),
         ("pending", "pending"),
