@@ -16,13 +16,6 @@ command = "worker-build --release --features local-test"
 PRS_ENVIRONMENT = "local"
 PRS_APPROVAL_BASE_URL = "http://127.0.0.1"
 
-[access.dev]
-aud = "prs-reader-local-approval"
-
-[access.dev.identity]
-email = "owner@example.com"
-PRS_APPROVAL_BASE_URL = "http://127.0.0.1"
-
 [[d1_databases]]
 binding = "DB"
 database_name = "prs-reader-local-e2e"

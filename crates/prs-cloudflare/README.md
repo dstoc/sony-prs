@@ -255,7 +255,7 @@ Local integration tests can be built with the `local-test` Cargo feature. When
 `PRS_ENVIRONMENT=local`, the explicit local seam can parse
 `X-PRSync-Test-Owner: <issuer>|<subject>|<email>`. The production fetch path
 does not select this source, and a default production build does not compile
-the local seam. The local Wrangler configuration uses `[access.dev]` and
+the local seam. The local end-to-end test uses this feature-gated seam and
 `http://127.0.0.1` as its approval hostname.
 
 The approval URL contains only the public request ID. It is a lookup key, not

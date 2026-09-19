@@ -30,8 +30,6 @@ for expected in \
     'command = "worker-build --release --features local-test"' \
     'PRS_ENVIRONMENT = "local"' \
     'PRS_APPROVAL_BASE_URL = "http://127.0.0.1"' \
-    'aud = "prs-reader-local-approval"' \
-    'email = "owner@example.com"' \
     'binding = "DB"' \
     'binding = "BUNDLES"'; do
     if ! grep -Fq "$expected" "$local_test_config"; then
