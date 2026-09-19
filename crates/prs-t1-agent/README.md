@@ -71,7 +71,7 @@ different device.
 | `input` | Read-only | Queries evdev capabilities without opening an event stream, grabbing a device, or injecting events. |
 | `events [EVENT_DEVICE] [SECONDS]` | Read-only | Logs a finite raw evdev stream. It defaults to `/dev/input/event1` for 10 seconds and never calls `EVIOCGRAB`. |
 | `capture [FRAMEBUFFER]` | Read-only | Maps the visible RGB565 framebuffer with read access and emits an 8-bit grayscale PGM to stdout. |
-| `network-probe HOSTNAME_OR_HTTPS_URL [--invalid-hostname]` | Read-only | Resolves the supplied host and performs a bounded HTTPS `GET /health` with rustls certificate and hostname validation. The optional negative test must fail TLS validation. |
+| `network-probe HOSTNAME_OR_HTTPS_URL [--invalid-hostname]` | Read-only | Resolves the supplied host and performs a bounded HTTPS `GET /health` with rustls certificate and hostname validation. The optional negative test must fail hostname validation. |
 | `render-test [FRAMEBUFFER] [SECONDS] [WAVEFORM] [WAIT\|NOWAIT]` | Writes framebuffer | Draws a centered 200x120 RGB565 marker, requests a bounded EPDC update, captures the mapping, waits, and restores the original rectangle. Defaults to 3 seconds, `GC16`, and `WAIT`. |
 | `display-test [FRAMEBUFFER] [SECONDS] [WAVEFORM]` | Writes framebuffer | Draws a full-screen grayscale calibration pattern with fill/text swatches, gradients, a grayscale ramp, and 1-, 2-, 4-, and 8-pixel lines. Defaults to 60 seconds and `GC16`; it leaves the pattern visible and does not restore the previous framebuffer. |
 | `standalone-test [FRAMEBUFFER] [standby\|mem]` | Owns framebuffer/input | Runs the long-lived native shell after `zygote` and `system_server` have stopped. The default suspend mode is T1 EINK `standby`. |
@@ -123,10 +123,13 @@ send authorization data, or persist any data.
 The probe resolves the supplied hostname, pins the request to the resolved
 addresses, and performs one HTTPS `GET /health`. It uses reqwest with rustls,
 bundles Mozilla public roots for the static T1 target, rejects redirects, and
-keeps certificate-chain and hostname validation enabled. It uses a 10-second
+keeps certificate-chain and hostname validation enabled. DNS lookup runs in an
+isolated worker with a 10-second result limit. The probe uses a 10-second
 connect limit, a 20-second request and response-read limit, and a 64 KiB
-response-body limit. The command prints one-line fields such as
-`dns_addresses`, `tls_validation`, `http_status`, and `result`.
+response-body limit. A DNS timeout reports `failure_stage=dns` and
+`failure_kind=resolution_timeout`; it does not continue to the HTTPS request.
+The command prints one-line fields such as `dns_addresses`,
+`tls_validation`, `http_status`, and `result`.
 
 Set the production protocol hostname selected for #99. A hostname is enough;
 the command adds `https://` and requests `/health`.
@@ -137,16 +140,19 @@ adb shell /data/local/tmp/prs-t1-agent network-probe "$PROBE_HOST"
 ```
 
 The command exits with status 0 only after DNS, TLS validation, an HTTP 2xx
-response, and the bounded response read succeed. Network loss, DNS failure,
-timeouts, certificate failures, non-2xx responses, and oversized responses
-produce structured failure fields and a non-zero exit status. Resources are
-owned by the single command and are released when it exits.
+response, and the bounded response read succeed. Network loss, DNS failure or
+timeout, TLS failures, non-2xx responses, and oversized responses produce
+structured failure fields and a non-zero exit status. Resources are owned by
+the single command and are released when it exits.
 
 Run the safe negative test after a normal probe. It routes the reserved invalid
 hostname to the already-resolved production addresses, so the TLS server name
 and hostname check are wrong while the TCP destination remains reachable. The
-request must fail certificate or hostname validation. The command reports
-`tls_validation=failed_as_expected` and exits 0 when that failure occurs.
+request must fail because the certificate is not valid for the tested
+hostname. The command reports `tls_validation=failed_as_expected` and exits 0
+only for that rustls hostname-mismatch result. Connection failure, timeout,
+DNS failure, and other certificate errors such as expiry or an unknown issuer
+produce a non-zero exit status.
 
 ```sh
 adb shell /data/local/tmp/prs-t1-agent network-probe "$PROBE_HOST" \

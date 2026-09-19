@@ -1184,6 +1184,7 @@ dependencies = [
  "embedded-graphics",
  "prs-markdown",
  "reqwest",
+ "rustls",
  "webpki-root-certs",
 ]
 

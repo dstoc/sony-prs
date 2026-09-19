@@ -145,14 +145,20 @@ adb shell /data/local/tmp/prs-t1-agent network-probe "$PROBE_HOST" \
 The first command must report `result=success` and
 `tls_validation=passed`. The second command is a safe negative test. It must
 report `tls_validation=failed_as_expected` and `result=success`. The probe
-does not require an authorization request, bearer token, Cloudflare secret, or
-Wi-Fi credential. It does not change the device network configuration.
+reports success for this command only when rustls reports that the certificate
+name does not match the tested hostname. Connection failure, timeout, DNS
+failure, certificate expiry, an unknown issuer, and other TLS failures remain
+probe failures. The probe does not require an authorization request, bearer
+token, Cloudflare secret, or Wi-Fi credential. It does not change the device
+network configuration.
 
 The normal probe performs only `GET /health`. It resolves the hostname before
 the request, uses the bundled Mozilla root set with rustls chain and hostname
-validation, rejects redirects, limits connection setup to 10 seconds, limits
-the request and response reads to 20 seconds, and accepts at most 64 KiB of
-response data. Capture stdout and the exit status for the #99 hardware record.
+validation, rejects redirects, limits DNS lookup and connection setup to 10
+seconds, limits the request and response reads to 20 seconds, and accepts at
+most 64 KiB of response data. A DNS timeout is reported as
+`failure_stage=dns failure_kind=resolution_timeout`. Capture stdout and the
+exit status for the #99 hardware record.
 
 The agent's read-only commands can then be exercised while Android is still
 running:

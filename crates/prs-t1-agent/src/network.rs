@@ -1,11 +1,15 @@
 use reqwest::blocking::{Client, Response};
 use reqwest::redirect::Policy;
 use reqwest::Url;
+use std::error::Error as StdError;
 use std::fmt;
 use std::io::{self, Read};
 use std::net::{SocketAddr, ToSocketAddrs};
+use std::sync::mpsc::{self, RecvTimeoutError};
+use std::thread;
 use std::time::Duration;
 
+const DNS_TIMEOUT: Duration = Duration::from_secs(10);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(20);
@@ -118,11 +122,22 @@ impl ProbeFailure {
         }
     }
 
+    fn dns_timeout(detail: impl Into<String>) -> Self {
+        Self {
+            stage: "dns",
+            kind: "resolution_timeout",
+            detail: detail.into(),
+        }
+    }
+
     fn request(error: reqwest::Error) -> Self {
+        let hostname_validation_failure = is_expected_hostname_validation_failure(&error);
         let kind = if error.is_timeout() {
             "timeout"
+        } else if hostname_validation_failure {
+            "tls_hostname_validation_failed"
         } else if error.is_connect() {
-            "connect_or_tls_failed"
+            "connect_failed"
         } else {
             "request_failed"
         };
@@ -171,7 +186,7 @@ pub fn run(args: Vec<String>) -> io::Result<()> {
             print_success(&config, &response);
             Ok(())
         }
-        Err(error) if config.invalid_hostname && error.kind == "connect_or_tls_failed" => {
+        Err(error) if config.invalid_hostname && error.kind == "tls_hostname_validation_failed" => {
             print_expected_negative(&config, &error);
             Ok(())
         }
@@ -190,15 +205,7 @@ fn probe(config: &ProbeConfig) -> Result<HealthResponse, ProbeFailure> {
     let port = config.endpoint.port_or_known_default().ok_or_else(|| {
         ProbeFailure::configuration("endpoint must use a known HTTPS port or specify one")
     })?;
-    let addresses = (source_host, port)
-        .to_socket_addrs()
-        .map_err(|error| ProbeFailure::dns(format!("{source_host}:{port}: {error}")))?
-        .collect::<Vec<_>>();
-    if addresses.is_empty() {
-        return Err(ProbeFailure::dns(format!(
-            "{source_host}:{port}: resolver returned no addresses"
-        )));
-    }
+    let addresses = resolve_host(source_host, port)?;
 
     let url = config.health_url()?;
     let request_host = url
@@ -226,6 +233,97 @@ fn probe(config: &ProbeConfig) -> Result<HealthResponse, ProbeFailure> {
         addresses,
         ..response
     })
+}
+
+fn resolve_host(host: &str, port: u16) -> Result<Vec<SocketAddr>, ProbeFailure> {
+    let host = host.to_owned();
+    resolve_host_with_timeout(host.clone(), port, DNS_TIMEOUT, move || {
+        (host.as_str(), port)
+            .to_socket_addrs()
+            .map(Iterator::collect)
+    })
+}
+
+fn resolve_host_with_timeout<F>(
+    host: String,
+    port: u16,
+    timeout: Duration,
+    resolver: F,
+) -> Result<Vec<SocketAddr>, ProbeFailure>
+where
+    F: FnOnce() -> io::Result<Vec<SocketAddr>> + Send + 'static,
+{
+    let (sender, receiver) = mpsc::sync_channel(1);
+    let resolver_thread = thread::Builder::new()
+        .name("prs-t1-dns".into())
+        .spawn(move || {
+            let _ = sender.send(resolver());
+        })
+        .map_err(|error| {
+            ProbeFailure::dns(format!("{host}:{port}: could not start resolver: {error}"))
+        })?;
+
+    match receiver.recv_timeout(timeout) {
+        Ok(result) => {
+            let _ = resolver_thread.join();
+            match result {
+                Ok(addresses) if addresses.is_empty() => Err(ProbeFailure::dns(format!(
+                    "{host}:{port}: resolver returned no addresses"
+                ))),
+                Ok(addresses) => Ok(addresses),
+                Err(error) => Err(ProbeFailure::dns(format!("{host}:{port}: {error}"))),
+            }
+        }
+        Err(RecvTimeoutError::Timeout) => {
+            // std::net::ToSocketAddrs has no cancellation hook. Drop the
+            // handle so a stalled system resolver cannot block this probe.
+            drop(resolver_thread);
+            Err(ProbeFailure::dns_timeout(format!(
+                "{host}:{port}: resolver did not return within {} seconds",
+                timeout.as_secs()
+            )))
+        }
+        Err(RecvTimeoutError::Disconnected) => {
+            let _ = resolver_thread.join();
+            Err(ProbeFailure::dns(format!(
+                "{host}:{port}: resolver worker stopped"
+            )))
+        }
+    }
+}
+
+fn is_expected_hostname_validation_failure(error: &reqwest::Error) -> bool {
+    error
+        .source()
+        .is_some_and(source_chain_has_hostname_mismatch)
+}
+
+fn source_chain_has_hostname_mismatch(error: &(dyn StdError + 'static)) -> bool {
+    let mut current = Some(error);
+    while let Some(error) = current {
+        if let Some(tls_error) = error.downcast_ref::<rustls::Error>() {
+            return is_hostname_mismatch(tls_error);
+        }
+        if let Some(io_error) = error.downcast_ref::<io::Error>() {
+            if let Some(inner) = io_error.get_ref() {
+                if source_chain_has_hostname_mismatch(inner) {
+                    return true;
+                }
+            }
+        }
+        current = error.source();
+    }
+    false
+}
+
+fn is_hostname_mismatch(error: &rustls::Error) -> bool {
+    matches!(
+        error,
+        rustls::Error::InvalidCertificate(
+            rustls::CertificateError::NotValidForName
+                | rustls::CertificateError::NotValidForNameContext { .. }
+        )
+    )
 }
 
 fn trusted_certificates() -> Result<Vec<reqwest::Certificate>, ProbeFailure> {
@@ -304,6 +402,7 @@ fn print_success(config: &ProbeConfig, response: &HealthResponse) {
     println!("connect_timeout_seconds={}", CONNECT_TIMEOUT.as_secs());
     println!("request_timeout_seconds={}", REQUEST_TIMEOUT.as_secs());
     println!("response_timeout_seconds={}", RESPONSE_TIMEOUT.as_secs());
+    println!("dns_timeout_seconds={}", DNS_TIMEOUT.as_secs());
     println!("response_limit_bytes={MAX_RESPONSE_BYTES}");
     println!("result=success");
 }
@@ -412,5 +511,59 @@ mod tests {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).unwrap();
         assert_eq!(escape_bytes(&bytes), r#""\xffa""#);
+    }
+
+    #[test]
+    fn dns_resolution_has_a_bounded_wait() {
+        let error = resolve_host_with_timeout(
+            "reader.example.test".into(),
+            443,
+            Duration::from_millis(5),
+            || {
+                thread::sleep(Duration::from_millis(50));
+                Ok(vec![])
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(error.stage, "dns");
+        assert_eq!(error.kind, "resolution_timeout");
+    }
+
+    #[test]
+    fn dns_resolution_reports_resolver_failures() {
+        let error = resolve_host_with_timeout(
+            "reader.example.test".into(),
+            443,
+            Duration::from_secs(1),
+            || Err(io::Error::new(io::ErrorKind::NotFound, "no DNS answer")),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.stage, "dns");
+        assert_eq!(error.kind, "resolution_failed");
+        assert!(error.detail.contains("no DNS answer"));
+    }
+
+    #[test]
+    fn hostname_negative_accepts_only_a_hostname_mismatch() {
+        let mismatch = io::Error::new(
+            io::ErrorKind::InvalidData,
+            rustls::Error::InvalidCertificate(rustls::CertificateError::NotValidForName),
+        );
+        let expired = io::Error::new(
+            io::ErrorKind::InvalidData,
+            rustls::Error::InvalidCertificate(rustls::CertificateError::Expired),
+        );
+        let unknown_issuer = io::Error::new(
+            io::ErrorKind::InvalidData,
+            rustls::Error::InvalidCertificate(rustls::CertificateError::UnknownIssuer),
+        );
+        let refused = io::Error::new(io::ErrorKind::ConnectionRefused, "connection refused");
+
+        assert!(source_chain_has_hostname_mismatch(&mismatch));
+        assert!(!source_chain_has_hostname_mismatch(&expired));
+        assert!(!source_chain_has_hostname_mismatch(&unknown_issuer));
+        assert!(!source_chain_has_hostname_mismatch(&refused));
     }
 }
