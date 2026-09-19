@@ -152,6 +152,21 @@ def assert_d1_reapplication_is_a_noop() -> None:
     assert schema(connection) == initial_schema
 
 
+def assert_interrupted_migration_run_can_resume() -> None:
+    connection = database()
+    applied = set()
+    for migration in MIGRATIONS[:3]:
+        apply_migration(connection, migration)
+        applied.add(migration.name)
+
+    # A process can stop after recording any completed migration. Re-entry
+    # must skip those files and apply the remaining contiguous history.
+    assert apply_all_migrations(connection, applied) == {
+        migration.name for migration in MIGRATIONS
+    }
+    assert schema(connection)
+
+
 def verify_upgrade_path() -> None:
     connection = database()
     apply_migration(connection, INITIAL_MIGRATION)
@@ -714,6 +729,7 @@ def main() -> None:
 
     assert_fresh_schema_is_deterministic()
     assert_d1_reapplication_is_a_noop()
+    assert_interrupted_migration_run_can_resume()
     verify_upgrade_path()
     verify_current_schema_behavior()
     verify_cleanup_retention()

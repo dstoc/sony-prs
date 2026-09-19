@@ -867,6 +867,9 @@ complete the recovery plan before applying it.
 
 Production deployment must not expose Cloudflare credentials to pull-request jobs.
 
+The restricted-token deployment verification uses the reproducible procedure in
+[`docs/prs-cloudflare-restricted-publishing.md`](prs-cloudflare-restricted-publishing.md).
+
 ## Local development
 
 The hosted service should be runnable locally without a production Cloudflare account.

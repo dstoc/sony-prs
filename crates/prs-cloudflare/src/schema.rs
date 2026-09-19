@@ -271,6 +271,28 @@ mod tests {
     }
 
     #[test]
+    fn an_interrupted_history_is_not_ready() {
+        let mut interrupted = current_history();
+        interrupted.remove(5);
+        let result = assess_migration_history(&interrupted, RELEASE_SCHEMA_REQUIREMENT);
+        assert_eq!(result.failure, Some(ReadinessFailure::HistoryIncomplete));
+    }
+
+    #[test]
+    fn a_history_missing_a_required_prerequisite_is_not_ready() {
+        let history = history(&KNOWN_MIGRATIONS[..5]);
+        let result = assess_migration_history(&history, RELEASE_SCHEMA_REQUIREMENT);
+        assert_eq!(result.failure, Some(ReadinessFailure::SchemaOutdated));
+    }
+
+    #[test]
+    fn a_code_only_release_is_ready_without_a_new_migration() {
+        let result = assess_migration_history(&current_history(), RELEASE_SCHEMA_REQUIREMENT);
+        assert!(result.is_ready());
+        assert_eq!(result.applied_migration.unwrap().migration_id, 7);
+    }
+
+    #[test]
     fn old_history_is_not_ready_for_a_new_release() {
         let new_requirement = SchemaRequirement {
             migration_id: 8,

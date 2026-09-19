@@ -125,6 +125,10 @@ release schema requirement.
 Keep operator and deployment credentials outside the repository and outside
 pull-request jobs.
 
+The exact restricted-token procedure, including direct-management denial and
+binding-authority checks, is in
+[`docs/prs-cloudflare-restricted-publishing.md`](../../docs/prs-cloudflare-restricted-publishing.md).
+
 Before the production Worker can serve approval requests, configure
 `PRS_APPROVAL_BASE_URL` with the HTTPS base URL for the human approval
 application. Protect that hostname with a Cloudflare Access application whose
