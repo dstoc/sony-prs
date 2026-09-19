@@ -748,12 +748,16 @@ impl AuthorizationService {
             .await?;
         if changed_rows(&results[1])? != 1 {
             let current = self.load_request(request_id).await?;
-            if current.state()? == RequestState::Approved && current.expires_at <= now {
+            let current_state = current.state()?;
+            if current_state == RequestState::Expired {
+                return Ok(claim_result(ClaimOutcome::Expired));
+            }
+            if current_state == RequestState::Approved && current.expires_at <= now {
                 self.expire_if_needed(request_id, Timestamp::new(now as u64))
                     .await?;
                 return Ok(claim_result(ClaimOutcome::Expired));
             }
-            if current.state()? != RequestState::Consumed
+            if current_state != RequestState::Consumed
                 && self.credential_name_exists(&credential_name).await?
             {
                 return Err(AuthorizationFailure::CredentialAlreadyExists.into());
@@ -820,7 +824,11 @@ impl AuthorizationService {
             .await?;
         if changed_rows(&results[1])? != 1 {
             let current = self.load_request(request_id).await?;
-            if current.state()? == RequestState::Approved && current.expires_at <= issued_at {
+            let current_state = current.state()?;
+            if current_state == RequestState::Expired {
+                return Ok(claim_result(ClaimOutcome::Expired));
+            }
+            if current_state == RequestState::Approved && current.expires_at <= issued_at {
                 self.expire_if_needed(request_id, now).await?;
                 return Ok(claim_result(ClaimOutcome::Expired));
             }
