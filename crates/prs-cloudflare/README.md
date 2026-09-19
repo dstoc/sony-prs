@@ -84,9 +84,8 @@ outside pull request jobs.
 ## Schema
 
 `migrations/0001_initial.sql` creates the original metadata tables. The
-numbered `0002_metadata_schema_upgrade.sql` migration upgrades those tables
-for existing local and production databases. A fresh database applies both
-migrations in order.
+numbered migrations upgrade those tables for existing local and production
+databases. A fresh database applies all numbered migrations in order.
 
 The resulting schema contains:
 
@@ -95,14 +94,16 @@ The resulting schema contains:
 - sender and reader authorization requests, including the requested sender
   credential name;
 - 32-byte polling-secret, sender-token, and reader-session hashes;
-- boot-scoped reader sessions;
+- boot-scoped reader sessions with a finite server-side expiry;
 - named sender credentials with revocation timestamps; and
 - one configured Cloudflare Access owner identity.
 
 The migrations do not store bundle bytes or bearer credentials. Authorization
 requests use the states `pending`, `approved`, `denied`, `expired`, and
-`consumed`. The state trigger prevents rewinds. The Worker must insert the
-credential or session and mark the request `consumed` in one D1 transaction.
+`consumed`. The `expires_at` value is an absolute deadline for both pending
+and approved requests. Approval does not extend that deadline. The state
+trigger prevents rewinds. The Worker must insert the credential or session
+and mark the request `consumed` in one D1 transaction.
 
 ## Bundle publication
 
@@ -212,9 +213,11 @@ write/credential management, owner approval, and reader read-only access. The
 sender and reader authentication queries are separate, so a sender token cannot
 resolve to a reader session and a reader token cannot resolve to sender
 operations. A successful claim uses an atomic D1 batch to create exactly one
-child credential or session and consume the approved request. Approval methods
-return no bearer credential; only the corresponding pending polling capability
-receives the claim result.
+child credential or session and consume the approved request. A sender-name
+conflict uses an insert-if-absent operation, so the losing request remains
+approved and receives a typed conflict. Approval methods return no bearer
+credential; only the corresponding pending polling capability receives the
+claim result.
 
 Run the dependency-free local migration regression test from the repository
 root with:

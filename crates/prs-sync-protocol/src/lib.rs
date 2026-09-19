@@ -517,13 +517,30 @@ pub struct SenderCredentialGrant {
     pub metadata: SenderCredentialMetadata,
 }
 
-/// A boot-scoped reader session. The reader stores this token only in memory.
+/// A boot-scoped reader session. The reader stores this token only in memory
+/// and must start a fresh authorization flow after reboot, at `expires_at`, or
+/// after the service rejects the token.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReaderSession {
     pub session_id: SessionId,
     pub bearer_token: BearerToken,
     pub issued_at: Timestamp,
+    /// The server-side session deadline. Older services may omit this field;
+    /// such a session is not valid until the client has reauthorized.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<Timestamp>,
     pub scope: ReaderSessionScope,
+}
+
+impl ReaderSession {
+    /// Return whether the server-side session deadline still permits use.
+    /// Missing expiry metadata fails closed so the client can reauthorize.
+    pub const fn is_valid_at(&self, now: Timestamp) -> bool {
+        match self.expires_at {
+            Some(expires_at) => now.value() < expires_at.value(),
+            None => false,
+        }
+    }
 }
 
 /// Machine-readable API error codes. The human message is informative and
@@ -785,6 +802,7 @@ mod tests {
                     session_id: session_id("session-1"),
                     bearer_token: BearerToken::new("reader-token").unwrap(),
                     issued_at: Timestamp::new(100),
+                    expires_at: Some(Timestamp::new(200)),
                     scope: ReaderSessionScope {
                         capabilities: vec![ReaderCapability::ReadManifest],
                     },
@@ -798,8 +816,29 @@ mod tests {
         );
         assert_eq!(
             serde_json::to_string(&reader).unwrap(),
-            r#"{"protocol_version":{"major":1,"minor":0},"outcome":{"kind":"reader","session":{"session_id":"session-1","bearer_token":"reader-token","issued_at":100,"scope":{"capabilities":["read_manifest"]}}}}"#
+            r#"{"protocol_version":{"major":1,"minor":0},"outcome":{"kind":"reader","session":{"session_id":"session-1","bearer_token":"reader-token","issued_at":100,"expires_at":200,"scope":{"capabilities":["read_manifest"]}}}}"#
         );
+    }
+
+    #[test]
+    fn reader_session_expiry_is_exclusive_and_missing_metadata_fails_closed() {
+        let session = ReaderSession {
+            session_id: session_id("session-1"),
+            bearer_token: BearerToken::new("reader-token").unwrap(),
+            issued_at: Timestamp::new(100),
+            expires_at: Some(Timestamp::new(200)),
+            scope: ReaderSessionScope {
+                capabilities: vec![ReaderCapability::ReadManifest],
+            },
+        };
+        assert!(session.is_valid_at(Timestamp::new(199)));
+        assert!(!session.is_valid_at(Timestamp::new(200)));
+
+        let legacy: ReaderSession = serde_json::from_str(
+            r#"{"session_id":"session-1","bearer_token":"reader-token","issued_at":100,"scope":{"capabilities":["read_manifest"]}}"#,
+        )
+        .unwrap();
+        assert!(!legacy.is_valid_at(Timestamp::new(100)));
     }
 
     #[test]

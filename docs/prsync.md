@@ -465,7 +465,8 @@ The intended flow is:
          v
     synchronize the current bundle
 
-The reader stores the resulting session credential only in RAM.
+The reader stores the resulting session credential only in RAM. The claim
+response includes the server expiry time.
 
 Rebooting the reader destroys the credential and requires another approval.
 
@@ -539,10 +540,16 @@ It may not:
 - create sender credentials;
 - administer the service.
 
-The reader session remains valid for the lifetime of the powered-on boot
-session. It does not require periodic reauthorization while the reader remains
-powered on. Rebooting the reader destroys the session credential in RAM and
+The reader session is boot-scoped and remains valid while the reader is powered
+on, until the server-side session deadline. The default server deadline is 30
+days from issuance. It does not require periodic reauthorization before that
+deadline. Rebooting the reader destroys the session credential in RAM and
 requires fresh authorization.
+
+The reader client must check the expiry time before a synchronization attempt.
+At the deadline, or after an authorization failure from the service, it must
+discard the session token and restart reader authorization. It must not retry
+an expired token or persist it for recovery after reboot.
 
 ## Temporary document storage
 
@@ -691,7 +698,10 @@ Possession of one capability must not imply another.
 
 ## Authorization request lifetime
 
-Pending authorization requests must expire.
+Authorization requests have an absolute expiry deadline. Both pending and
+approved-but-unclaimed requests expire at that deadline. Approval does not
+extend the request lifetime. The deadline is exclusive: a request is expired
+when the service time is equal to or later than `expires_at`.
 
 A request must have explicit states such as:
 

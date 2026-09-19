@@ -13,7 +13,8 @@ The public types cover:
 - bundle manifests and the 16 MiB bundle limit;
 - inbox revisions, entity tags, and conditional manifest responses;
 - sender and reader authorization requests, statuses, and claim results;
-- separate sender capabilities and boot-scoped reader session scopes;
+- separate sender capabilities and boot-scoped reader session scopes, including
+  the server expiry metadata needed for client recovery;
 - sender credential metadata; and
 - versioned API errors.
 
