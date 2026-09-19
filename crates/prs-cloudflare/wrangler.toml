@@ -17,6 +17,7 @@ workers_dev = true
 [env.local.vars]
 PRS_ENVIRONMENT = "local"
 PRS_APPROVAL_BASE_URL = "http://127.0.0.1"
+PRS_APPROVAL_BASE_URL = "http://127.0.0.1"
 
 [[env.local.d1_databases]]
 binding = "DB"
@@ -36,6 +37,7 @@ workers_dev = false
 
 [env.production.vars]
 PRS_ENVIRONMENT = "production"
+PRS_APPROVAL_BASE_URL = "https://reader.example.com"
 
 [[env.production.d1_databases]]
 binding = "DB"

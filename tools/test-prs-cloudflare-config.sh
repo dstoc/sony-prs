@@ -29,6 +29,9 @@ for expected in \
     'name = "prs-reader-local-e2e"' \
     'command = "worker-build --release --features local-test"' \
     'PRS_ENVIRONMENT = "local"' \
+    'PRS_APPROVAL_BASE_URL = "http://127.0.0.1"' \
+    'aud = "prs-reader-local-approval"' \
+    'email = "owner@example.com"' \
     'binding = "DB"' \
     'binding = "BUNDLES"'; do
     if ! grep -Fq "$expected" "$local_test_config"; then
@@ -79,6 +82,7 @@ for expected in \
     'CREATE TABLE bundle_lifecycle' \
     "state IN ('uploading', 'published', 'cleanup_claimed')" \
     'CREATE TRIGGER bundles_require_uploading_lifecycle' \
+    'DROP TABLE IF EXISTS owner_identity' \
     "state IN ('pending', 'approved', 'denied', 'expired', 'consumed')" \
     'CREATE TRIGGER authorization_requests_state_transition'; do
     if ! grep -R -Fq "$expected" "$migrations_directory"; then

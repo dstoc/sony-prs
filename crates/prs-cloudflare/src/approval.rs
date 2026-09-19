@@ -3,7 +3,7 @@
 use crate::authorization::{
     ApprovalRequestDetails, AuthorizationError, AuthorizationFailure, AuthorizationService,
 };
-use crate::identity::PrincipalBoundary;
+use crate::identity::AccessContext;
 use prs_sync_protocol::{AuthorizationKind, AuthorizationRequestId, AuthorizationState, Timestamp};
 use worker::{Date, Env, Request, Response, Result};
 
@@ -29,36 +29,52 @@ const APPROVAL_PAGE_STYLE: &str = r#"
     .muted { color: #53606d; font-size: .9rem; }
 "#;
 
-pub async fn show(request: Request, env: Env, request_id: Option<String>) -> Result<Response> {
-    if !approval_host_allowed(&request, &env)? {
-        return wrong_approval_host_response();
-    }
-    render_route(request, env, request_id, None).await
-}
-
-pub async fn approve(request: Request, env: Env, request_id: Option<String>) -> Result<Response> {
-    if !approval_host_allowed(&request, &env)? {
-        return wrong_approval_host_response();
-    }
-    action_route(request, env, request_id, true).await
-}
-
-pub async fn deny(request: Request, env: Env, request_id: Option<String>) -> Result<Response> {
-    if !approval_host_allowed(&request, &env)? {
-        return wrong_approval_host_response();
-    }
-    action_route(request, env, request_id, false).await
-}
-
-async fn action_route(
+pub async fn show(
     request: Request,
     env: Env,
     request_id: Option<String>,
+    access: Option<AccessContext>,
+) -> Result<Response> {
+    if !approval_host_allowed(&request, &env)? {
+        return wrong_approval_host_response();
+    }
+    render_route(request, env, request_id, None, access).await
+}
+
+pub async fn approve(
+    request: Request,
+    env: Env,
+    request_id: Option<String>,
+    access: Option<AccessContext>,
+) -> Result<Response> {
+    if !approval_host_allowed(&request, &env)? {
+        return wrong_approval_host_response();
+    }
+    action_route(request, env, request_id, true, access).await
+}
+
+pub async fn deny(
+    request: Request,
+    env: Env,
+    request_id: Option<String>,
+    access: Option<AccessContext>,
+) -> Result<Response> {
+    if !approval_host_allowed(&request, &env)? {
+        return wrong_approval_host_response();
+    }
+    action_route(request, env, request_id, false, access).await
+}
+
+async fn action_route(
+    _request: Request,
+    env: Env,
+    request_id: Option<String>,
     approve: bool,
+    access: Option<AccessContext>,
 ) -> Result<Response> {
     let request_id = parse_request_id(request_id)?;
     let service = authorization_service(&env)?;
-    let owner = match authenticate_owner(&request, &env, &service).await {
+    let owner = match approval_capability(access) {
         Ok(owner) => owner,
         Err(response) => return response,
     };
@@ -102,14 +118,15 @@ async fn action_route(
 }
 
 async fn render_route(
-    request: Request,
+    _request: Request,
     env: Env,
     request_id: Option<String>,
     message: Option<&'static str>,
+    access: Option<AccessContext>,
 ) -> Result<Response> {
     let request_id = parse_request_id(request_id)?;
     let service = authorization_service(&env)?;
-    if let Err(response) = authenticate_owner(&request, &env, &service).await {
+    if let Err(response) = approval_capability(access) {
         return response;
     }
     let details = match service.approval_details(&request_id, now()).await {
@@ -119,21 +136,18 @@ async fn render_route(
     render(details, message)
 }
 
-async fn authenticate_owner(
-    request: &Request,
-    env: &Env,
-    service: &AuthorizationService,
+fn approval_capability(
+    access: Option<AccessContext>,
 ) -> std::result::Result<crate::authorization::OwnerApprovalCapability, Result<Response>> {
-    let boundary =
-        PrincipalBoundary::from_env(env).map_err(|error| -> Result<Response> { Err(error) })?;
-    let principal = boundary
-        .principal(request)
-        .await
-        .map_err(|_| forbidden_response())?;
-    service
-        .authenticate_owner(&principal)
-        .await
-        .map_err(authorization_error_response)
+    if access_is_authenticated(access) {
+        Ok(crate::authorization::OwnerApprovalCapability::new())
+    } else {
+        Err(forbidden_response())
+    }
+}
+
+fn access_is_authenticated(access: Option<AccessContext>) -> bool {
+    access.is_some()
 }
 
 fn authorization_service(env: &Env) -> Result<AuthorizationService> {
@@ -295,7 +309,7 @@ fn escape_html(value: &str) -> String {
 }
 
 fn forbidden_response() -> Result<Response> {
-    Response::error("approval requires the configured owner identity", 403)
+    Response::error("approval requires an authenticated Access context", 403)
 }
 
 fn wrong_approval_host_response() -> Result<Response> {
@@ -374,5 +388,10 @@ mod tests {
         .unwrap());
         assert!(approval_host_matches("http://127.0.0.1", Some("127.0.0.1"), "local",).unwrap());
         assert!(!approval_host_matches("http://127.0.0.1", Some("127.0.0.2"), "local",).unwrap());
+    }
+
+    #[test]
+    fn approval_requires_an_authenticated_access_context() {
+        assert!(!access_is_authenticated(None));
     }
 }

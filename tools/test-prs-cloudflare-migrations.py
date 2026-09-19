@@ -15,6 +15,7 @@ APPROVED_EXPIRY_MIGRATION = MIGRATIONS_DIRECTORY / "0004_approved_authorization_
 BUNDLE_CLEANUP_MIGRATION = MIGRATIONS_DIRECTORY / "0005_bundle_cleanup_lifecycle.sql"
 AUTHORIZATION_MAINTENANCE_MIGRATION = MIGRATIONS_DIRECTORY / "0006_authorization_maintenance.sql"
 CLEANUP_RETENTION_SECONDS = 86_400
+ACCESS_BOUNDARY_MIGRATION = MIGRATIONS_DIRECTORY / "0004_remove_owner_identity.sql"
 
 
 def database() -> sqlite3.Connection:
@@ -160,6 +161,7 @@ def verify_upgrade_path() -> None:
     apply_migration(connection, APPROVED_EXPIRY_MIGRATION)
     apply_migration(connection, BUNDLE_CLEANUP_MIGRATION)
     apply_migration(connection, AUTHORIZATION_MAINTENANCE_MIGRATION)
+    apply_migration(connection, ACCESS_BOUNDARY_MIGRATION)
 
     assert columns(connection, "inbox") == {
         "singleton",
@@ -185,6 +187,9 @@ def verify_upgrade_path() -> None:
         "window_started_at",
         "request_count",
     }
+    assert not any(
+        row[1] == "owner_identity" for row in schema(connection)
+    )
     assert dict(
         connection.execute(
             "SELECT revision, current_bundle_id FROM inbox"
@@ -297,18 +302,6 @@ def verify_current_schema_behavior() -> None:
             "SELECT revision, current_bundle_id FROM inbox"
         ).fetchone()
     ) == {"revision": 1, "current_bundle_id": "bundle-1"}
-
-    connection.execute(
-        """
-        INSERT INTO owner_identity
-            (singleton, issuer, subject, email, display_name, configured_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        """,
-        (1, "https://access.example.test", "owner-1", "owner@example.test", "Owner", 10, 10),
-    )
-    assert tuple(
-        connection.execute("SELECT issuer, subject FROM owner_identity").fetchone()
-    ) == ("https://access.example.test", "owner-1")
 
     # Pending, approved, denied, and expired are explicit persisted states.
     add_request(connection, "pending", "reader")
@@ -717,6 +710,7 @@ def main() -> None:
     assert AUTHORIZATION_NAME_MIGRATION in MIGRATIONS
     assert BUNDLE_CLEANUP_MIGRATION in MIGRATIONS
     assert AUTHORIZATION_MAINTENANCE_MIGRATION in MIGRATIONS
+    assert ACCESS_BOUNDARY_MIGRATION in MIGRATIONS
 
     assert_fresh_schema_is_deterministic()
     assert_d1_reapplication_is_a_noop()

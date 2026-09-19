@@ -112,14 +112,13 @@ non-secret context for sender and reader requests and provides separate approve
 and deny actions. The approval URL contains only the public request ID. It does
 not authenticate the human.
 
-The approval hostname is protected by Cloudflare Access. The Worker accepts a
-principal only from the `Cf-Access-Jwt-Assertion` header, after Access has
-validated the assertion at the edge. The Worker checks the assertion shape and
-matches its issuer, subject, and configured email against the singleton
-`owner_identity` row. It does not trust an identity from a URL, query
-parameter, form field, cookie, or ordinary browser header. Local integration
-tests may use the same principal boundary with the explicit `local-test`
-feature and a test-only owner header when `PRS_ENVIRONMENT=local`.
+The approval hostname is protected by Cloudflare Access. The Worker requires
+the runtime `ctx.access` context for direct approval requests. Cloudflare
+Access applies the human-owner policy before the Worker runs. The Worker does
+not read an Access assertion header, parse JWTs, fetch JWKS documents, or keep a
+second D1 owner-identity policy. Local integration tests may use the explicit
+`local-test` feature and a test-only owner header when
+`PRS_ENVIRONMENT=local`.
 
 ## Components
 
@@ -515,13 +514,11 @@ Cloudflare Access for both sender and reader authorization.
 
 The protocol hostname cannot require interactive Cloudflare Access authentication because unauthenticated clients must be able to initiate authorization.
 
-Cloudflare Access authenticates the human owner. The Worker must validate the
-authenticated Access identity and allow approval only for the configured owner
-identity. Access authentication does not replace the PRSync authorization
-request, polling-secret, or client-credential checks.
-
-Only the configured owner identity should be permitted to approve authorization
-requests.
+Cloudflare Access authenticates the human owner and its application policy
+restricts that application to the owner. The Worker must require the
+authenticated Access context before it approves or denies a request. Access
+authentication does not replace the PRSync authorization request,
+polling-secret, or client-credential checks.
 
 ## Reader session scope
 
@@ -842,11 +839,13 @@ Local development should support:
 - schema migrations;
 - complete protocol integration tests.
 
-Human authentication should be isolated behind a clear trusted-principal boundary so tests can supply an authenticated test identity without weakening production authentication.
+Human authentication should be isolated behind a clear Access-context
+boundary so tests can supply an authenticated test identity without weakening
+production authentication.
 
-In production, the trusted human principal is supplied by Cloudflare Access on
-the human-facing approval hostname. Local tests may inject an authenticated test
-identity at the same boundary without requiring Cloudflare Access.
+In production, Cloudflare Access supplies the authenticated context on the
+human-facing approval hostname. Local tests may inject an authenticated test
+identity at the same boundary without weakening the production path.
 
 ## Failure handling
 
