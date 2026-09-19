@@ -24,6 +24,11 @@ const SECRET_BYTES: usize = 32;
 const DEFAULT_REQUEST_TTL_SECONDS: u64 = 15 * 60;
 const DEFAULT_READER_SESSION_TTL_SECONDS: u64 = 30 * 24 * 60 * 60;
 const DEFAULT_RETRY_AFTER_SECONDS: u32 = 2;
+const CREATION_RATE_LIMIT: i32 = 10;
+const POLL_RATE_LIMIT: i32 = 60;
+const RATE_LIMIT_WINDOW_SECONDS: i32 = 60;
+const TERMINAL_REQUEST_RETENTION_SECONDS: i32 = 24 * 60 * 60;
+const MAINTENANCE_BATCH_LIMIT: i32 = 100;
 
 /// Worker configuration for authorization requests and boot-scoped sessions.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,6 +63,22 @@ impl AuthorizationConfig {
             request_id.as_str()
         )
     }
+}
+
+/// The result of an atomic public authorization rate-limit check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RateLimitDecision {
+    Allowed,
+    Limited { retry_after_seconds: u32 },
+}
+
+/// Counts changed by one bounded maintenance pass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MaintenanceReport {
+    pub expired_requests: usize,
+    pub deleted_terminal_requests: usize,
+    pub deleted_reader_sessions: usize,
+    pub deleted_rate_limit_buckets: usize,
 }
 
 /// A capability produced only after the trusted owner-identity boundary has
@@ -261,6 +282,76 @@ pub struct ApprovalRequestDetails {
 impl AuthorizationService {
     pub fn new(database: D1Database, config: AuthorizationConfig) -> Self {
         Self { database, config }
+    }
+
+    /// Apply the creation limit to one trusted client identity. The update is
+    /// one D1 statement so concurrent Worker isolates cannot bypass it.
+    pub async fn check_creation_rate_limit(
+        &self,
+        client_key: &str,
+        now: Timestamp,
+    ) -> Result<RateLimitDecision> {
+        self.check_rate_limit(&format!("create:{client_key}"), CREATION_RATE_LIMIT, now)
+            .await
+    }
+
+    /// Apply the polling limit to one trusted client identity. Status reads
+    /// and secret claims share this limit in the public route layer.
+    pub async fn check_poll_rate_limit(
+        &self,
+        client_key: &str,
+        now: Timestamp,
+    ) -> Result<RateLimitDecision> {
+        self.check_rate_limit(&format!("poll:{client_key}"), POLL_RATE_LIMIT, now)
+            .await
+    }
+
+    /// Expire stale requests and delete old terminal requests, expired reader
+    /// sessions, and obsolete rate-limit buckets. Each delete is capped, and
+    /// sessions are deleted before their referencing requests so a session
+    /// that is still referenced survives this maintenance pass.
+    pub async fn cleanup(&self, now: Timestamp) -> Result<MaintenanceReport> {
+        let now = database_timestamp(now)?;
+        let retention_cutoff = now.saturating_sub(TERMINAL_REQUEST_RETENTION_SECONDS);
+        let expire_requests = self
+            .database
+            .prepare(&format!(
+                "UPDATE authorization_requests\n                 SET state = 'expired', expired_at = expires_at\n                 WHERE rowid IN (\n                   SELECT rowid FROM authorization_requests\n                   WHERE state IN ('pending', 'approved') AND expires_at <= ?1\n                   ORDER BY expires_at ASC\n                   LIMIT {MAINTENANCE_BATCH_LIMIT}\n                 )"
+            ))
+            .bind(&[number(now as u64)])?;
+        let delete_sessions = self
+            .database
+            .prepare(&format!(
+                "DELETE FROM reader_sessions\n                 WHERE rowid IN (\n                   SELECT rowid FROM reader_sessions\n                   WHERE expires_at <= ?1\n                     AND NOT EXISTS (\n                       SELECT 1 FROM authorization_requests\n                       WHERE authorization_requests.session_id = reader_sessions.session_id\n                     )\n                   ORDER BY expires_at ASC\n                   LIMIT {MAINTENANCE_BATCH_LIMIT}\n                 )"
+            ))
+            .bind(&[number(retention_cutoff as u64)])?;
+        let delete_requests = self
+            .database
+            .prepare(&format!(
+                "DELETE FROM authorization_requests\n                 WHERE rowid IN (\n                   SELECT rowid FROM authorization_requests\n                   WHERE state IN ('denied', 'expired', 'consumed')\n                     AND COALESCE(consumed_at, denied_at, expired_at) <= ?1\n                   ORDER BY COALESCE(consumed_at, denied_at, expired_at) ASC\n                   LIMIT {MAINTENANCE_BATCH_LIMIT}\n                 )"
+            ))
+            .bind(&[number(retention_cutoff as u64)])?;
+        let delete_rate_limits = self
+            .database
+            .prepare(&format!(
+                "DELETE FROM authorization_rate_limits\n                 WHERE rowid IN (\n                   SELECT rowid FROM authorization_rate_limits\n                   WHERE window_started_at + ?1 <= ?2\n                   ORDER BY window_started_at ASC\n                   LIMIT {MAINTENANCE_BATCH_LIMIT}\n                 )"
+            ))
+            .bind(&[number(RATE_LIMIT_WINDOW_SECONDS as u64), number(now as u64)])?;
+        let results = self
+            .database
+            .batch(vec![
+                expire_requests,
+                delete_sessions,
+                delete_requests,
+                delete_rate_limits,
+            ])
+            .await?;
+        Ok(MaintenanceReport {
+            expired_requests: changed_rows(&results[0])?,
+            deleted_reader_sessions: changed_rows(&results[1])?,
+            deleted_terminal_requests: changed_rows(&results[2])?,
+            deleted_rate_limit_buckets: changed_rows(&results[3])?,
+        })
     }
 
     /// Create a pending sender authorization request. The sender name is
@@ -544,6 +635,52 @@ impl AuthorizationService {
             .first::<CredentialRow>(None)
             .await?
             .is_some())
+    }
+
+    async fn check_rate_limit(
+        &self,
+        bucket_key: &str,
+        limit: i32,
+        now: Timestamp,
+    ) -> Result<RateLimitDecision> {
+        let now = database_timestamp(now)?;
+        let args = [
+            D1Type::Text(bucket_key),
+            D1Type::Integer(now),
+            D1Type::Integer(RATE_LIMIT_WINDOW_SECONDS),
+        ];
+        let row = self
+            .database
+            .prepare(
+                "INSERT INTO authorization_rate_limits
+                    (bucket_key, window_started_at, request_count)
+                 VALUES (?1, ?2, 1)
+                 ON CONFLICT(bucket_key) DO UPDATE SET
+                    window_started_at = CASE
+                        WHEN authorization_rate_limits.window_started_at + ?3 <= excluded.window_started_at
+                        THEN excluded.window_started_at
+                        ELSE authorization_rate_limits.window_started_at
+                    END,
+                    request_count = CASE
+                        WHEN authorization_rate_limits.window_started_at + ?3 <= excluded.window_started_at
+                        THEN 1
+                        ELSE MIN(authorization_rate_limits.request_count + 1, 2147483647)
+                    END
+                 RETURNING window_started_at, request_count",
+            )
+            .bind_refs(args.iter())?
+            .first::<RateLimitRow>(None)
+            .await?
+            .ok_or_else(|| worker::Error::RustError("rate-limit update returned no row".into()))?;
+        if row.request_count <= limit {
+            return Ok(RateLimitDecision::Allowed);
+        }
+        let retry_after = (i64::from(row.window_started_at) + i64::from(RATE_LIMIT_WINDOW_SECONDS)
+            - i64::from(now))
+        .max(1);
+        Ok(RateLimitDecision::Limited {
+            retry_after_seconds: u32::try_from(retry_after).unwrap_or(u32::MAX),
+        })
     }
 
     async fn create(
@@ -1021,6 +1158,12 @@ impl SessionRow {
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct RateLimitRow {
+    window_started_at: i32,
+    request_count: i32,
+}
+
 #[derive(Debug)]
 enum ClaimOutcome {
     Pending { retry_after_seconds: u32 },
@@ -1083,6 +1226,10 @@ fn changed_rows(result: &D1Result) -> Result<usize> {
         .meta()?
         .and_then(|meta| meta.changes)
         .unwrap_or_default())
+}
+
+fn number(value: u64) -> worker::wasm_bindgen::JsValue {
+    worker::wasm_bindgen::JsValue::from_f64(value as f64)
 }
 
 fn database_timestamp(timestamp: Timestamp) -> Result<i32> {

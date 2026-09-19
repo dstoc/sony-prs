@@ -13,6 +13,7 @@ UPGRADE_MIGRATION = MIGRATIONS_DIRECTORY / "0002_metadata_schema_upgrade.sql"
 AUTHORIZATION_NAME_MIGRATION = MIGRATIONS_DIRECTORY / "0003_authorization_credential_name.sql"
 APPROVED_EXPIRY_MIGRATION = MIGRATIONS_DIRECTORY / "0004_approved_authorization_expiry.sql"
 BUNDLE_CLEANUP_MIGRATION = MIGRATIONS_DIRECTORY / "0005_bundle_cleanup_lifecycle.sql"
+AUTHORIZATION_MAINTENANCE_MIGRATION = MIGRATIONS_DIRECTORY / "0006_authorization_maintenance.sql"
 CLEANUP_RETENTION_SECONDS = 86_400
 
 
@@ -158,6 +159,7 @@ def verify_upgrade_path() -> None:
     apply_migration(connection, AUTHORIZATION_NAME_MIGRATION)
     apply_migration(connection, APPROVED_EXPIRY_MIGRATION)
     apply_migration(connection, BUNDLE_CLEANUP_MIGRATION)
+    apply_migration(connection, AUTHORIZATION_MAINTENANCE_MIGRATION)
 
     assert columns(connection, "inbox") == {
         "singleton",
@@ -167,6 +169,22 @@ def verify_upgrade_path() -> None:
     }
     assert "lifecycle_id" in columns(connection, "bundles")
     assert "credential_name" in columns(connection, "authorization_requests")
+    assert {
+        "sender_credentials_bearer_token_idx",
+        "reader_sessions_bearer_token_idx",
+        "authorization_requests_terminal_cleanup_idx",
+        "authorization_rate_limits_window_idx",
+    } <= {
+        row[0]
+        for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'index'"
+        ).fetchall()
+    }
+    assert columns(connection, "authorization_rate_limits") == {
+        "bucket_key",
+        "window_started_at",
+        "request_count",
+    }
     assert dict(
         connection.execute(
             "SELECT revision, current_bundle_id FROM inbox"
@@ -490,6 +508,19 @@ def verify_current_schema_behavior() -> None:
         ).fetchone()
     ) == ("blob",)
 
+    # The rate-limit state is independent from authorization records and can
+    # be populated on an upgraded database.
+    connection.execute(
+        "INSERT INTO authorization_rate_limits (bucket_key, window_started_at, request_count) VALUES (?, ?, ?)",
+        ("create:198.51.100.10", 100, 3),
+    )
+    assert tuple(
+        connection.execute(
+            "SELECT window_started_at, request_count FROM authorization_rate_limits WHERE bucket_key = ?",
+            ("create:198.51.100.10",),
+        ).fetchone()
+    ) == (100, 3)
+
 
 def add_lifecycle(
     connection: sqlite3.Connection,
@@ -685,6 +716,7 @@ def main() -> None:
     assert UPGRADE_MIGRATION in MIGRATIONS
     assert AUTHORIZATION_NAME_MIGRATION in MIGRATIONS
     assert BUNDLE_CLEANUP_MIGRATION in MIGRATIONS
+    assert AUTHORIZATION_MAINTENANCE_MIGRATION in MIGRATIONS
 
     assert_fresh_schema_is_deterministic()
     assert_d1_reapplication_is_a_noop()

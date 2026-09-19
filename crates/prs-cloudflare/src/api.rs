@@ -7,7 +7,7 @@
 
 use crate::authorization::{
     AuthorizationConfig, AuthorizationError, AuthorizationFailure, AuthorizationService,
-    PendingPollingCapability,
+    PendingPollingCapability, RateLimitDecision,
 };
 use crate::storage::{BundlePushError, BundleStore, PublishedBundle};
 use futures_util::StreamExt;
@@ -31,6 +31,7 @@ struct ApiFailure {
     status: u16,
     code: ApiErrorCode,
     message: String,
+    retry_after_seconds: Option<u32>,
 }
 
 impl ApiFailure {
@@ -39,6 +40,7 @@ impl ApiFailure {
             status,
             code,
             message: message.into(),
+            retry_after_seconds: None,
         }
     }
 
@@ -60,6 +62,15 @@ impl ApiFailure {
             ApiErrorCode::Internal,
             "the Worker could not complete the request",
         )
+    }
+
+    fn rate_limited(retry_after_seconds: u32) -> Self {
+        Self {
+            status: 429,
+            code: ApiErrorCode::RateLimited,
+            message: "the authorization request rate limit was exceeded".to_owned(),
+            retry_after_seconds: Some(retry_after_seconds),
+        }
     }
 }
 
@@ -157,8 +168,9 @@ async fn create_sender_inner(request: &mut Request, env: &Env) -> ApiResult<Auth
     let body: SenderAuthorizationBody =
         read_json_body(request, MAX_AUTHORIZATION_BODY_SIZE).await?;
     require_version(body.protocol_version)?;
-    authorization_service(env)
-        .map_err(internal_error)?
+    let service = authorization_service(env).map_err(internal_error)?;
+    enforce_creation_rate_limit(&service, request).await?;
+    service
         .create_sender(&body.credential_name, now())
         .await
         .map_err(map_authorization_error)
@@ -172,8 +184,9 @@ async fn create_reader_inner(request: &mut Request, env: &Env) -> ApiResult<Auth
     let body: ReaderAuthorizationBody =
         read_json_body(request, MAX_AUTHORIZATION_BODY_SIZE).await?;
     require_version(body.protocol_version)?;
-    authorization_service(env)
-        .map_err(internal_error)?
+    let service = authorization_service(env).map_err(internal_error)?;
+    enforce_creation_rate_limit(&service, request).await?;
+    service
         .create_reader(now())
         .await
         .map_err(map_authorization_error)
@@ -191,6 +204,7 @@ async fn poll_authorization_inner(
         read_json_body(request, MAX_AUTHORIZATION_BODY_SIZE).await?;
     require_version(body.protocol_version)?;
     let service = authorization_service(env).map_err(internal_error)?;
+    enforce_poll_rate_limit(&service, request).await?;
     let status = service
         .status(&body.request_id, now())
         .await
@@ -208,17 +222,19 @@ async fn poll_authorization_inner(
     }
 }
 
-async fn authorization_status(_request: Request, context: RouteContext<()>) -> Result<Response> {
-    finish(authorization_status_inner(&context.env, context.param("request_id")).await)
+async fn authorization_status(request: Request, context: RouteContext<()>) -> Result<Response> {
+    finish(authorization_status_inner(&request, &context.env, context.param("request_id")).await)
 }
 
 async fn authorization_status_inner(
+    request: &Request,
     env: &Env,
     request_id: Option<&String>,
 ) -> ApiResult<AuthorizationStatus> {
     let request_id = parse_request_id(request_id)?;
-    authorization_service(env)
-        .map_err(internal_error)?
+    let service = authorization_service(env).map_err(internal_error)?;
+    enforce_poll_rate_limit(&service, request).await?;
+    service
         .status(&request_id, now())
         .await
         .map_err(map_authorization_error)
@@ -611,6 +627,52 @@ fn authorization_service(env: &Env) -> Result<AuthorizationService> {
     ))
 }
 
+async fn enforce_creation_rate_limit(
+    service: &AuthorizationService,
+    request: &Request,
+) -> ApiResult<()> {
+    let client_key = authorization_client_key(request)?;
+    match service
+        .check_creation_rate_limit(&client_key, now())
+        .await
+        .map_err(internal_error)?
+    {
+        RateLimitDecision::Allowed => Ok(()),
+        RateLimitDecision::Limited {
+            retry_after_seconds,
+        } => Err(ApiFailure::rate_limited(retry_after_seconds)),
+    }
+}
+
+async fn enforce_poll_rate_limit(
+    service: &AuthorizationService,
+    request: &Request,
+) -> ApiResult<()> {
+    let client_key = authorization_client_key(request)?;
+    match service
+        .check_poll_rate_limit(&client_key, now())
+        .await
+        .map_err(internal_error)?
+    {
+        RateLimitDecision::Allowed => Ok(()),
+        RateLimitDecision::Limited {
+            retry_after_seconds,
+        } => Err(ApiFailure::rate_limited(retry_after_seconds)),
+    }
+}
+
+fn authorization_client_key(request: &Request) -> ApiResult<String> {
+    let client_key = request
+        .headers()
+        .get("CF-Connecting-IP")
+        .map_err(|_| ApiFailure::invalid("invalid client identity header"))?
+        .filter(|value| {
+            !value.is_empty() && value.len() <= 128 && !value.chars().any(char::is_whitespace)
+        })
+        .unwrap_or_else(|| "anonymous".to_owned());
+    Ok(client_key)
+}
+
 fn bundle_store(env: &Env) -> Result<BundleStore> {
     crate::bundle_store(env)
 }
@@ -760,7 +822,11 @@ fn error_response(error: ApiFailure) -> Result<Response> {
             request_id: None,
         },
     };
-    Response::from_json(&body).map(|response| response.with_status(error.status))
+    let mut builder = ResponseBuilder::new().with_status(error.status);
+    if let Some(retry_after_seconds) = error.retry_after_seconds {
+        builder = builder.with_header("Retry-After", &retry_after_seconds.to_string())?;
+    }
+    builder.from_json(&body)
 }
 
 #[cfg(test)]

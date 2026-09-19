@@ -58,7 +58,8 @@ The test uses `wrangler.local.toml`, a temporary local D1/R2 state directory,
 and a test-only owner identity. It does not contact Cloudflare. It covers
 sender and reader approval, bundle replacement, failed replacement clearing,
 conditional manifest reads, bundle download, inbox clearing, credential
-listing and revocation, and capability rejection.
+listing and revocation, capability rejection, and authorization rate-limit
+responses with their retry delays.
 
 ## Production bootstrap and deployment
 
@@ -88,8 +89,9 @@ numbered `0002_metadata_schema_upgrade.sql` migration upgrades those tables
 for existing local and production databases. Migration
 `0004_approved_authorization_expiry.sql` applies the authorization expiry
 rules. Migration `0005_bundle_cleanup_lifecycle.sql` adds lifecycle
-coordination for bundle publication and cleanup. A fresh database applies all
-migrations in order.
+coordination for bundle publication and cleanup. Migration
+`0006_authorization_maintenance.sql` adds bearer-token lookup indexes and the
+rate-limit state table. A fresh database applies all migrations in order.
 
 The resulting schema contains:
 
@@ -186,6 +188,34 @@ The sender routes never return the manifest or bundle. The reader routes do
 not accept sender mutations. Production protocol routes use bearer
 capabilities and do not require an interactive Access login.
 
+### Authorization abuse controls
+
+The Worker applies fixed-window limits by the trusted `CF-Connecting-IP`
+value:
+
+- Authorization creation allows 10 requests per 60-second window. Sender and
+  reader creation share this limit.
+- Status and claim polling allow 60 requests per 60-second window. The status
+  and claim routes share this limit.
+
+When a limit is exceeded, the Worker returns HTTP 429 with the versioned
+`rate_limited` error code and a `Retry-After` header. The header gives the
+number of seconds until the next request can proceed. Clients should wait for
+that delay before retrying.
+
+The hourly scheduled event also runs authorization maintenance. Each pass:
+
+- expires pending and approved requests whose deadlines have passed;
+- retains terminal authorization requests for 24 hours;
+- deletes at most 100 expired reader sessions, terminal requests, and stale
+  rate-limit buckets in each category; and
+- preserves reader sessions that an authorization request still references.
+
+Active sender credentials are not part of the cleanup set and remain valid
+until a sender revokes them. The cleanup queries use the terminal-request
+index and the sender and reader bearer-token indexes from
+`0006_authorization_maintenance.sql`.
+
 A successful sender push returns only publication metadata: revision, ETag,
 and encoded size. It does not return the manifest.
 
@@ -250,5 +280,7 @@ python3 tools/test-prs-cloudflare-authorization.py
 ```
 
 The second test runs the authorization transitions and D1 claim transaction
-shapes against Python's SQLite library. It does not require Wrangler or live
-Cloudflare bindings.
+shapes against Python's SQLite library. It also checks the fixed-window rate
+limits, retry delay, bounded maintenance, reference preservation, and the
+bearer-token indexes. It does not require Wrangler or live Cloudflare
+bindings.

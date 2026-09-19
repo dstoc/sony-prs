@@ -182,6 +182,67 @@ def start_authorization(
     return payload["request"], payload["polling_secret"]
 
 
+def verify_http_rate_limits(base_url: str) -> None:
+    creation_headers = {"CF-Connecting-IP": "198.51.100.40"}
+    reader_body = {"protocol_version": PROTOCOL_VERSION}
+    for _ in range(10):
+        response = json_request(
+            base_url,
+            "POST",
+            "/api/v1/authorization/reader",
+            reader_body,
+            headers=creation_headers,
+        )
+        assert_status(response, 200, "normal authorization creation")
+    response = json_request(
+        base_url,
+        "POST",
+        "/api/v1/authorization/reader",
+        reader_body,
+        headers=creation_headers,
+    )
+    assert_api_error(response, 429, "rate_limited", "excessive authorization creation")
+    if not response.headers.get("retry-after", "").isdigit():
+        raise AssertionError("authorization creation throttling did not return Retry-After")
+
+    poll_creation = json_request(
+        base_url,
+        "POST",
+        "/api/v1/authorization/reader",
+        reader_body,
+        headers={"CF-Connecting-IP": "198.51.100.41"},
+    )
+    assert_status(poll_creation, 200, "create polling rate-limit request")
+    request_data = poll_creation.json()["request"]
+    poll_body = {
+        "protocol_version": PROTOCOL_VERSION,
+        "request_id": request_data["request_id"],
+        "polling_secret": poll_creation.json()["polling_secret"],
+    }
+    poll_headers = {"CF-Connecting-IP": "198.51.100.42"}
+    for _ in range(60):
+        response = json_request(
+            base_url,
+            "POST",
+            "/api/v1/authorization/poll",
+            poll_body,
+            headers=poll_headers,
+        )
+        assert_status(response, 200, "normal authorization polling")
+        if response.json()["outcome"]["kind"] != "pending":
+            raise AssertionError("normal authorization polling did not remain pending")
+    response = json_request(
+        base_url,
+        "POST",
+        "/api/v1/authorization/poll",
+        poll_body,
+        headers=poll_headers,
+    )
+    assert_api_error(response, 429, "rate_limited", "excessive authorization polling")
+    if not response.headers.get("retry-after", "").isdigit():
+        raise AssertionError("authorization polling throttling did not return Retry-After")
+
+
 def approve(base_url: str, request_id: str, kind: str) -> None:
     owner_headers = {"X-PRSync-Test-Owner": OWNER_HEADER}
     wrong_headers = {"X-PRSync-Test-Owner": OWNER_HEADER.replace("local-owner", "wrong-owner")}
@@ -506,6 +567,7 @@ def main() -> None:
             )
             try:
                 wait_for_health(process, port, log_path)
+                verify_http_rate_limits(f"http://127.0.0.1:{port}")
                 run_workflow(f"http://127.0.0.1:{port}")
             except Exception as error:
                 log.flush()
