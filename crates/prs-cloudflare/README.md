@@ -102,8 +102,9 @@ for existing local and production databases. Migration
 rules. Migration `0005_bundle_cleanup_lifecycle.sql` adds lifecycle
 coordination for bundle publication and cleanup. Migration
 `0006_authorization_maintenance.sql` adds bearer-token lookup indexes and the
-rate-limit state table. The Access boundary migration removes the obsolete D1
-owner-identity policy. A fresh database applies all migrations in order.
+rate-limit state table. Migration `0007_remove_owner_identity.sql` removes the
+obsolete D1 owner-identity policy. A fresh database applies all migrations in
+order.
 
 The resulting schema contains:
 
