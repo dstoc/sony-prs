@@ -830,7 +830,8 @@ Deployment should follow this order:
 2. apply compatible migrations with the operator credential;
 3. verify the complete Wrangler history and database integrity;
 4. publish the Worker with the restricted deployment credential;
-5. inspect `/ready` through the Worker D1 binding;
+5. inspect `/ready` through the Worker D1 binding and compare its schema
+   requirement with the release being published;
 6. serve traffic only when the new release reports `ready`.
 
 The readiness endpoint is read-only. It must not use D1 API credentials or run
@@ -846,6 +847,15 @@ schema. If a migration is incomplete or destructive, stop traffic, inspect
 D1 history and foreign-key integrity, and recover with the operator credential
 before publishing the matching Worker. Never delete migration-history rows or
 edit an applied migration.
+
+An older Worker accepts a future migration only when its release explicitly
+lists the exact migration ID and filename in `COMPATIBLE_FUTURE_MIGRATIONS`.
+The numeric filename prefix does not establish compatibility. A correctly
+numbered but undeclared destructive migration makes the older Worker not
+ready. Deploy the compatibility declaration before applying an additive
+migration. Apply and verify the migration before deploying the release that
+requires it. If a destructive migration is necessary, drain old Workers and
+complete the recovery plan before applying it.
 
 Production deployment must not expose Cloudflare credentials to pull-request jobs.
 

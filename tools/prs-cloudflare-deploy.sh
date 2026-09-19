@@ -12,7 +12,7 @@ tools/prs-cloudflare-bootstrap.sh separately.
 Usage:
   tools/prs-cloudflare-deploy.sh --production
 
-Optional readiness check:
+Required post-publish readiness check:
   PRS_READER_URL=https://reader.example.com tools/prs-cloudflare-deploy.sh --production
 USAGE
     exit 2
@@ -32,16 +32,11 @@ if grep -Fq 'REPLACE_WITH_PRODUCTION_D1_DATABASE_ID' "$config"; then
     exit 1
 fi
 
+if [[ -z "${PRS_READER_URL:-}" ]]; then
+    echo "PRS_READER_URL is required so the published release can be verified" >&2
+    exit 2
+fi
+
 cd "$worker_dir"
 wrangler deploy --env production --no-x-provision
-
-if [[ -n "${PRS_READER_URL:-}" ]]; then
-    "$repo_root/tools/prs-cloudflare-readiness.sh" "$PRS_READER_URL"
-else
-    cat <<'NEXT'
-
-Deployment completed. Check the new release before serving traffic:
-  tools/prs-cloudflare-readiness.sh <worker-url>
-The response must report status "ready" and this release's schema requirement.
-NEXT
-fi
+"$repo_root/tools/prs-cloudflare-readiness.sh" "$PRS_READER_URL"

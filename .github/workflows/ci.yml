@@ -85,6 +85,9 @@ jobs:
       - name: Check Cloudflare Worker configuration
         run: tools/test-prs-cloudflare-config.sh
 
+      - name: Test release-aware schema readiness probe
+        run: tools/test-prs-cloudflare-readiness.sh
+
       - name: Test Cloudflare D1 migrations
         run: python3 tools/test-prs-cloudflare-migrations.py
 

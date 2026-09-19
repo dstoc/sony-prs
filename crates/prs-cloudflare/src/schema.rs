@@ -28,6 +28,14 @@ const KNOWN_MIGRATIONS: &[&str] = &[
     "0007_remove_owner_identity.sql",
 ];
 
+/// Future migrations that this release has reviewed as additive-compatible.
+///
+/// The pair must be declared before the migration is applied. A numeric file
+/// prefix or a filename containing an "additive" word does not establish
+/// compatibility. Remove an entry when the migration is no longer part of
+/// the forward-compatibility window.
+const COMPATIBLE_FUTURE_MIGRATIONS: &[(u32, &str)] = &[(8, "0008_additive_column.sql")];
+
 /// The migration identity that a release requires.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct SchemaRequirement {
@@ -191,7 +199,7 @@ pub(crate) fn assess_migration_history(
                     ReadinessFailure::MigrationNameMismatch,
                 );
             }
-        } else if !future_migration_name_matches_id(migration) {
+        } else if !is_declared_compatible_future_migration(migration) {
             return SchemaReadiness::not_ready(
                 requirement,
                 applied_migration,
@@ -222,11 +230,12 @@ pub(crate) fn assess_migration_history(
     SchemaReadiness::ready(requirement, applied_migration.expect("non-empty history"))
 }
 
-fn future_migration_name_matches_id(migration: &MigrationRecord) -> bool {
-    let prefix = format!("{:04}_", migration.migration_id);
-    migration.migration_name.starts_with(&prefix)
-        && migration.migration_name.ends_with(".sql")
-        && migration.migration_name.len() > prefix.len() + ".sql".len()
+fn is_declared_compatible_future_migration(migration: &MigrationRecord) -> bool {
+    COMPATIBLE_FUTURE_MIGRATIONS
+        .iter()
+        .any(|(migration_id, migration_name)| {
+            *migration_id == migration.migration_id && *migration_name == migration.migration_name
+        })
 }
 
 #[cfg(test)]
@@ -310,7 +319,7 @@ mod tests {
         let mut incompatible = current_history();
         incompatible.push(MigrationRecord {
             migration_id: 8,
-            migration_name: "destructive_cleanup.sql".to_owned(),
+            migration_name: "0008_remove_required_column.sql".to_owned(),
         });
         let result = assess_migration_history(&incompatible, RELEASE_SCHEMA_REQUIREMENT);
         assert_eq!(

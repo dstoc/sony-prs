@@ -38,9 +38,10 @@ Bootstrap finished. Copy the D1 database ID from the command output into:
 
   crates/prs-cloudflare/wrangler.toml
 
-Then review the production ID and apply the initial schema with:
+Then review the production ID and apply the checked-in schema with the
+operator migration command:
 
-  tools/prs-cloudflare-deploy.sh --production
+  tools/prs-cloudflare-migrate.sh --production
 
 The production R2 bucket remains private because wrangler.toml declares it as
 a Worker binding and does not configure public access.

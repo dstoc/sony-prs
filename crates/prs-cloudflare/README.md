@@ -101,22 +101,27 @@ credential:
 
 The deploy script does not run D1 management commands. It disables Wrangler's
 automatic resource provisioning and only publishes the Worker that uses the
-existing bindings. Set `PRS_READER_URL` on the command to run the readiness
-check immediately after publish:
+existing bindings. Set `PRS_READER_URL` on the command to run the required
+readiness check immediately after publish. The command fails unless the
+response is ready and reports this checkout's exact release schema
+requirement:
 
 ```sh
 PRS_READER_URL=https://reader.example.com \
   ../../tools/prs-cloudflare-deploy.sh --production
 ```
 
-Without that variable, run the check explicitly:
+To inspect an already-published Worker without publishing, run the same check
+explicitly:
 
 ```sh
 ../../tools/prs-cloudflare-readiness.sh https://reader.example.com
 ```
 
 The check reads `d1_migrations` through the Worker `DB` binding. It does not
-use D1 API credentials and it never applies a migration.
+use D1 API credentials and it never applies a migration. It rejects a ready
+response from an older Worker because that response contains a different
+release schema requirement.
 
 Keep operator and deployment credentials outside the repository and outside
 pull-request jobs.
@@ -158,6 +163,13 @@ check. An old Worker can report readiness for its own requirement after a
 compatible additive migration. That response is not proof that a newer
 release is ready. Always inspect `/ready` after the new Worker is published
 and confirm the response contains that release's requirement.
+
+An older Worker may accept a later migration only when its
+`COMPATIBLE_FUTURE_MIGRATIONS` declaration contains the exact migration ID
+and filename. The numeric filename prefix does not establish compatibility.
+Review and test the migration before adding it to that declaration. An
+undeclared future migration, including a correctly numbered destructive
+migration, makes the older Worker not ready.
 
 Schema changes must preserve old Worker behavior during the migration and
 deployment window. Prefer additive columns, indexes, tables, and nullable

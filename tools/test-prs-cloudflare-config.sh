@@ -118,12 +118,20 @@ for expected in \
     fi
 done
 
-for expected in '--confirm-production' 'wrangler d1 create prs-reader-db' 'wrangler r2 bucket create prs-reader-documents'; do
+for expected in \
+    '--confirm-production' \
+    'wrangler d1 create prs-reader-db' \
+    'wrangler r2 bucket create prs-reader-documents' \
+    'tools/prs-cloudflare-migrate.sh --production'; do
     if ! grep -Fq -- "$expected" "$bootstrap"; then
         echo "missing bootstrap guard or resource creation: $expected" >&2
         exit 1
     fi
 done
+if grep -Fq -- 'tools/prs-cloudflare-deploy.sh --production' "$bootstrap"; then
+    echo "bootstrap must not direct operators to publish before migration" >&2
+    exit 1
+fi
 
 for expected in '--production' 'wrangler deploy --env production --no-x-provision'; do
     if ! grep -Fq -- "$expected" "$deploy"; then
@@ -147,9 +155,34 @@ for expected in \
     fi
 done
 
-for expected in '/ready' 'curl --silent --show-error --max-time 10' 'status" != "200"'; do
+for expected in \
+    '/ready' \
+    'curl --silent --show-error --max-time 10' \
+    'status" != "200"' \
+    'RELEASE_SCHEMA_REQUIREMENT' \
+    'schema_requirement' \
+    'does not match this release'; do
     if ! grep -Fq -- "$expected" "$readiness"; then
         echo "missing read-only readiness check: $expected" >&2
+        exit 1
+    fi
+done
+if ! grep -Fq 'prs-cloudflare-readiness.sh" "$PRS_READER_URL"' "$deploy"; then
+    echo "production deploy must run the release-aware readiness check" >&2
+    exit 1
+fi
+if ! grep -Fq 'PRS_READER_URL is required' "$deploy"; then
+    echo "production deploy must require a readiness URL" >&2
+    exit 1
+fi
+
+for expected in \
+    'COMPATIBLE_FUTURE_MIGRATIONS' \
+    'is_declared_compatible_future_migration' \
+    '0008_additive_column.sql' \
+    '0008_remove_required_column.sql'; do
+    if ! grep -Fq -- "$expected" "$repo_root/crates/prs-cloudflare/src/schema.rs"; then
+        echo "missing explicit migration compatibility regression: $expected" >&2
         exit 1
     fi
 done
