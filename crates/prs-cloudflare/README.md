@@ -89,9 +89,11 @@ Before the production Worker can serve approval requests, configure
 application. Protect that hostname with a Cloudflare Access application whose
 policy allows only the human owner. The Worker checks `ctx.access` and accepts
 approval requests only when the request hostname matches the hostname in
-`PRS_APPROVAL_BASE_URL`. Keep the public protocol routes on their public
-hostname; those routes use PRSync bearer capabilities and do not require an
-interactive Access login.
+`PRS_APPROVAL_BASE_URL`. Configure a secret named `PRS_CSRF_SECRET` with at
+least 32 bytes. For example, run `wrangler secret put PRS_CSRF_SECRET
+--env production`. Keep the public protocol routes on their public hostname;
+those routes use PRSync bearer capabilities and do not require an interactive
+Access login.
 
 ## Schema
 
@@ -167,8 +169,11 @@ The Worker exposes the following human-facing routes:
 The page shows the request kind, sender credential name when the request is a
 sender request, request ID, creation time, expiry time, and current state. It
 does not show a polling secret, a polling-secret hash, or a bearer credential.
-Approval and denial use separate POST actions. A request in a terminal state
-has no action buttons.
+Approval and denial use separate POST actions. Each action requires a matching
+same-origin `Origin` header and a CSRF token. The token is signed with
+`PRS_CSRF_SECRET` and bound to the request ID and authenticated Access context.
+The response uses `frame-ancestors 'none'` and `form-action 'self'` CSP
+directives. A request in a terminal state has no action buttons.
 
 ## Protocol API
 

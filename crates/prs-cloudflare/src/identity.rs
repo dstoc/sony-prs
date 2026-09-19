@@ -20,9 +20,9 @@ const LOCAL_ENVIRONMENT: &str = "local";
 /// The production value can only come from the runtime's `ctx.access` object.
 /// The local-test feature also supports the explicit local identity header so
 /// dependency-free tests can exercise the approval boundary.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccessContext {
-    _private: (),
+    binding: String,
 }
 
 impl AccessContext {
@@ -39,15 +39,34 @@ impl AccessContext {
         if local_test_enabled(_env) {
             if let Some(value) = _request.headers().get(LOCAL_TEST_OWNER_HEADER)? {
                 validate_local_test_identity(&value)?;
-                return Ok(Some(Self { _private: () }));
+                return Ok(Some(Self { binding: value }));
             }
         }
 
         let access = Reflect::get(context.as_ref().as_ref(), &JsValue::from_str("access"))?;
         if access.is_undefined() || access.is_null() {
-            Ok(None)
+            return Ok(None);
         } else {
-            Ok(Some(Self { _private: () }))
+            let audience = Reflect::get(&access, &JsValue::from_str("aud"))?
+                .as_string()
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| {
+                    worker::Error::RustError(
+                        "authenticated Access context has no audience".to_owned(),
+                    )
+                })?;
+            Ok(Some(Self { binding: audience }))
+        }
+    }
+
+    pub(crate) fn csrf_binding(&self) -> &str {
+        &self.binding
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(binding: impl Into<String>) -> Self {
+        Self {
+            binding: binding.into(),
         }
     }
 }

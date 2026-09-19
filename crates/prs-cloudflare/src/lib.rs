@@ -39,21 +39,29 @@ pub(crate) fn bundle_store(env: &Env) -> Result<storage::BundleStore> {
 #[event(fetch)]
 pub async fn fetch(request: Request, env: Env, context: Context) -> Result<Response> {
     let access = identity::AccessContext::from_context(&context, &env, &request)?;
+    let show_access = access.clone();
+    let approve_access = access.clone();
     api::register(Router::new())
-        .get_async("/a/:request_id", move |request, context| async move {
-            let request_id = context.param("request_id").cloned();
-            approval::show(request, context.env, request_id, access).await
+        .get_async("/a/:request_id", move |request, context| {
+            let access = show_access.clone();
+            async move {
+                let request_id = context.param("request_id").cloned();
+                approval::show(request, context.env, request_id, access).await
+            }
         })
-        .post_async(
-            "/a/:request_id/approve",
-            move |request, context| async move {
+        .post_async("/a/:request_id/approve", move |request, context| {
+            let access = approve_access.clone();
+            async move {
                 let request_id = context.param("request_id").cloned();
                 approval::approve(request, context.env, request_id, access).await
-            },
-        )
-        .post_async("/a/:request_id/deny", move |request, context| async move {
-            let request_id = context.param("request_id").cloned();
-            approval::deny(request, context.env, request_id, access).await
+            }
+        })
+        .post_async("/a/:request_id/deny", move |request, context| {
+            let access = access.clone();
+            async move {
+                let request_id = context.param("request_id").cloned();
+                approval::deny(request, context.env, request_id, access).await
+            }
         })
         .run(request, env)
         .await

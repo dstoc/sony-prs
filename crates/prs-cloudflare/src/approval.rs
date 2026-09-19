@@ -5,11 +5,22 @@ use crate::authorization::{
 };
 use crate::identity::AccessContext;
 use prs_sync_protocol::{AuthorizationKind, AuthorizationRequestId, AuthorizationState, Timestamp};
+use sha2::{Digest, Sha256};
+use worker::js_sys::{self, Function, Uint8Array};
+use worker::wasm_bindgen::{JsCast, JsValue};
 use worker::{Date, Env, Request, Response, Result};
 
 const APPROVAL_BASE_URL_ENV: &str = "PRS_APPROVAL_BASE_URL";
+const CSRF_SECRET_ENV: &str = "PRS_CSRF_SECRET";
 const DEFAULT_APPROVAL_BASE_URL: &str = "https://reader.example.com";
 const LOCAL_ENVIRONMENT: &str = "local";
+const CSRF_FIELD: &str = "csrf_token";
+const CSRF_TOKEN_VERSION: &str = "v1";
+const CSRF_NONCE_BYTES: usize = 32;
+const CSRF_MIN_SECRET_BYTES: usize = 32;
+const ORIGIN_HEADER: &str = "Origin";
+const APPROVAL_CSP: &str =
+    "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; form-action 'self'";
 const APPROVAL_PAGE_STYLE: &str = r#"
     :root { color-scheme: light; font-family: system-ui, sans-serif; }
     body { margin: 0; background: #f4f5f7; color: #17202a; }
@@ -66,15 +77,36 @@ pub async fn deny(
 }
 
 async fn action_route(
-    _request: Request,
+    mut request: Request,
     env: Env,
     request_id: Option<String>,
     approve: bool,
     access: Option<AccessContext>,
 ) -> Result<Response> {
     let request_id = parse_request_id(request_id)?;
+    let access = match access.as_ref() {
+        Some(access) => access,
+        None => return forbidden_response(),
+    };
+    if !same_origin(&request)? {
+        return csrf_failure_response();
+    }
+    let submitted_token = request
+        .form_data()
+        .await
+        .ok()
+        .and_then(|form| form.get_field(CSRF_FIELD));
+    let valid_token = submitted_token
+        .as_deref()
+        .map(|token| validate_csrf_token(&env, access, &request_id, token))
+        .transpose()?
+        .unwrap_or(false);
+    if !valid_token {
+        return csrf_failure_response();
+    }
+
     let service = authorization_service(&env)?;
-    let owner = match approval_capability(access) {
+    let owner = match approval_capability(Some(access)) {
         Ok(owner) => owner,
         Err(response) => return response,
     };
@@ -114,7 +146,7 @@ async fn action_route(
     } else {
         "The request was denied. The waiting client will not receive a credential."
     };
-    render(details, Some(message))
+    render(&env, access, details, Some(message))
 }
 
 async fn render_route(
@@ -126,18 +158,22 @@ async fn render_route(
 ) -> Result<Response> {
     let request_id = parse_request_id(request_id)?;
     let service = authorization_service(&env)?;
-    if let Err(response) = approval_capability(access) {
+    let access = match access.as_ref() {
+        Some(access) => access,
+        None => return forbidden_response(),
+    };
+    if let Err(response) = approval_capability(Some(access)) {
         return response;
     }
     let details = match service.approval_details(&request_id, now()).await {
         Ok(details) => details,
         Err(error) => return authorization_error_response(error),
     };
-    render(details, message)
+    render(&env, access, details, message)
 }
 
 fn approval_capability(
-    access: Option<AccessContext>,
+    access: Option<&AccessContext>,
 ) -> std::result::Result<crate::authorization::OwnerApprovalCapability, Result<Response>> {
     if access_is_authenticated(access) {
         Ok(crate::authorization::OwnerApprovalCapability::new())
@@ -146,7 +182,7 @@ fn approval_capability(
     }
 }
 
-fn access_is_authenticated(access: Option<AccessContext>) -> bool {
+fn access_is_authenticated(access: Option<&AccessContext>) -> bool {
     access.is_some()
 }
 
@@ -209,18 +245,28 @@ fn now() -> Timestamp {
     Timestamp::new(Date::now().as_millis() / 1_000)
 }
 
-fn render(details: ApprovalRequestDetails, message: Option<&str>) -> Result<Response> {
-    let html = render_html(details, message);
+fn render(
+    env: &Env,
+    access: &AccessContext,
+    details: ApprovalRequestDetails,
+    message: Option<&str>,
+) -> Result<Response> {
+    let csrf_token = (details.state == AuthorizationState::Pending)
+        .then(|| create_csrf_token(env, access, &details.request_id))
+        .transpose()?;
+    let html = render_html(details, message, csrf_token.as_deref());
     worker::ResponseBuilder::new()
         .with_header("Cache-Control", "no-store")?
-        .with_header(
-            "Content-Security-Policy",
-            "default-src 'none'; style-src 'unsafe-inline'",
-        )?
+        .with_header("Content-Security-Policy", APPROVAL_CSP)?
+        .with_header("X-Frame-Options", "DENY")?
         .from_html(html)
 }
 
-fn render_html(details: ApprovalRequestDetails, message: Option<&str>) -> String {
+fn render_html(
+    details: ApprovalRequestDetails,
+    message: Option<&str>,
+    csrf_token: Option<&str>,
+) -> String {
     let kind = match details.kind {
         AuthorizationKind::Sender => "sender",
         AuthorizationKind::Reader => "reader",
@@ -235,12 +281,22 @@ fn render_html(details: ApprovalRequestDetails, message: Option<&str>) -> String
     let created_at = details.created_at.value().to_string();
     let expires_at = details.expires_at.value().to_string();
     let action_markup = if details.state == AuthorizationState::Pending {
+        let csrf_input = csrf_token
+            .map(|token| {
+                format!(
+                    r#"<input type="hidden" name="{CSRF_FIELD}" value="{}">"#,
+                    escape_html(token)
+                )
+            })
+            .unwrap_or_default();
         format!(
             r#"<div class="actions">
                 <form method="post" action="/a/{request_id}/approve">
+                    {csrf_input}
                     <button class="approve" type="submit">Approve request</button>
                 </form>
                 <form method="post" action="/a/{request_id}/deny">
+                    {csrf_input}
                     <button class="deny" type="submit">Deny request</button>
                 </form>
             </div>"#
@@ -309,11 +365,170 @@ fn escape_html(value: &str) -> String {
 }
 
 fn forbidden_response() -> Result<Response> {
-    Response::error("approval requires an authenticated Access context", 403)
+    secure_approval_response(Response::error(
+        "approval requires an authenticated Access context",
+        403,
+    )?)
+}
+
+fn csrf_failure_response() -> Result<Response> {
+    secure_approval_response(Response::error(
+        "approval action failed CSRF validation",
+        403,
+    )?)
+}
+
+fn secure_approval_response(mut response: Response) -> Result<Response> {
+    response.headers_mut().set("Cache-Control", "no-store")?;
+    response
+        .headers_mut()
+        .set("Content-Security-Policy", APPROVAL_CSP)?;
+    response.headers_mut().set("X-Frame-Options", "DENY")?;
+    Ok(response)
+}
+
+fn same_origin(request: &Request) -> Result<bool> {
+    let Some(origin) = request.headers().get(ORIGIN_HEADER)? else {
+        return Ok(false);
+    };
+    let Ok(origin_url) = worker::Url::parse(&origin) else {
+        return Ok(false);
+    };
+    if !origin_url.username().is_empty()
+        || origin_url.password().is_some()
+        || origin_url.path() != "/"
+        || origin_url.query().is_some()
+        || origin_url.fragment().is_some()
+    {
+        return Ok(false);
+    }
+    Ok(request.url()?.origin() == origin_url.origin())
+}
+
+fn create_csrf_token(
+    env: &Env,
+    access: &AccessContext,
+    request_id: &AuthorizationRequestId,
+) -> Result<String> {
+    let secret = csrf_secret(env)?;
+    let nonce = hex_encode(&random_bytes::<CSRF_NONCE_BYTES>()?);
+    let signature = csrf_signature(&secret, access, request_id, &nonce);
+    Ok(format!("{CSRF_TOKEN_VERSION}.{nonce}.{signature}"))
+}
+
+fn validate_csrf_token(
+    env: &Env,
+    access: &AccessContext,
+    request_id: &AuthorizationRequestId,
+    token: &str,
+) -> Result<bool> {
+    let mut parts = token.split('.');
+    let (Some(version), Some(nonce), Some(signature), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return Ok(false);
+    };
+    if version != CSRF_TOKEN_VERSION
+        || nonce.len() != CSRF_NONCE_BYTES * 2
+        || signature.len() != Sha256::output_size() * 2
+        || !is_lowercase_hex(nonce)
+        || !is_lowercase_hex(signature)
+    {
+        return Ok(false);
+    }
+    let expected = csrf_signature(&csrf_secret(env)?, access, request_id, nonce);
+    Ok(constant_time_eq(signature.as_bytes(), expected.as_bytes()))
+}
+
+fn csrf_secret(env: &Env) -> Result<String> {
+    let secret = env.var(CSRF_SECRET_ENV)?.to_string();
+    if secret.as_bytes().len() < CSRF_MIN_SECRET_BYTES {
+        return Err(worker::Error::RustError(
+            "PRS_CSRF_SECRET must contain at least 32 bytes".to_owned(),
+        ));
+    }
+    Ok(secret)
+}
+
+fn csrf_signature(
+    secret: &str,
+    access: &AccessContext,
+    request_id: &AuthorizationRequestId,
+    nonce: &str,
+) -> String {
+    let mut key = secret.as_bytes().to_vec();
+    if key.len() > 64 {
+        key = Sha256::digest(&key).to_vec();
+    }
+    key.resize(64, 0);
+
+    let mut inner_pad = [0x36; 64];
+    let mut outer_pad = [0x5c; 64];
+    for (index, byte) in key.iter().enumerate() {
+        inner_pad[index] ^= byte;
+        outer_pad[index] ^= byte;
+    }
+    let mut inner = Sha256::new();
+    inner.update(inner_pad);
+    update_csrf_field(&mut inner, access.csrf_binding());
+    update_csrf_field(&mut inner, request_id.as_str());
+    update_csrf_field(&mut inner, nonce);
+    let inner_digest = inner.finalize();
+
+    let mut outer = Sha256::new();
+    outer.update(outer_pad);
+    outer.update(inner_digest);
+    hex_encode(&outer.finalize())
+}
+
+fn update_csrf_field(hasher: &mut Sha256, value: &str) {
+    hasher.update((value.len() as u64).to_be_bytes());
+    hasher.update(value.as_bytes());
+}
+
+fn is_lowercase_hex(value: &str) -> bool {
+    value
+        .bytes()
+        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    left.iter()
+        .zip(right)
+        .fold(0u8, |difference, (left, right)| difference | (left ^ right))
+        == 0
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        output.push(HEX[(byte >> 4) as usize] as char);
+        output.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    output
+}
+
+fn random_bytes<const LENGTH: usize>() -> Result<[u8; LENGTH]> {
+    let global = js_sys::global();
+    let crypto = js_sys::Reflect::get(&global, &JsValue::from_str("crypto"))?;
+    let get_random_values = js_sys::Reflect::get(&crypto, &JsValue::from_str("getRandomValues"))?
+        .dyn_into::<Function>()?;
+    let values = Uint8Array::new_with_length(LENGTH as u32);
+    get_random_values.call1(&crypto, values.as_ref())?;
+    let mut bytes = [0u8; LENGTH];
+    values.copy_to(&mut bytes);
+    Ok(bytes)
 }
 
 fn wrong_approval_host_response() -> Result<Response> {
-    Response::error("approval routes are not available on this hostname", 404)
+    secure_approval_response(Response::error(
+        "approval routes are not available on this hostname",
+        404,
+    )?)
 }
 
 fn authorization_error_response(error: AuthorizationError) -> Result<Response> {
@@ -329,7 +544,7 @@ fn authorization_error_response(error: AuthorizationError) -> Result<Response> {
             AuthorizationFailure::WrongAuthorizationKind
             | AuthorizationFailure::InvalidPollingSecret => 400,
         };
-        return Response::error(failure.to_string(), status);
+        return secure_approval_response(Response::error(failure.to_string(), status)?);
     }
     Err(error.into_worker())
 }
@@ -354,18 +569,19 @@ mod tests {
 
     #[test]
     fn sender_page_contains_context_and_explicit_actions_without_secrets() {
-        let body = render_html(details(AuthorizationKind::Sender), None);
+        let body = render_html(details(AuthorizationKind::Sender), None, Some("csrf-token"));
         assert!(body.contains("sender"));
         assert!(body.contains("laptop&lt;&amp;"));
         assert!(body.contains("/a/auth-test/approve"));
         assert!(body.contains("/a/auth-test/deny"));
+        assert!(body.contains("name=\"csrf_token\""));
         assert!(!body.contains("polling_secret"));
         assert!(!body.contains("bearer_token"));
     }
 
     #[test]
     fn reader_page_does_not_invent_sender_context() {
-        let body = render_html(details(AuthorizationKind::Reader), None);
+        let body = render_html(details(AuthorizationKind::Reader), None, Some("csrf-token"));
         assert!(body.contains("reader"));
         assert!(body.contains("Not applicable"));
         assert!(body.contains("Approve request"));
@@ -393,5 +609,57 @@ mod tests {
     #[test]
     fn approval_requires_an_authenticated_access_context() {
         assert!(!access_is_authenticated(None));
+    }
+
+    #[test]
+    fn csrf_tokens_bind_the_request_and_access_context() {
+        let access = AccessContext::for_test("access-audience|owner");
+        let request_id = AuthorizationRequestId::new("auth-test").unwrap();
+        let nonce = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let signature = csrf_signature(
+            "a sufficiently long test secret for csrf",
+            &access,
+            &request_id,
+            nonce,
+        );
+        let token = format!("v1.{nonce}.{signature}");
+
+        assert!(validate_csrf_token_parts(
+            "a sufficiently long test secret for csrf",
+            &access,
+            &request_id,
+            &token,
+        ));
+        assert!(!validate_csrf_token_parts(
+            "a sufficiently long test secret for csrf",
+            &access,
+            &AuthorizationRequestId::new("other-request").unwrap(),
+            &token,
+        ));
+        assert!(!validate_csrf_token_parts(
+            "a sufficiently long test secret for csrf",
+            &AccessContext::for_test("access-audience|other-owner"),
+            &request_id,
+            &token,
+        ));
+    }
+
+    fn validate_csrf_token_parts(
+        secret: &str,
+        access: &AccessContext,
+        request_id: &AuthorizationRequestId,
+        token: &str,
+    ) -> bool {
+        let mut parts = token.split('.');
+        let (Some(version), Some(nonce), Some(signature), None) =
+            (parts.next(), parts.next(), parts.next(), parts.next())
+        else {
+            return false;
+        };
+        version == CSRF_TOKEN_VERSION
+            && constant_time_eq(
+                signature.as_bytes(),
+                csrf_signature(secret, access, request_id, nonce).as_bytes(),
+            )
     }
 }

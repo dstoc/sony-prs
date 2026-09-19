@@ -6,6 +6,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
 import shutil
 import signal
 import socket
@@ -18,6 +19,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 
@@ -243,28 +245,110 @@ def verify_http_rate_limits(base_url: str) -> None:
         raise AssertionError("authorization polling throttling did not return Retry-After")
 
 
-def approve(base_url: str, request_id: str, kind: str) -> None:
+def approval_form_token(base_url: str, request_id: str, kind: str) -> str:
     owner_headers = {"X-PRSync-Test-Owner": LOCAL_TEST_IDENTITY}
     response = request(base_url, "GET", f"/a/{request_id}", headers=owner_headers)
     assert_status(response, 200, f"show {kind} approval request")
+    csp = response.headers.get("content-security-policy", "")
+    for directive in ("frame-ancestors 'none'", "form-action 'self'"):
+        if directive not in csp:
+            raise AssertionError(f"{kind} approval response did not set {directive}")
     page = response.body.decode()
     if request_id not in page or "Approve request" not in page:
         raise AssertionError(f"{kind} approval page did not contain request context")
     if "polling_secret" in page or "bearer_token" in page:
         raise AssertionError(f"{kind} approval page exposed a secret")
-    response = request(
+    match = re.search(r'<input type="hidden" name="csrf_token" value="([^"]+)">', page)
+    if not match:
+        raise AssertionError(f"{kind} approval page did not contain a CSRF token")
+    return match.group(1)
+
+
+def post_approval_action(
+    base_url: str,
+    request_id: str,
+    action: str,
+    token: str | None,
+    origin: str,
+) -> HttpResponse:
+    body = b"" if token is None else urlencode({"csrf_token": token}).encode()
+    return request(
         base_url,
         "POST",
-        f"/a/{request_id}/approve",
-        body=b"",
+        f"/a/{request_id}/{action}",
+        body=body,
         headers={
-            **owner_headers,
+            "X-PRSync-Test-Owner": LOCAL_TEST_IDENTITY,
             "Content-Type": "application/x-www-form-urlencoded",
+            "Origin": origin,
         },
     )
+
+
+def assert_pending(base_url: str, request_id: str, description: str) -> None:
+    response = request(base_url, "GET", f"/api/v1/authorization/{request_id}")
+    assert_status(response, 200, description)
+    if response.json()["state"] != "pending":
+        raise AssertionError(f"{description}: authorization state changed unexpectedly")
+
+
+def approve(base_url: str, request_id: str, kind: str) -> None:
+    token = approval_form_token(base_url, request_id, kind)
+    origin = base_url
+    response = post_approval_action(
+        base_url, request_id, "approve", token, "https://evil.example"
+    )
+    assert_status(response, 403, f"cross-origin approve {kind} authorization")
+    assert_pending(base_url, request_id, f"state after cross-origin {kind} approval")
+
+    response = post_approval_action(base_url, request_id, "approve", None, origin)
+    assert_status(response, 403, f"missing CSRF token for {kind} approval")
+    assert_pending(base_url, request_id, f"state after missing {kind} CSRF token")
+
+    response = post_approval_action(
+        base_url, request_id, "approve", "invalid-token", origin
+    )
+    assert_status(response, 403, f"invalid CSRF token for {kind} approval")
+    assert_pending(base_url, request_id, f"state after invalid {kind} CSRF token")
+
+    other_request, _ = start_authorization(
+        base_url,
+        kind,
+        "csrf-other" if kind == "sender" else None,
+    )
+    other_token = approval_form_token(base_url, other_request["request_id"], kind)
+    response = post_approval_action(base_url, request_id, "approve", other_token, origin)
+    assert_status(response, 403, f"incorrectly bound CSRF token for {kind} approval")
+    assert_pending(base_url, request_id, f"state after incorrectly bound {kind} CSRF token")
+
+    response = request(
+        base_url, "GET", f"/a/{request_id}", headers={"X-PRSync-Test-Owner": LOCAL_TEST_IDENTITY}
+    )
+    assert_status(response, 200, f"reload {kind} approval request")
+    refreshed = re.search(
+        r'<input type="hidden" name="csrf_token" value="([^"]+)">',
+        response.body.decode(),
+    )
+    if not refreshed:
+        raise AssertionError(f"{kind} approval page did not refresh its CSRF token")
+    response = post_approval_action(base_url, request_id, "approve", refreshed.group(1), origin)
     assert_status(response, 200, f"approve {kind} authorization")
     if "approved" not in response.body.decode().lower():
         raise AssertionError(f"{kind} approval response did not show approved state")
+
+
+def deny(base_url: str, request_id: str, kind: str) -> None:
+    token = approval_form_token(base_url, request_id, kind)
+    response = post_approval_action(
+        base_url, request_id, "deny", token, "https://evil.example"
+    )
+    assert_status(response, 403, f"cross-origin deny {kind} authorization")
+    assert_pending(base_url, request_id, f"state after cross-origin {kind} denial")
+
+    response = post_approval_action(base_url, request_id, "deny", token, base_url)
+    assert_status(response, 200, f"deny {kind} authorization")
+    if "denied" not in response.body.decode().lower():
+        raise AssertionError(f"{kind} denial response did not show denied state")
 
 
 def claim(
@@ -624,6 +708,8 @@ def run_workflow(base_url: str) -> None:
         "oversized credential-management body without Content-Length",
     )
     reader_token = verify_reader_flow(base_url)
+    denied_request, _ = start_authorization(base_url, "reader")
+    deny(base_url, denied_request["request_id"], "reader")
     bundle_a = make_bundle({"index.md": b"# First bundle\n"})
     boundary_bundle = make_boundary_bundle()
     bundle_b = make_bundle(

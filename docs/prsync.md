@@ -112,6 +112,11 @@ non-secret context for sender and reader requests and provides separate approve
 and deny actions. The approval URL contains only the public request ID. It does
 not authenticate the human.
 
+Approval and denial require the authenticated Access context, a same-origin
+`Origin` header, and a CSRF token bound to the request and Access context.
+Approval responses prohibit framing and restrict form submissions to the same
+origin.
+
 The approval hostname is protected by Cloudflare Access. The Worker requires
 the runtime `ctx.access` context for direct approval requests. Cloudflare
 Access applies the human-owner policy before the Worker runs. The Worker does

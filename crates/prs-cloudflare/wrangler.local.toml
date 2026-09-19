@@ -15,6 +15,9 @@ command = "worker-build --release --features local-test"
 [vars]
 PRS_ENVIRONMENT = "local"
 PRS_APPROVAL_BASE_URL = "http://127.0.0.1"
+# This value is only for the local end-to-end test harness. Production uses a
+# Wrangler secret with the same binding name.
+PRS_CSRF_SECRET = "local-development-csrf-secret-change-me-32-bytes"
 
 [[d1_databases]]
 binding = "DB"
