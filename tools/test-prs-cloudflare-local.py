@@ -536,7 +536,7 @@ def verify_concurrent_claims(base_url: str) -> None:
 
 
 def verify_expiry(base_url: str) -> None:
-    created_at = 1_900_000_000
+    created_at = int(time.time())
     headers = local_headers(created_at, "198.51.100.63")
     request_data, polling_secret = start_authorization(base_url, "reader", headers=headers)
     expires_at = request_data["expires_at"]
@@ -568,7 +568,7 @@ def verify_expiry(base_url: str) -> None:
 
 
 def verify_retention(base_url: str) -> None:
-    created_at = 1_900_100_000
+    created_at = int(time.time())
     headers = local_headers(created_at, "198.51.100.65")
     request_data, _ = start_authorization(base_url, "reader", headers=headers)
     request_id = request_data["request_id"]
@@ -608,7 +608,7 @@ def push_with_fault(
 def verify_fault_boundaries(base_url: str, sender_token: str, reader_token: str) -> None:
     bundle_a = make_bundle({"index.md": b"# Fault boundary A\n"})
     bundle_b = make_bundle({"index.md": b"# Fault boundary B\n"})
-    clock = 1_900_200_000
+    clock = int(time.time())
 
     response = push_with_fault(base_url, sender_token, bundle_a, "d1-clear", clock)
     assert_status(response, 500, "injected D1 clear failure")
