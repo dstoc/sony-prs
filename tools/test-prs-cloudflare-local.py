@@ -22,6 +22,7 @@ from urllib.request import Request, urlopen
 
 
 PROTOCOL_VERSION = {"major": 1, "minor": 0}
+MAX_BUNDLE_SIZE = 16 * 1024 * 1024
 OWNER_HEADER = "https://team.cloudflareaccess.com|local-owner|owner@example.com"
 WRANGLER_CONFIG = "wrangler.local.toml"
 
@@ -145,6 +146,18 @@ def make_bundle(files: dict[str, bytes]) -> bytes:
         for path, contents in files.items():
             append_tar_file(archive, path, contents)
     return output.getvalue()
+
+
+def make_boundary_bundle() -> bytes:
+    # Python's tarfile writer pads the archive to a 10 KiB record. Trim only
+    # zero padding after the required tar end marker to reach the protocol
+    # boundary without changing any archive entry.
+    content_size = MAX_BUNDLE_SIZE - 4096
+    contents = b"# boundary\n" + b"x" * (content_size - len(b"# boundary\n"))
+    bundle = make_bundle({"index.md": contents})
+    if len(bundle) < MAX_BUNDLE_SIZE or any(bundle[MAX_BUNDLE_SIZE:]):
+        raise AssertionError("could not construct a boundary-size valid bundle")
+    return bundle[:MAX_BUNDLE_SIZE]
 
 
 def append_tar_file(archive: tarfile.TarFile, path: str, contents: bytes) -> None:
@@ -520,9 +533,50 @@ def run_workflow(base_url: str) -> None:
     response = request(base_url, "GET", "/health")
     assert_status(response, 200, "Worker health")
 
+    oversized_authorization = request(
+        base_url,
+        "POST",
+        "/api/v1/authorization/reader",
+        body=json.dumps(
+            {"protocol_version": PROTOCOL_VERSION, "padding": "x" * 4096},
+            separators=(",", ":"),
+        ).encode(),
+        headers={
+            "Content-Type": "application/json",
+            "Transfer-Encoding": "chunked",
+        },
+    )
+    assert_api_error(
+        oversized_authorization,
+        413,
+        "payload_too_large",
+        "oversized authorization body without Content-Length",
+    )
+
     sender_token, _ = verify_sender_flow(base_url)
+    oversized_credentials = request(
+        base_url,
+        "DELETE",
+        "/api/v1/sender/credentials",
+        body=json.dumps(
+            {"protocol_version": PROTOCOL_VERSION, "name": "ci-sender", "padding": "x" * 4096},
+            separators=(",", ":"),
+        ).encode(),
+        headers={
+            "Authorization": f"Bearer {sender_token}",
+            "Content-Type": "application/json",
+            "Transfer-Encoding": "chunked",
+        },
+    )
+    assert_api_error(
+        oversized_credentials,
+        413,
+        "payload_too_large",
+        "oversized credential-management body without Content-Length",
+    )
     reader_token = verify_reader_flow(base_url)
     bundle_a = make_bundle({"index.md": b"# First bundle\n"})
+    boundary_bundle = make_boundary_bundle()
     bundle_b = make_bundle(
         {
             "index.md": b"# Replacement bundle\n",
@@ -544,6 +598,20 @@ def run_workflow(base_url: str) -> None:
     if "manifest" in response.body.decode().lower():
         raise AssertionError("sender push response exposed manifest content")
     verify_manifest(base_url, reader_token, "index.md")
+
+    response = request(
+        base_url,
+        "PUT",
+        "/api/v1/sender/bundle",
+        body=boundary_bundle,
+        headers={
+            "Authorization": f"Bearer {sender_token}",
+            "Content-Type": "application/x-tar",
+        },
+    )
+    assert_status(response, 200, "push boundary-size bundle")
+    if response.json()["size_bytes"] != MAX_BUNDLE_SIZE:
+        raise AssertionError("boundary-size bundle was not accepted at the protocol limit")
 
     response = request(
         base_url,
@@ -575,6 +643,41 @@ def run_workflow(base_url: str) -> None:
             raise AssertionError("downloaded bundle did not retain its archive entries")
 
     verify_concurrent_mutation_results(base_url, sender_token)
+
+    unauthorized = request(
+        base_url,
+        "PUT",
+        "/api/v1/sender/bundle",
+        body=b"x" * (MAX_BUNDLE_SIZE + 1),
+        headers={
+            "Authorization": "Bearer invalid-token",
+            "Content-Type": "application/x-tar",
+        },
+    )
+    assert_api_error(unauthorized, 401, "unauthorized", "unauthorized oversized upload")
+    verify_manifest(base_url, reader_token, "index.md")
+
+    oversized = request(
+        base_url,
+        "PUT",
+        "/api/v1/sender/bundle",
+        body=b"x" * (MAX_BUNDLE_SIZE + 1),
+        headers={
+            "Authorization": f"Bearer {sender_token}",
+            "Content-Type": "application/x-tar",
+            "Transfer-Encoding": "chunked",
+        },
+    )
+    assert_api_error(oversized, 413, "payload_too_large", "oversized bundle")
+    empty = request(
+        base_url,
+        "GET",
+        "/api/v1/reader/manifest",
+        headers={"Authorization": f"Bearer {reader_token}"},
+    )
+    assert_status(empty, 200, "read inbox after oversized replacement")
+    if empty.json()["state"]["kind"] != "empty":
+        raise AssertionError("oversized replacement left a readable bundle in the inbox")
 
     invalid = request(
         base_url,

@@ -1126,6 +1126,7 @@ dependencies = [
 name = "prs-cloudflare"
 version = "0.1.0"
 dependencies = [
+ "futures-util",
  "prs-sync-bundle",
  "prs-sync-protocol",
  "serde",
