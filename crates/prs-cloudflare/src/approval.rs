@@ -7,6 +7,9 @@ use crate::identity::PrincipalBoundary;
 use prs_sync_protocol::{AuthorizationKind, AuthorizationRequestId, AuthorizationState, Timestamp};
 use worker::{Date, Env, Request, Response, Result};
 
+const APPROVAL_BASE_URL_ENV: &str = "PRS_APPROVAL_BASE_URL";
+const DEFAULT_APPROVAL_BASE_URL: &str = "https://reader.example.com";
+const LOCAL_ENVIRONMENT: &str = "local";
 const APPROVAL_PAGE_STYLE: &str = r#"
     :root { color-scheme: light; font-family: system-ui, sans-serif; }
     body { margin: 0; background: #f4f5f7; color: #17202a; }
@@ -27,14 +30,23 @@ const APPROVAL_PAGE_STYLE: &str = r#"
 "#;
 
 pub async fn show(request: Request, env: Env, request_id: Option<String>) -> Result<Response> {
+    if !approval_host_allowed(&request, &env)? {
+        return wrong_approval_host_response();
+    }
     render_route(request, env, request_id, None).await
 }
 
 pub async fn approve(request: Request, env: Env, request_id: Option<String>) -> Result<Response> {
+    if !approval_host_allowed(&request, &env)? {
+        return wrong_approval_host_response();
+    }
     action_route(request, env, request_id, true).await
 }
 
 pub async fn deny(request: Request, env: Env, request_id: Option<String>) -> Result<Response> {
+    if !approval_host_allowed(&request, &env)? {
+        return wrong_approval_host_response();
+    }
     action_route(request, env, request_id, false).await
 }
 
@@ -116,6 +128,7 @@ async fn authenticate_owner(
         PrincipalBoundary::from_env(env).map_err(|error| -> Result<Response> { Err(error) })?;
     let principal = boundary
         .principal(request)
+        .await
         .map_err(|_| forbidden_response())?;
     service
         .authenticate_owner(&principal)
@@ -124,14 +137,49 @@ async fn authenticate_owner(
 }
 
 fn authorization_service(env: &Env) -> Result<AuthorizationService> {
-    let mut config = crate::authorization::AuthorizationConfig::default();
-    if let Ok(base_url) = env.var("PRS_APPROVAL_BASE_URL") {
-        config.approval_base_url = base_url.to_string();
-    }
+    let config = crate::authorization::AuthorizationConfig {
+        approval_base_url: configured_approval_base_url(env),
+        ..crate::authorization::AuthorizationConfig::default()
+    };
     Ok(AuthorizationService::new(
         env.d1(crate::D1_BINDING)?,
         config,
     ))
+}
+
+pub(crate) fn configured_approval_base_url(env: &Env) -> String {
+    env.var(APPROVAL_BASE_URL_ENV)
+        .map(|value| value.to_string())
+        .unwrap_or_else(|_| DEFAULT_APPROVAL_BASE_URL.to_owned())
+}
+
+fn approval_host_allowed(request: &Request, env: &Env) -> Result<bool> {
+    let environment = env
+        .var("PRS_ENVIRONMENT")
+        .map(|value| value.to_string())
+        .unwrap_or_default();
+    let request_url = request.url()?;
+    approval_host_matches(
+        &configured_approval_base_url(env),
+        request_url.host_str(),
+        &environment,
+    )
+}
+
+fn approval_host_matches(
+    configured_base_url: &str,
+    request_host: Option<&str>,
+    environment: &str,
+) -> Result<bool> {
+    let configured_url = worker::Url::parse(configured_base_url)
+        .map_err(|error| worker::Error::RustError(error.to_string()))?;
+    let configured_host = configured_url
+        .host_str()
+        .ok_or_else(|| worker::Error::RustError("approval URL has no hostname".into()))?;
+    Ok(request_host.is_some_and(|request_host| {
+        request_host.eq_ignore_ascii_case(configured_host)
+            && (environment == LOCAL_ENVIRONMENT || configured_url.scheme() == "https")
+    }))
 }
 
 fn parse_request_id(value: Option<String>) -> Result<AuthorizationRequestId> {
@@ -250,6 +298,10 @@ fn forbidden_response() -> Result<Response> {
     Response::error("approval requires the configured owner identity", 403)
 }
 
+fn wrong_approval_host_response() -> Result<Response> {
+    Response::error("approval routes are not available on this hostname", 404)
+}
+
 fn authorization_error_response(error: AuthorizationError) -> Result<Response> {
     if let Some(failure) = error.failure() {
         let status = match failure {
@@ -304,5 +356,23 @@ mod tests {
         assert!(body.contains("Not applicable"));
         assert!(body.contains("Approve request"));
         assert!(body.contains("Deny request"));
+    }
+
+    #[test]
+    fn approval_routes_accept_only_the_configured_human_host() {
+        assert!(approval_host_matches(
+            "https://reader.example.com",
+            Some("reader.example.com"),
+            "production",
+        )
+        .unwrap());
+        assert!(!approval_host_matches(
+            "https://reader.example.com",
+            Some("prs-reader.example.workers.dev"),
+            "production",
+        )
+        .unwrap());
+        assert!(approval_host_matches("http://127.0.0.1", Some("127.0.0.1"), "local",).unwrap());
+        assert!(!approval_host_matches("http://127.0.0.1", Some("127.0.0.2"), "local",).unwrap());
     }
 }

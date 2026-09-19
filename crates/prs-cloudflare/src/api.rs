@@ -617,10 +617,10 @@ impl Capability<crate::authorization::ReaderAuthorization> for prs_sync_protocol
 }
 
 fn authorization_service(env: &Env) -> Result<AuthorizationService> {
-    let mut config = AuthorizationConfig::default();
-    if let Ok(base_url) = env.var("PRS_APPROVAL_BASE_URL") {
-        config.approval_base_url = base_url.to_string();
-    }
+    let config = AuthorizationConfig {
+        approval_base_url: crate::approval::configured_approval_base_url(env),
+        ..AuthorizationConfig::default()
+    };
     Ok(AuthorizationService::new(
         env.d1(crate::D1_BINDING)?,
         config,

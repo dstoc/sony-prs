@@ -14,6 +14,7 @@ command = "worker-build --release --features local-test"
 
 [vars]
 PRS_ENVIRONMENT = "local"
+PRS_APPROVAL_BASE_URL = "http://127.0.0.1"
 
 [[d1_databases]]
 binding = "DB"
