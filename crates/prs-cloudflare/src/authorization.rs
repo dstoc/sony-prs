@@ -5,7 +5,6 @@
 //! that returns a newly-created bearer token is a successful polling claim.
 //! Human approval receives an [`OwnerApprovalCapability`], not a client token.
 
-use crate::identity::TrustedPrincipal;
 use prs_sync_protocol::{
     AuthorizationKind, AuthorizationRequest, AuthorizationRequestId, AuthorizationStart,
     AuthorizationState, AuthorizationStatus, BearerToken, CredentialId, PollingSecret,
@@ -81,16 +80,16 @@ pub struct MaintenanceReport {
     pub deleted_rate_limit_buckets: usize,
 }
 
-/// A capability produced only after the trusted owner-identity boundary has
-/// authenticated the configured owner.
+/// A capability produced only after the Cloudflare Access boundary has
+/// authenticated the human approval request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OwnerApprovalCapability {
     _private: (),
 }
 
 impl OwnerApprovalCapability {
-    /// This constructor is crate-visible so the Access/test identity boundary
-    /// can mint the capability after it has performed its own validation.
+    /// This constructor is crate-visible so the Access/test boundary can mint
+    /// the capability after it has confirmed the runtime context.
     #[allow(dead_code)]
     pub(crate) const fn new() -> Self {
         Self { _private: () }
@@ -408,34 +407,7 @@ impl AuthorizationService {
         self.load_request(request_id).await?.approval_details()
     }
 
-    /// Resolve a platform-authenticated principal against the one configured
-    /// owner identity. The resulting capability carries no bearer token and
-    /// cannot be constructed from a request ID or approval URL.
-    pub async fn authenticate_owner(
-        &self,
-        principal: &TrustedPrincipal,
-    ) -> Result<OwnerApprovalCapability> {
-        let row = self
-            .database
-            .prepare(
-                "SELECT issuer, subject, email\n                 FROM owner_identity\n                 WHERE singleton = 1",
-            )
-            .first::<OwnerIdentityRow>(None)
-            .await?
-            .ok_or(AuthorizationFailure::Unauthorized)?;
-        let email_matches = row
-            .email
-            .as_deref()
-            .map(|configured| principal.email() == Some(configured))
-            .unwrap_or(true);
-        if row.issuer != principal.issuer() || row.subject != principal.subject() || !email_matches
-        {
-            return Err(AuthorizationFailure::Unauthorized.into());
-        }
-        Ok(OwnerApprovalCapability::new())
-    }
-
-    /// Approve a sender request after the trusted owner boundary succeeds.
+    /// Approve a sender request after the trusted Access boundary succeeds.
     pub async fn approve_sender(
         &self,
         _owner: OwnerApprovalCapability,
@@ -446,7 +418,7 @@ impl AuthorizationService {
             .await
     }
 
-    /// Approve a reader request after the trusted owner boundary succeeds.
+    /// Approve a reader request after the trusted Access boundary succeeds.
     pub async fn approve_reader(
         &self,
         _owner: OwnerApprovalCapability,
@@ -1101,13 +1073,6 @@ impl AuthorizationRow {
             state: self.state()?.protocol(),
         })
     }
-}
-
-#[derive(Debug, Deserialize)]
-struct OwnerIdentityRow {
-    issuer: String,
-    subject: String,
-    email: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

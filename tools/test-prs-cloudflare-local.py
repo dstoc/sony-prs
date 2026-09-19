@@ -23,7 +23,6 @@ from urllib.request import Request, urlopen
 
 PROTOCOL_VERSION = {"major": 1, "minor": 0}
 MAX_BUNDLE_SIZE = 16 * 1024 * 1024
-OWNER_HEADER = "https://team.cloudflareaccess.com|local-owner|owner@example.com"
 WRANGLER_CONFIG = "wrangler.local.toml"
 
 
@@ -244,11 +243,7 @@ def verify_http_rate_limits(base_url: str) -> None:
 
 
 def approve(base_url: str, request_id: str, kind: str) -> None:
-    owner_headers = {"X-PRSync-Test-Owner": OWNER_HEADER}
-    wrong_headers = {"X-PRSync-Test-Owner": OWNER_HEADER.replace("local-owner", "wrong-owner")}
-    response = request(base_url, "GET", f"/a/{request_id}", headers=wrong_headers)
-    assert_status(response, 403, "wrong owner approval request")
-    response = request(base_url, "GET", f"/a/{request_id}", headers=owner_headers)
+    response = request(base_url, "GET", f"/a/{request_id}")
     assert_status(response, 200, f"show {kind} approval request")
     page = response.body.decode()
     if request_id not in page or "Approve request" not in page:
@@ -260,7 +255,7 @@ def approve(base_url: str, request_id: str, kind: str) -> None:
         "POST",
         f"/a/{request_id}/approve",
         body=b"",
-        headers={**owner_headers, "Content-Type": "application/x-www-form-urlencoded"},
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
     )
     assert_status(response, 200, f"approve {kind} authorization")
     if "approved" not in response.body.decode().lower():
@@ -528,19 +523,6 @@ def main() -> None:
             "DB",
             "--local",
         )
-        run_wrangler(
-            wrangler,
-            worker_dir,
-            state_dir,
-            "d1",
-            "execute",
-            "DB",
-            "--local",
-            "--yes",
-            "--command",
-            "INSERT INTO owner_identity (singleton, issuer, subject, email, display_name, configured_at, updated_at) VALUES (1, 'https://team.cloudflareaccess.com', 'local-owner', 'owner@example.com', 'Local owner', 0, 0)",
-        )
-
         port = free_port()
         log_path = Path(temporary) / "wrangler.log"
         with log_path.open("w+") as log:

@@ -55,7 +55,8 @@ python3 tools/test-prs-cloudflare-local.py
 ```
 
 The test uses `wrangler.local.toml`, a temporary local D1/R2 state directory,
-and a test-only owner identity. It does not contact Cloudflare. It covers
+and Wrangler's local Cloudflare Access identity context. It does not contact
+Cloudflare. It covers
 sender and reader approval, bundle replacement, failed replacement clearing,
 conditional manifest reads, bundle download, inbox clearing, credential
 listing and revocation, capability rejection, and authorization rate-limit
@@ -82,21 +83,14 @@ commands only use the resources named in the configuration. They do not create
 a database or a bucket. Keep Cloudflare credentials outside the repository and
 outside pull request jobs.
 
-Before the production Worker can serve approval requests, configure these
-Worker variables in the production environment:
-
-- `PRS_ACCESS_ISSUER`: the HTTPS Cloudflare Access team domain.
-- `PRS_ACCESS_AUDIENCE`: the Access application audience tag.
-- `PRS_APPROVAL_BASE_URL`: the HTTPS base URL for the human approval
-  application.
-
-The Worker derives the Access signing-key URL from the issuer. It fetches the
-current JWK set, selects the key named by the JWT `kid`, and verifies the
-RS256 signature. It also requires the configured issuer, audience, and active
-`exp` and `nbf` claims. The approval routes accept requests only when the
-request hostname matches the hostname in `PRS_APPROVAL_BASE_URL`. Keep the
-public protocol routes on their public hostname; those routes use PRSync
-bearer capabilities and do not require an interactive Access login.
+Before the production Worker can serve approval requests, configure
+`PRS_APPROVAL_BASE_URL` with the HTTPS base URL for the human approval
+application. Protect that hostname with a Cloudflare Access application whose
+policy allows only the human owner. The Worker checks `ctx.access` and accepts
+approval requests only when the request hostname matches the hostname in
+`PRS_APPROVAL_BASE_URL`. Keep the public protocol routes on their public
+hostname; those routes use PRSync bearer capabilities and do not require an
+interactive Access login.
 
 ## Schema
 
@@ -107,7 +101,8 @@ for existing local and production databases. Migration
 rules. Migration `0005_bundle_cleanup_lifecycle.sql` adds lifecycle
 coordination for bundle publication and cleanup. Migration
 `0006_authorization_maintenance.sql` adds bearer-token lookup indexes and the
-rate-limit state table. A fresh database applies all migrations in order.
+rate-limit state table. The Access boundary migration removes the obsolete D1
+owner-identity policy. A fresh database applies all migrations in order.
 
 The resulting schema contains:
 
@@ -117,8 +112,7 @@ The resulting schema contains:
   credential name;
 - 32-byte polling-secret, sender-token, and reader-session hashes;
 - boot-scoped reader sessions with a finite server-side expiry;
-- named sender credentials with revocation timestamps; and
-- one configured Cloudflare Access owner identity.
+- named sender credentials with revocation timestamps.
 
 Each bundle metadata row has a lifecycle row. Legacy metadata is backfilled as
 `published`. New uploads start as `uploading`, change to `published` in the
@@ -247,22 +241,21 @@ clears the inbox before it returns the error. This matches malformed bundle
 uploads, which also clear the inbox before validation. An unauthorized upload
 fails at the bearer check and cannot change the inbox.
 
-### Trusted owner identity boundary
+### Cloudflare Access boundary
 
-The approval routes accept only a platform-authenticated principal. In a
-production build, the input is the `Cf-Access-Jwt-Assertion` header supplied by
-Cloudflare Access. The Worker verifies the JWT signature and validity claims,
-requires the configured issuer and application audience, and then compares the
-issuer and subject with the singleton row in `owner_identity`. If that row has
-an email, the JWT must contain the same email. The Worker does not accept an
-identity from the approval URL, query string, form body, cookie, or ordinary
-browser-provided identity header.
+The approval routes require the configured approval hostname and a
+Cloudflare-authenticated `ctx.access` context. Cloudflare Access applies the
+human-owner policy before the direct Worker invocation. The Worker does not
+read `Cf-Access-Jwt-Assertion`, parse JWTs, fetch JWKS documents, or compare a
+caller identity with a second D1 owner policy. It calls
+`ctx.access.getIdentity()` only if the page later needs identity data for
+display or audit.
 
 Local integration tests can be built with the `local-test` Cargo feature. When
-`PRS_ENVIRONMENT=local`, the same boundary can parse
+`PRS_ENVIRONMENT=local`, the explicit local seam can parse
 `X-PRSync-Test-Owner: <issuer>|<subject>|<email>`. The production fetch path
 does not select this source, and a default production build does not compile
-the local test constructor. The local Wrangler configuration uses
+the local seam. The local Wrangler configuration uses `[access.dev]` and
 `http://127.0.0.1` as its approval hostname.
 
 The approval URL contains only the public request ID. It is a lookup key, not
@@ -277,7 +270,7 @@ the Workers Web Crypto API. D1 stores only SHA-256 hashes. Approval URLs contain
 the public request identifier but never the polling secret.
 
 The service exposes separate typed paths for pending polling, sender
-write/credential management, owner approval, and reader read-only access. The
+write/credential management, Access approval, and reader read-only access. The
 sender and reader authentication queries are separate, so a sender token cannot
 resolve to a reader session and a reader token cannot resolve to sender
 operations. A successful claim uses an atomic D1 batch to create exactly one

@@ -16,7 +16,7 @@ pub use authorization::{
     OwnerApprovalCapability, PendingPollingCapability, RateLimitDecision, ReaderAuthorization,
     SenderAuthorization,
 };
-pub use identity::{PrincipalBoundary, PrincipalError, TrustedPrincipal};
+pub use identity::{AccessContext, PrincipalBoundary};
 use worker::*;
 
 mod storage;
@@ -37,19 +37,23 @@ pub(crate) fn bundle_store(env: &Env) -> Result<storage::BundleStore> {
 }
 
 #[event(fetch)]
-pub async fn fetch(request: Request, env: Env, _context: Context) -> Result<Response> {
+pub async fn fetch(request: Request, env: Env, context: Context) -> Result<Response> {
+    let access = identity::AccessContext::from_context(&context, &env, &request)?;
     api::register(Router::new())
-        .get_async("/a/:request_id", |request, context| async move {
+        .get_async("/a/:request_id", move |request, context| async move {
             let request_id = context.param("request_id").cloned();
-            approval::show(request, context.env, request_id).await
+            approval::show(request, context.env, request_id, access).await
         })
-        .post_async("/a/:request_id/approve", |request, context| async move {
+        .post_async(
+            "/a/:request_id/approve",
+            move |request, context| async move {
+                let request_id = context.param("request_id").cloned();
+                approval::approve(request, context.env, request_id, access).await
+            },
+        )
+        .post_async("/a/:request_id/deny", move |request, context| async move {
             let request_id = context.param("request_id").cloned();
-            approval::approve(request, context.env, request_id).await
-        })
-        .post_async("/a/:request_id/deny", |request, context| async move {
-            let request_id = context.param("request_id").cloned();
-            approval::deny(request, context.env, request_id).await
+            approval::deny(request, context.env, request_id, access).await
         })
         .run(request, env)
         .await
