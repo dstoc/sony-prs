@@ -19,8 +19,7 @@ The local environment uses a non-production placeholder D1 ID. Wrangler's
 default local mode stores D1 and R2 data in `.wrangler/state` and does not
 contact Cloudflare. Do not add `remote = true` to the local bindings.
 
-The production D1 ID is a deliberate placeholder until the production
-resources are created. The production bucket name is fixed in the checked-in
+The production D1 ID and bucket name are fixed in the checked-in
 configuration. The Worker deploy configuration references these resources; it
 does not create them.
 

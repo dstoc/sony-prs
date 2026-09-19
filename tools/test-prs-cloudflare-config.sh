@@ -50,6 +50,19 @@ if grep -Fq 'REPLACE_WITH_PRODUCTION_D1_DATABASE_ID' <<<"$local_environment"; th
     exit 1
 fi
 
+production_environment=$(awk '
+    /^\[env\.production\]/ { in_production = 1 }
+    in_production { print }
+' "$config")
+if grep -Fq 'REPLACE_WITH_PRODUCTION_D1_DATABASE_ID' <<<"$production_environment"; then
+    echo "production Worker configuration must contain the bootstrapped D1 ID" >&2
+    exit 1
+fi
+if ! grep -Eq 'database_id = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"' <<<"$production_environment"; then
+    echo "production Worker configuration must contain a UUID-shaped D1 ID" >&2
+    exit 1
+fi
+
 if grep -Eni 'public|allow_public' "$config"; then
     echo "production R2 configuration must remain private" >&2
     exit 1

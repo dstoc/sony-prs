@@ -36,8 +36,8 @@ PRS_ENVIRONMENT = "production"
 [[env.production.d1_databases]]
 binding = "DB"
 database_name = "prs-reader-db"
-# Replace this placeholder with the ID returned by the bootstrap script.
-database_id = "REPLACE_WITH_PRODUCTION_D1_DATABASE_ID"
+# This ID was returned by the production bootstrap.
+database_id = "9bd0143c-418e-457e-8a20-1dab76216ec9"
 migrations_dir = "migrations"
 
 [[env.production.r2_buckets]]
