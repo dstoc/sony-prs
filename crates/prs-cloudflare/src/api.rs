@@ -503,17 +503,31 @@ async fn read_limited_body(request: &mut Request, limit: u64) -> ApiResult<Vec<u
         .headers()
         .get("Content-Length")
         .map_err(|_| ApiFailure::invalid("invalid Content-Length header"))?;
-    check_content_length(content_length.as_deref(), limit)?;
-
     let mut stream = request
         .stream()
         .map_err(|_| ApiFailure::invalid("request body could not be read"))?;
+    if let Err(error) = check_content_length(content_length.as_deref(), limit) {
+        drain_body(&mut stream).await;
+        return Err(error);
+    }
+
     let mut body = Vec::new();
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|_| ApiFailure::invalid("request body could not be read"))?;
-        append_body_chunk(&mut body, &chunk, limit)?;
+        if let Err(error) = append_body_chunk(&mut body, &chunk, limit) {
+            if error.code == ApiErrorCode::PayloadTooLarge {
+                // Consume the remainder without retaining it. Workerd requires
+                // request bodies to be drained before the response is sent.
+                drain_body(&mut stream).await;
+            }
+            return Err(error);
+        }
     }
     Ok(body)
+}
+
+async fn drain_body(stream: &mut worker::ByteStream) {
+    while stream.next().await.is_some() {}
 }
 
 fn check_content_length(value: Option<&str>, limit: u64) -> ApiResult<()> {
