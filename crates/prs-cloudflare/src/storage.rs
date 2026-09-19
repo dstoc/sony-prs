@@ -13,9 +13,19 @@ use prs_sync_protocol::{EntityTag, InboxRevision, Manifest, MAX_BUNDLE_SIZE};
 use serde::Deserialize;
 use worker::{wasm_bindgen::JsCast, Bucket, D1Database, Error, Object, Result};
 
-/// Candidate objects are private Worker storage. Cleanup can list this prefix
-/// and delete every object except the object referenced by the inbox.
+/// Bundle objects are private Worker storage. Cleanup lists this prefix so it
+/// can also find legacy objects that predate candidate lifecycle metadata.
+pub(crate) const BUNDLE_OBJECT_PREFIX: &str = "bundles/";
+
+/// New objects use this prefix to distinguish them from legacy object keys.
 pub(crate) const CANDIDATE_OBJECT_PREFIX: &str = "bundles/candidates/";
+
+/// An abandoned object or metadata row is retained for 24 hours. This gives a
+/// failed request time to retry while keeping cleanup eventually effective.
+pub(crate) const CLEANUP_RETENTION_MS: u64 = 24 * 60 * 60 * 1000;
+
+const CLEANUP_BATCH_SIZE: u32 = 100;
+const CLEANUP_MAX_R2_OBJECTS: u32 = 100;
 
 const CANDIDATE_STATE_METADATA: &str = "candidate";
 
@@ -64,6 +74,8 @@ impl BundleStore {
 
         let bundle_id = candidate_id()?;
         let object_key = candidate_object_key(&bundle_id);
+        self.reserve_lifecycle(&bundle_id, &object_key, updated_at)
+            .await?;
         let object = self
             .bucket
             .put(&object_key, bytes)
@@ -242,7 +254,11 @@ impl BundleStore {
         let insert_bundle = self
             .database
             .prepare(
-                "INSERT INTO bundles (bundle_id, object_key, etag, manifest_json, size_bytes, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO bundles
+                    (bundle_id, object_key, etag, manifest_json, size_bytes, created_at, lifecycle_id)
+                 SELECT ?, ?, ?, ?, ?, ?, lifecycle_id
+                 FROM bundle_lifecycle
+                 WHERE lifecycle_id = ? AND state = 'uploading'",
             )
             .bind(&[
                 worker::wasm_bindgen::JsValue::from_str(bundle_id),
@@ -251,6 +267,7 @@ impl BundleStore {
                 worker::wasm_bindgen::JsValue::from_str(manifest_json),
                 number(size_bytes),
                 number(created_at),
+                worker::wasm_bindgen::JsValue::from_str(bundle_id),
             ])?;
         let update_inbox = self
             .database
@@ -264,28 +281,286 @@ impl BundleStore {
                 worker::wasm_bindgen::JsValue::from_str(bundle_id),
                 number(created_at),
             ])?;
+        let mark_published = self
+            .database
+            .prepare(
+                "UPDATE bundle_lifecycle
+                 SET state = 'published', updated_at = ?, cleanup_after = ?
+                 WHERE lifecycle_id = ? AND state = 'uploading'
+                 RETURNING lifecycle_id",
+            )
+            .bind(&[
+                number(created_at),
+                number(created_at.saturating_add(CLEANUP_RETENTION_MS)),
+                worker::wasm_bindgen::JsValue::from_str(bundle_id),
+            ])?;
 
         let results = self
             .database
-            .batch(vec![insert_bundle, update_inbox])
+            .batch(vec![insert_bundle, update_inbox, mark_published])
             .await?;
-        let result = results
-            .into_iter()
-            .nth(1)
-            .ok_or_else(|| Error::RustError("publication result is missing".into()))?;
-        if !result.success() {
-            return Err(Error::RustError(
-                result
-                    .error()
-                    .unwrap_or_else(|| "publication update failed".into()),
-            ));
+        if results.len() != 3 {
+            return Err(Error::RustError("publication result is incomplete".into()));
         }
+        for (index, result) in results.iter().enumerate() {
+            if !result.success() {
+                return Err(Error::RustError(format!(
+                    "publication statement {index} failed: {}",
+                    result.error().unwrap_or_else(|| "unknown D1 error".into())
+                )));
+            }
+        }
+        let result = &results[1];
         let row = result
             .results::<RevisionRow>()?
             .into_iter()
             .next()
             .ok_or_else(|| Error::RustError("publication revision is missing".into()))?;
+        if results[2].results::<LifecycleRow>()?.is_empty() {
+            return Err(Error::RustError(
+                "publication lifecycle transition did not update a row".into(),
+            ));
+        }
         revision(row.revision)
+    }
+
+    /// Removes expired lifecycle rows and untracked legacy objects in bounded
+    /// batches. A lifecycle claim is committed before the R2 delete, so a
+    /// publication that races cleanup must fail its conditional D1 batch.
+    pub(crate) async fn cleanup(&self, now: u64) -> Result<CleanupReport> {
+        let mut report = CleanupReport::default();
+        let candidates = self.expired_lifecycle_candidates(now).await?;
+        report.lifecycle_candidates = candidates.len() as u32;
+
+        for candidate in candidates {
+            if !self.claim_lifecycle(&candidate, now).await? {
+                continue;
+            }
+            report.lifecycle_claimed += 1;
+
+            if let Err(error) = self.bucket.delete(candidate.object_key.clone()).await {
+                worker::console_error!(
+                    "bundle cleanup could not delete {}: {}",
+                    candidate.object_key,
+                    error
+                );
+                report.failures += 1;
+                continue;
+            }
+
+            self.finish_lifecycle_cleanup(&candidate.lifecycle_id)
+                .await?;
+            report.lifecycle_deleted += 1;
+        }
+
+        self.cleanup_untracked_objects(now, &mut report).await?;
+        Ok(report)
+    }
+
+    async fn expired_lifecycle_candidates(&self, now: u64) -> Result<Vec<CleanupCandidate>> {
+        self.database
+            .prepare(
+                "SELECT lifecycle_id, object_key
+                 FROM bundle_lifecycle
+                 WHERE cleanup_after <= ?
+                   AND state IN ('uploading', 'published', 'cleanup_claimed')
+                 ORDER BY cleanup_after, lifecycle_id
+                 LIMIT ?",
+            )
+            .bind(&[number(now), number(CLEANUP_BATCH_SIZE.into())])?
+            .all()
+            .await?
+            .results()
+    }
+
+    async fn claim_lifecycle(&self, candidate: &CleanupCandidate, now: u64) -> Result<bool> {
+        let row: Option<LifecycleRow> = self
+            .database
+            .prepare(
+                "UPDATE bundle_lifecycle
+                 SET state = 'cleanup_claimed', updated_at = ?
+                 WHERE lifecycle_id = ?
+                   AND cleanup_after <= ?
+                   AND state IN ('uploading', 'published', 'cleanup_claimed')
+                   AND NOT EXISTS (
+                       SELECT 1
+                       FROM inbox
+                       JOIN bundles ON bundles.bundle_id = inbox.current_bundle_id
+                       WHERE bundles.lifecycle_id = bundle_lifecycle.lifecycle_id
+                   )
+                 RETURNING lifecycle_id",
+            )
+            .bind(&[
+                number(now),
+                worker::wasm_bindgen::JsValue::from_str(&candidate.lifecycle_id),
+                number(now),
+            ])?
+            .first(None)
+            .await?;
+        Ok(row.is_some())
+    }
+
+    async fn finish_lifecycle_cleanup(&self, lifecycle_id: &str) -> Result<()> {
+        let delete_bundle = self
+            .database
+            .prepare(
+                "DELETE FROM bundles
+                 WHERE lifecycle_id = ?
+                   AND NOT EXISTS (
+                       SELECT 1
+                       FROM inbox
+                       WHERE inbox.current_bundle_id = bundles.bundle_id
+                   )",
+            )
+            .bind(&[worker::wasm_bindgen::JsValue::from_str(lifecycle_id)])?;
+        let delete_lifecycle = self
+            .database
+            .prepare(
+                "DELETE FROM bundle_lifecycle
+                 WHERE lifecycle_id = ?
+                   AND state = 'cleanup_claimed'
+                   AND NOT EXISTS (
+                       SELECT 1 FROM bundles
+                       WHERE bundles.lifecycle_id = bundle_lifecycle.lifecycle_id
+                   )",
+            )
+            .bind(&[worker::wasm_bindgen::JsValue::from_str(lifecycle_id)])?;
+        let results = self
+            .database
+            .batch(vec![delete_bundle, delete_lifecycle])
+            .await?;
+        if results.len() != 2 {
+            return Err(Error::RustError(
+                "bundle cleanup result is incomplete".into(),
+            ));
+        }
+        for (index, result) in results.iter().enumerate() {
+            if !result.success() {
+                return Err(Error::RustError(format!(
+                    "bundle cleanup statement {index} failed: {}",
+                    result.error().unwrap_or_else(|| "unknown D1 error".into())
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    async fn cleanup_untracked_objects(&self, now: u64, report: &mut CleanupReport) -> Result<()> {
+        let mut cursor = None;
+        while report.r2_scanned < CLEANUP_MAX_R2_OBJECTS {
+            let remaining = CLEANUP_MAX_R2_OBJECTS - report.r2_scanned;
+            let mut request = self
+                .bucket
+                .list()
+                .prefix(BUNDLE_OBJECT_PREFIX)
+                .limit(remaining.min(CLEANUP_BATCH_SIZE));
+            if let Some(cursor_value) = cursor.take() {
+                request = request.cursor(cursor_value);
+            }
+            let page = request.execute().await?;
+            let truncated = page.truncated();
+
+            for object in page.objects() {
+                report.r2_scanned += 1;
+                let object_key = object.key();
+                if object
+                    .uploaded()
+                    .as_millis()
+                    .saturating_add(CLEANUP_RETENTION_MS)
+                    > now
+                {
+                    continue;
+                }
+                if self.object_is_tracked(&object_key).await?
+                    || self.object_is_current(&object_key).await?
+                {
+                    continue;
+                }
+                match self.bucket.delete(object_key).await {
+                    Ok(()) => report.r2_deleted += 1,
+                    Err(error) => {
+                        worker::console_error!(
+                            "bundle cleanup could not delete legacy object: {}",
+                            error
+                        );
+                        report.failures += 1;
+                    }
+                }
+            }
+
+            if !truncated || report.r2_scanned >= CLEANUP_MAX_R2_OBJECTS {
+                report.r2_truncated = truncated && report.r2_scanned >= CLEANUP_MAX_R2_OBJECTS;
+                break;
+            }
+            cursor = page.cursor();
+            if cursor.is_none() {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    async fn object_is_tracked(&self, object_key: &str) -> Result<bool> {
+        let row: Option<LifecycleRow> = self
+            .database
+            .prepare(
+                "SELECT lifecycle_id
+                 FROM bundle_lifecycle
+                 WHERE object_key = ?
+                 LIMIT 1",
+            )
+            .bind(&[worker::wasm_bindgen::JsValue::from_str(object_key)])?
+            .first(None)
+            .await?;
+        Ok(row.is_some())
+    }
+
+    async fn object_is_current(&self, object_key: &str) -> Result<bool> {
+        let row: Option<LifecycleRow> = self
+            .database
+            .prepare(
+                "SELECT bundles.bundle_id AS lifecycle_id
+                 FROM bundles
+                 JOIN inbox ON inbox.current_bundle_id = bundles.bundle_id
+                 WHERE bundles.object_key = ?
+                 LIMIT 1",
+            )
+            .bind(&[worker::wasm_bindgen::JsValue::from_str(object_key)])?
+            .first(None)
+            .await?;
+        Ok(row.is_some())
+    }
+
+    async fn reserve_lifecycle(
+        &self,
+        lifecycle_id: &str,
+        object_key: &str,
+        created_at: u64,
+    ) -> Result<()> {
+        let cleanup_after = created_at.saturating_add(CLEANUP_RETENTION_MS);
+        let result = self
+            .database
+            .prepare(
+                "INSERT INTO bundle_lifecycle
+                    (lifecycle_id, object_key, state, created_at, updated_at, cleanup_after)
+                 VALUES (?, ?, 'uploading', ?, ?, ?)",
+            )
+            .bind(&[
+                worker::wasm_bindgen::JsValue::from_str(lifecycle_id),
+                worker::wasm_bindgen::JsValue::from_str(object_key),
+                number(created_at),
+                number(created_at),
+                number(cleanup_after),
+            ])?
+            .run()
+            .await?;
+        if result.success() {
+            Ok(())
+        } else {
+            Err(Error::RustError(result.error().unwrap_or_else(|| {
+                "bundle lifecycle reservation failed".into()
+            })))
+        }
     }
 }
 
@@ -308,6 +583,17 @@ pub(crate) struct CurrentBundle {
     pub(crate) manifest: Option<Manifest>,
     pub(crate) object_key: Option<String>,
     pub(crate) size_bytes: u64,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CleanupReport {
+    pub(crate) lifecycle_candidates: u32,
+    pub(crate) lifecycle_claimed: u32,
+    pub(crate) lifecycle_deleted: u32,
+    pub(crate) r2_scanned: u32,
+    pub(crate) r2_deleted: u32,
+    pub(crate) r2_truncated: bool,
+    pub(crate) failures: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -342,6 +628,17 @@ struct BundleRow {
 #[derive(Debug, Deserialize)]
 struct RevisionRow {
     revision: i32,
+}
+
+#[derive(Debug, Deserialize)]
+struct LifecycleRow {
+    lifecycle_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct CleanupCandidate {
+    lifecycle_id: String,
+    object_key: String,
 }
 
 fn number(value: u64) -> worker::wasm_bindgen::JsValue {

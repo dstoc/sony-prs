@@ -4,6 +4,9 @@ name = "prs-reader"
 main = "build/worker/shim.mjs"
 compatibility_date = "2026-09-18"
 
+[triggers]
+crons = ["0 * * * *"]
+
 [build]
 command = "worker-build --release"
 

@@ -84,8 +84,11 @@ outside pull request jobs.
 ## Schema
 
 `migrations/0001_initial.sql` creates the original metadata tables. The
-numbered migrations upgrade those tables for existing local and production
-databases. A fresh database applies all numbered migrations in order.
+numbered `0002_metadata_schema_upgrade.sql` migration upgrades those tables
+for existing local and production databases. The numbered migrations include
+`0004_approved_authorization_expiry.sql` for the authorization expiry rules and
+`0004_bundle_cleanup_lifecycle.sql` adds lifecycle coordination for bundle
+publication and cleanup. A fresh database applies all migrations in order.
 
 The resulting schema contains:
 
@@ -97,6 +100,11 @@ The resulting schema contains:
 - boot-scoped reader sessions with a finite server-side expiry;
 - named sender credentials with revocation timestamps; and
 - one configured Cloudflare Access owner identity.
+
+Each bundle metadata row has a lifecycle row. Legacy metadata is backfilled as
+`published`. New uploads start as `uploading`, change to `published` in the
+same D1 batch that updates the inbox, and can enter `cleanup_claimed` only
+after the retention period expires.
 
 The migrations do not store bundle bytes or bearer credentials. Authorization
 requests use the states `pending`, `approved`, `denied`, `expired`, and
@@ -114,11 +122,22 @@ The Worker publishes the new bundles row and the inbox reference in one D1
 batch. After the clear step, validation, R2, or final D1 failure leaves the
 inbox empty.
 
-New objects use the bundles/candidates/<random-id>.tar prefix. The prefix
-identifies objects that cleanup may inspect. A cleanup operation resolves
-inbox.current_bundle_id through bundles.object_key and keeps that object. All
-other objects under the prefix are abandoned replacement objects. The prefix
-remains on a current object because R2 has no rename operation.
+New objects use the `bundles/candidates/<random-id>.tar` prefix. The Worker
+creates the lifecycle row before it writes the R2 object. Publication is
+conditional on that row still being `uploading`. Cleanup first claims an
+expired row in D1 and then deletes its R2 object. A publication that races the
+claim fails its D1 batch, so cleanup cannot delete an object that the
+publication can still make current.
+
+An hourly Worker schedule scans at most 100 lifecycle rows and 100 R2 objects
+per invocation. R2 list cursors are followed until that bound is reached.
+Each abandoned object and unreferenced metadata row is retained for 24 hours.
+Current inbox references are protected by the D1 foreign key relationship.
+Legacy objects under `bundles/` that have no lifecycle row are deleted only
+after the same R2 upload-age retention period. A failed R2 delete leaves the
+lifecycle claim in D1 for the next scheduled run. Metadata is deleted only
+after the R2 delete succeeds, in dependency order, so retries handle partial
+failures without removing current metadata.
 
 ## Human approval application
 

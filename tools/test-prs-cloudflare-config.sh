@@ -15,6 +15,7 @@ required_config=(
     'binding = "BUNDLES"'
     'bucket_name = "prs-reader-local"'
     'bucket_name = "prs-reader-documents"'
+    'crons = ["0 * * * *"]'
     'command = "worker-build --release"'
 )
 for expected in "${required_config[@]}"; do
@@ -75,6 +76,9 @@ for expected in \
     'CREATE TABLE sender_credentials' \
     'CREATE TABLE reader_sessions' \
     'CREATE TABLE IF NOT EXISTS owner_identity' \
+    'CREATE TABLE bundle_lifecycle' \
+    "state IN ('uploading', 'published', 'cleanup_claimed')" \
+    'CREATE TRIGGER bundles_require_uploading_lifecycle' \
     "state IN ('pending', 'approved', 'denied', 'expired', 'consumed')" \
     'CREATE TRIGGER authorization_requests_state_transition'; do
     if ! grep -R -Fq "$expected" "$migrations_directory"; then

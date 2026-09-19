@@ -12,6 +12,8 @@ INITIAL_MIGRATION = MIGRATIONS_DIRECTORY / "0001_initial.sql"
 UPGRADE_MIGRATION = MIGRATIONS_DIRECTORY / "0002_metadata_schema_upgrade.sql"
 AUTHORIZATION_NAME_MIGRATION = MIGRATIONS_DIRECTORY / "0003_authorization_credential_name.sql"
 APPROVED_EXPIRY_MIGRATION = MIGRATIONS_DIRECTORY / "0004_approved_authorization_expiry.sql"
+BUNDLE_CLEANUP_MIGRATION = MIGRATIONS_DIRECTORY / "0004_bundle_cleanup_lifecycle.sql"
+CLEANUP_RETENTION_MS = 86_400_000
 
 
 def database() -> sqlite3.Connection:
@@ -155,6 +157,7 @@ def verify_upgrade_path() -> None:
     apply_migration(connection, UPGRADE_MIGRATION)
     apply_migration(connection, AUTHORIZATION_NAME_MIGRATION)
     apply_migration(connection, APPROVED_EXPIRY_MIGRATION)
+    apply_migration(connection, BUNDLE_CLEANUP_MIGRATION)
 
     assert columns(connection, "inbox") == {
         "singleton",
@@ -162,6 +165,7 @@ def verify_upgrade_path() -> None:
         "current_bundle_id",
         "updated_at",
     }
+    assert "lifecycle_id" in columns(connection, "bundles")
     assert "credential_name" in columns(connection, "authorization_requests")
     assert dict(
         connection.execute(
@@ -173,6 +177,15 @@ def verify_upgrade_path() -> None:
             "SELECT object_key, etag, manifest_json, size_bytes FROM bundles"
         ).fetchone()
     ) == ("bundles/legacy.tar", "etag-legacy", '{"entry_point":"index.md"}', 0)
+    assert tuple(
+        connection.execute(
+            """
+            SELECT lifecycle_id, object_key, state, created_at, cleanup_after
+            FROM bundle_lifecycle
+            WHERE lifecycle_id = 'legacy-inbox'
+            """
+        ).fetchone()
+    ) == ("legacy-inbox", "bundles/legacy.tar", "published", 100, 100 + CLEANUP_RETENTION_MS)
 
     # The old nullable expiry is converted to a short, finite lifetime.
     assert tuple(
@@ -217,16 +230,36 @@ def verify_current_schema_behavior() -> None:
     # D1 column, and the reference/revision update is atomic.
     connection.execute(
         """
-        INSERT INTO bundles
-            (bundle_id, object_key, etag, manifest_json, size_bytes, created_at)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO bundle_lifecycle
+            (lifecycle_id, object_key, state, created_at, updated_at, cleanup_after)
+        VALUES (?, ?, 'uploading', ?, ?, ?)
         """,
-        ("bundle-1", "bundles/bundle-1.tar", "etag-1", '{"entry_point":"index.md"}', 42, 10),
+        ("bundle-1", "bundles/bundle-1.tar", 10, 10, 10 + CLEANUP_RETENTION_MS),
+    )
+    connection.execute(
+        """
+        INSERT INTO bundles
+            (bundle_id, object_key, etag, manifest_json, size_bytes, created_at, lifecycle_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "bundle-1",
+            "bundles/bundle-1.tar",
+            "etag-1",
+            '{"entry_point":"index.md"}',
+            42,
+            10,
+            "bundle-1",
+        ),
     )
     connection.execute("BEGIN IMMEDIATE")
     connection.execute(
         "UPDATE inbox SET current_bundle_id = ?, revision = ?, updated_at = ? WHERE singleton = 1",
         ("bundle-1", 1, 10),
+    )
+    connection.execute(
+        "UPDATE bundle_lifecycle SET state = 'published', updated_at = ? WHERE lifecycle_id = ?",
+        (10, "bundle-1"),
     )
     connection.commit()
     assert dict(
@@ -446,17 +479,159 @@ def verify_current_schema_behavior() -> None:
     ) == ("blob",)
 
 
+def add_lifecycle(
+    connection: sqlite3.Connection,
+    lifecycle_id: str,
+    object_key: str,
+    state: str = "uploading",
+    created_at: int = 100,
+) -> None:
+    connection.execute(
+        """
+        INSERT INTO bundle_lifecycle
+            (lifecycle_id, object_key, state, created_at, updated_at, cleanup_after)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            lifecycle_id,
+            object_key,
+            state,
+            created_at,
+            created_at,
+            created_at + CLEANUP_RETENTION_MS,
+        ),
+    )
+
+
+def publish_lifecycle(connection: sqlite3.Connection, lifecycle_id: str) -> None:
+    now = CLEANUP_RETENTION_MS + 200
+    connection.execute("BEGIN IMMEDIATE")
+    connection.execute(
+        """
+        INSERT INTO bundles
+            (bundle_id, object_key, etag, manifest_json, size_bytes, created_at, lifecycle_id)
+        SELECT lifecycle_id, object_key, 'etag', '{"entry_point":"index.md"}', 42, created_at, lifecycle_id
+        FROM bundle_lifecycle
+        WHERE lifecycle_id = ? AND state = 'uploading'
+        """,
+        (lifecycle_id,),
+    )
+    connection.execute(
+        "UPDATE inbox SET current_bundle_id = ?, revision = revision + 1, updated_at = ? WHERE singleton = 1",
+        (lifecycle_id, now),
+    )
+    connection.execute(
+        """
+        UPDATE bundle_lifecycle
+        SET state = 'published', updated_at = ?, cleanup_after = ?
+        WHERE lifecycle_id = ? AND state = 'uploading'
+        """,
+        (now, now + CLEANUP_RETENTION_MS, lifecycle_id),
+    )
+    connection.commit()
+
+
+def claim_lifecycle(connection: sqlite3.Connection, lifecycle_id: str) -> int:
+    now = CLEANUP_RETENTION_MS + 200
+    cursor = connection.execute(
+        """
+        UPDATE bundle_lifecycle
+        SET state = 'cleanup_claimed', updated_at = ?
+        WHERE lifecycle_id = ?
+          AND cleanup_after <= ?
+          AND state IN ('uploading', 'published', 'cleanup_claimed')
+          AND NOT EXISTS (
+              SELECT 1
+              FROM inbox
+              JOIN bundles ON bundles.bundle_id = inbox.current_bundle_id
+              WHERE bundles.lifecycle_id = bundle_lifecycle.lifecycle_id
+          )
+        """,
+        (now, lifecycle_id, now),
+    )
+    return cursor.rowcount
+
+
+def verify_cleanup_race_safety() -> None:
+    connection = database()
+    apply_all_migrations(connection)
+
+    # Cleanup may claim a stale upload, but a publication that starts after
+    # that claim cannot create metadata or point the inbox at a deleted R2
+    # object.
+    add_lifecycle(connection, "racing-upload", "bundles/candidates/racing.tar")
+    assert claim_lifecycle(connection, "racing-upload") == 1
+    # A failed R2 delete leaves the claim eligible for the next run.
+    assert claim_lifecycle(connection, "racing-upload") == 1
+    try:
+        publish_lifecycle(connection, "racing-upload")
+    except sqlite3.IntegrityError:
+        connection.rollback()
+    else:
+        raise AssertionError("publication succeeded after cleanup claimed its lifecycle")
+    assert connection.execute("SELECT current_bundle_id FROM inbox").fetchone()[0] is None
+    assert connection.execute("SELECT COUNT(*) FROM bundles").fetchone()[0] == 0
+
+    # If publication wins the D1 serialization point, cleanup sees the inbox
+    # foreign-key reference and preserves both the current object and metadata.
+    add_lifecycle(connection, "current-upload", "bundles/candidates/current.tar")
+    publish_lifecycle(connection, "current-upload")
+    assert claim_lifecycle(connection, "current-upload") == 0
+    assert connection.execute("SELECT current_bundle_id FROM inbox").fetchone()[0] == "current-upload"
+    assert connection.execute("SELECT state FROM bundle_lifecycle WHERE lifecycle_id = 'current-upload'").fetchone()[0] == "published"
+
+    # A superseded row can be claimed and removed in dependency order after
+    # its R2 delete succeeds. The current row remains protected by inbox.
+    add_lifecycle(
+        connection,
+        "superseded-upload",
+        "bundles/candidates/superseded.tar",
+        state="uploading",
+        created_at=1,
+    )
+    connection.execute(
+        """
+        INSERT INTO bundles
+            (bundle_id, object_key, etag, manifest_json, size_bytes, created_at, lifecycle_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "superseded-upload",
+            "bundles/candidates/superseded.tar",
+            "etag-old",
+            '{"entry_point":"index.md"}',
+            42,
+            1,
+            "superseded-upload",
+        ),
+    )
+    connection.execute(
+        "UPDATE bundle_lifecycle SET state = 'published' WHERE lifecycle_id = 'superseded-upload'"
+    )
+    assert claim_lifecycle(connection, "superseded-upload") == 1
+    connection.execute(
+        "DELETE FROM bundles WHERE lifecycle_id = 'superseded-upload'"
+    )
+    connection.execute(
+        "DELETE FROM bundle_lifecycle WHERE lifecycle_id = 'superseded-upload'"
+    )
+    assert connection.execute("SELECT COUNT(*) FROM bundles WHERE lifecycle_id = 'superseded-upload'").fetchone()[0] == 0
+    assert connection.execute("SELECT current_bundle_id FROM inbox").fetchone()[0] == "current-upload"
+
+
 def main() -> None:
     if not MIGRATIONS:
         raise AssertionError("at least one D1 migration is required")
     assert INITIAL_MIGRATION in MIGRATIONS
     assert UPGRADE_MIGRATION in MIGRATIONS
     assert AUTHORIZATION_NAME_MIGRATION in MIGRATIONS
+    assert BUNDLE_CLEANUP_MIGRATION in MIGRATIONS
 
     assert_fresh_schema_is_deterministic()
     assert_d1_reapplication_is_a_noop()
     verify_upgrade_path()
     verify_current_schema_behavior()
+    verify_cleanup_race_safety()
 
     print(
         "prs-cloudflare migration checks passed ("
