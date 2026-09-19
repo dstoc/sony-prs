@@ -146,6 +146,7 @@ def claim(
     expected_kind: str,
     polling_secret: str,
     now: int,
+    before_batch=None,
 ) -> str:
     row = connection.execute(
         """
@@ -174,6 +175,8 @@ def claim(
 
     child_id = f"{expected_kind}-child-{request.request_id}"
     bearer_token = f"{expected_kind}-token-{request.request_id}"
+    if before_batch is not None:
+        before_batch(connection)
     with connection:
         if expected_kind == "sender":
             connection.execute(
@@ -240,6 +243,8 @@ def claim(
         "SELECT state FROM authorization_requests WHERE request_id = ?",
         (request.request_id,),
     ).fetchone()
+    if current["state"] == "expired":
+        return "expired"
     if current["state"] == "approved" and now >= request.expires_at:
         expire_if_needed(connection, request.request_id, now)
         return "expired"
@@ -418,6 +423,58 @@ def verify_same_name_claim_conflict() -> None:
     ).fetchone()[0] == 1
 
 
+def verify_claim_expiry_race() -> None:
+    connection = database()
+    sender = create_request(
+        connection,
+        "sender-expiry-race",
+        "sender",
+        "sender-expiry-race-secret",
+        100,
+        ttl=10,
+        credential_name="expiry-race",
+    )
+    transition(connection, sender.request_id, "sender", True, 105)
+    assert (
+        claim(
+            connection,
+            sender,
+            "sender",
+            "sender-expiry-race-secret",
+            105,
+            before_batch=lambda db: expire_if_needed(db, sender.request_id, 110),
+        )
+        == "expired"
+    )
+    assert connection.execute(
+        "SELECT count(*) FROM sender_credentials",
+    ).fetchone()[0] == 0
+
+    reader = create_request(
+        connection,
+        "reader-expiry-race",
+        "reader",
+        "reader-expiry-race-secret",
+        100,
+        ttl=10,
+    )
+    transition(connection, reader.request_id, "reader", True, 105)
+    assert (
+        claim(
+            connection,
+            reader,
+            "reader",
+            "reader-expiry-race-secret",
+            105,
+            before_batch=lambda db: expire_if_needed(db, reader.request_id, 110),
+        )
+        == "expired"
+    )
+    assert connection.execute(
+        "SELECT count(*) FROM reader_sessions",
+    ).fetchone()[0] == 0
+
+
 def expect_failure(action, message: str) -> None:
     try:
         action()
@@ -432,6 +489,7 @@ def main() -> None:
     verify_reader_lifecycle()
     verify_denial_and_expiration()
     verify_same_name_claim_conflict()
+    verify_claim_expiry_race()
     print("prs-cloudflare authorization checks passed")
 
 
