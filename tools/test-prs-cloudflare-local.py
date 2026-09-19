@@ -24,6 +24,7 @@ from urllib.request import Request, urlopen
 PROTOCOL_VERSION = {"major": 1, "minor": 0}
 MAX_BUNDLE_SIZE = 16 * 1024 * 1024
 WRANGLER_CONFIG = "wrangler.local.toml"
+LOCAL_TEST_IDENTITY = "https://access.example|owner-1|owner@example.com"
 
 
 class HttpResponse:
@@ -243,7 +244,8 @@ def verify_http_rate_limits(base_url: str) -> None:
 
 
 def approve(base_url: str, request_id: str, kind: str) -> None:
-    response = request(base_url, "GET", f"/a/{request_id}")
+    owner_headers = {"X-PRSync-Test-Owner": LOCAL_TEST_IDENTITY}
+    response = request(base_url, "GET", f"/a/{request_id}", headers=owner_headers)
     assert_status(response, 200, f"show {kind} approval request")
     page = response.body.decode()
     if request_id not in page or "Approve request" not in page:
@@ -255,7 +257,10 @@ def approve(base_url: str, request_id: str, kind: str) -> None:
         "POST",
         f"/a/{request_id}/approve",
         body=b"",
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        headers={
+            **owner_headers,
+            "Content-Type": "application/x-www-form-urlencoded",
+        },
     )
     assert_status(response, 200, f"approve {kind} authorization")
     if "approved" not in response.body.decode().lower():
