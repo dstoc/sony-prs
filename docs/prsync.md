@@ -815,21 +815,29 @@ Production Worker deployment should occur after changes reach `main` and require
 
 Production deployment credentials are stored in protected GitHub secrets or an equivalent protected deployment environment.
 
-Expected secrets include:
+The repository pins Wrangler `4.131.1` for these operations. Bootstrap and
+migration require an operator credential with D1 and R2 management permission.
+Worker publishing requires a separate credential with Worker publish
+permission only. The publishing credential must not have D1 or R2 management
+permission.
+
+Expected deployment secrets include:
 
     CLOUDFLARE_ACCOUNT_ID
     CLOUDFLARE_API_TOKEN
 
 The deployment API token should have only the permission needed to publish the
-Worker. It must not have D1 management permission. The operator migration
-command uses a separate protected credential.
+Worker. It must not have D1 or R2 management permission. The operator
+migration command uses a separate protected credential.
 
 Deployment should follow this order:
 
 1. review each checked-in migration for compatibility with the old Worker;
 2. apply compatible migrations with the operator credential;
 3. verify the complete Wrangler history and database integrity;
-4. publish the Worker with the restricted deployment credential;
+4. publish the Worker with the restricted deployment credential. The publish
+   command uses the existing `DB` and `BUNDLES` bindings and
+   `--no-x-provision`;
 5. inspect `/ready` through the Worker D1 binding and compare its schema
    requirement with the release being published;
 6. serve traffic only when the new release reports `ready`.

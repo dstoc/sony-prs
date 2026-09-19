@@ -32,13 +32,45 @@ python3 - "$config" "$local_test_config" <<'PY'
 from pathlib import Path
 import sys
 import tomllib
+import re
 
-for config_path in map(Path, sys.argv[1:]):
+config_path, local_test_config_path = map(Path, sys.argv[1:])
+for path in (config_path, local_test_config_path):
     try:
-        with config_path.open("rb") as config_file:
-            tomllib.load(config_file)
+        with path.open("rb") as config_file:
+            parsed = tomllib.load(config_file)
     except tomllib.TOMLDecodeError as error:
-        raise SystemExit(f"invalid TOML in {config_path}: {error}") from error
+        raise SystemExit(f"invalid TOML in {path}: {error}") from error
+
+with config_path.open("rb") as config_file:
+    config = tomllib.load(config_file)
+production = config["env"]["production"]
+d1_databases = production.get("d1_databases", [])
+r2_buckets = production.get("r2_buckets", [])
+if len(d1_databases) != 1 or len(r2_buckets) != 1:
+    raise SystemExit("production must retain exactly one DB and one BUNDLES binding")
+d1 = d1_databases[0]
+r2 = r2_buckets[0]
+if d1.get("binding") != "DB" or d1.get("database_name") != "prs-reader-db":
+    raise SystemExit("production DB binding must target prs-reader-db")
+if not re.fullmatch(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+    d1.get("database_id", ""),
+):
+    raise SystemExit("production DB binding must retain a UUID resource ID")
+if d1.get("migrations_dir") != "migrations":
+    raise SystemExit("production DB binding must retain its migration directory")
+if r2.get("binding") != "BUNDLES" or r2.get("bucket_name") != "prs-reader-documents":
+    raise SystemExit("production BUNDLES binding must target prs-reader-documents")
+if any("remote" in binding or "preview_database_id" in binding for binding in (d1, r2)):
+    raise SystemExit("production bindings must not enable remote or preview provisioning")
+
+with local_test_config_path.open("rb") as config_file:
+    local_test_config = tomllib.load(config_file)
+if local_test_config["d1_databases"][0]["binding"] != "DB":
+    raise SystemExit("local test configuration must retain the DB binding")
+if local_test_config["r2_buckets"][0]["binding"] != "BUNDLES":
+    raise SystemExit("local test configuration must retain the BUNDLES binding")
 PY
 
 for expected in \
@@ -123,7 +155,9 @@ for expected in \
     '--confirm-production' \
     'wrangler d1 create prs-reader-db' \
     'wrangler r2 bucket create prs-reader-documents' \
-    'tools/prs-cloudflare-migrate.sh --production'; do
+    'tools/prs-cloudflare-migrate.sh --production' \
+    'operator credentials' \
+    'restricted Worker-publishing credential'; do
     if ! grep -Fq -- "$expected" "$bootstrap"; then
         echo "missing bootstrap guard or resource creation: $expected" >&2
         exit 1
@@ -134,7 +168,11 @@ if grep -Fq -- 'tools/prs-cloudflare-deploy.sh --production' "$bootstrap"; then
     exit 1
 fi
 
-for expected in '--production' 'wrangler deploy --env production --no-x-provision'; do
+for expected in \
+    '--production' \
+    'wrangler deploy --env production --no-x-provision' \
+    'token that can publish the Worker only' \
+    'D1 or R2 management permission'; do
     if ! grep -Fq -- "$expected" "$deploy"; then
         echo "missing safe deployment guard or command: $expected" >&2
         exit 1
@@ -142,6 +180,47 @@ for expected in '--production' 'wrangler deploy --env production --no-x-provisio
 done
 if grep -Fq 'wrangler d1' "$deploy"; then
     echo "Worker deployment must not run D1 management commands" >&2
+    exit 1
+fi
+if grep -Eq '^[[:space:]]*wrangler (r2|d1)|--remote|CLOUDFLARE_API_TOKEN' "$deploy"; then
+    echo "Worker deployment must not use resource-management commands or operator credentials" >&2
+    exit 1
+fi
+
+python3 - "$bootstrap" "$deploy" <<'PY'
+from pathlib import Path
+import sys
+
+bootstrap = Path(sys.argv[1]).read_text().splitlines()
+d1_create = next(i for i, line in enumerate(bootstrap) if "wrangler d1 create prs-reader-db" in line)
+r2_create = next(i for i, line in enumerate(bootstrap) if "wrangler r2 bucket create prs-reader-documents" in line)
+migration_instruction = next(
+    i for i, line in enumerate(bootstrap) if "tools/prs-cloudflare-migrate.sh --production" in line
+)
+if not (d1_create < migration_instruction and r2_create < migration_instruction):
+    raise SystemExit("bootstrap must create both resources before the migration handoff")
+if any("wrangler deploy" in line for line in bootstrap):
+    raise SystemExit("bootstrap must not publish the Worker")
+
+deploy_commands = [
+    line.strip()
+    for line in Path(sys.argv[2]).read_text().splitlines()
+    if line.strip().startswith("wrangler ")
+]
+if deploy_commands != ["wrangler deploy --env production --no-x-provision"]:
+    raise SystemExit(f"restricted deploy must contain only the publish command: {deploy_commands}")
+PY
+
+for script in "$bootstrap" "$migrate" "$deploy"; do
+    if ! grep -Fq 'source "$repo_root/tools/prs-cloudflare-wrangler-version.sh"' "$script" ||
+        ! grep -Fq 'require_prs_wrangler' "$script"; then
+        echo "production script must enforce the pinned Wrangler version: $script" >&2
+        exit 1
+    fi
+done
+if ! grep -Fq 'PRS_WRANGLER_VERSION="4.131.1"' \
+    "$repo_root/tools/prs-cloudflare-wrangler-version.sh"; then
+    echo "missing pinned Wrangler version" >&2
     exit 1
 fi
 
@@ -192,6 +271,27 @@ if not any(
 if "../../tools/prs-cloudflare-deploy.sh --production" in lines:
     raise SystemExit("README must not show a production deploy command without PRS_READER_URL")
 PY
+
+for expected in \
+    'npm install --global wrangler@4.131.1' \
+    'operator credentials' \
+    'separate token with Worker publish' \
+    'must not have D1 or R2 management'; do
+    if ! grep -Fq -- "$expected" "$readme"; then
+        echo "missing split-authority deployment documentation: $expected" >&2
+        exit 1
+    fi
+done
+for expected in \
+    'pins Wrangler `4.131.1`' \
+    'separate credential with Worker publish' \
+    'must not have D1 or R2 management' \
+    '--no-x-provision'; do
+    if ! grep -Fq -- "$expected" "$repo_root/docs/prsync.md"; then
+        echo "missing split-authority project documentation: $expected" >&2
+        exit 1
+    fi
+done
 
 for expected in \
     'COMPATIBLE_FUTURE_MIGRATIONS' \

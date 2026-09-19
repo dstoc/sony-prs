@@ -8,20 +8,21 @@ Apply checked-in PRSync D1 migrations with operator credentials.
 This command is separate from Worker publishing. It targets the existing
 production database and never creates a database or a bucket.
 
+Run this command with operator credentials that can manage the production D1
+database. Do not use the restricted Worker-publishing credential.
+
 Usage:
   tools/prs-cloudflare-migrate.sh --production
 USAGE
     exit 2
 fi
 
-if ! command -v wrangler >/dev/null 2>&1; then
-    echo "wrangler is required; install it before applying migrations" >&2
-    exit 1
-fi
-
 repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 worker_dir="$repo_root/crates/prs-cloudflare"
 config="$worker_dir/wrangler.toml"
+# shellcheck source=tools/prs-cloudflare-wrangler-version.sh
+source "$repo_root/tools/prs-cloudflare-wrangler-version.sh"
+require_prs_wrangler
 lock_dir="${TMPDIR:-/tmp}/prs-cloudflare-migrations.lock"
 
 if ! mkdir "$lock_dir" 2>/dev/null; then

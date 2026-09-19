@@ -9,6 +9,9 @@ This command only publishes the Worker. It never applies migrations and never
 creates a D1 database or R2 bucket. Use the operator migration command and
 tools/prs-cloudflare-bootstrap.sh separately.
 
+Run this command with a token that can publish the Worker only. The token must
+not have D1 or R2 management permission.
+
 Usage:
   tools/prs-cloudflare-deploy.sh --production
 
@@ -18,14 +21,12 @@ USAGE
     exit 2
 fi
 
-if ! command -v wrangler >/dev/null 2>&1; then
-    echo "wrangler is required; install it before deploying" >&2
-    exit 1
-fi
-
 repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 worker_dir="$repo_root/crates/prs-cloudflare"
 config="$worker_dir/wrangler.toml"
+# shellcheck source=tools/prs-cloudflare-wrangler-version.sh
+source "$repo_root/tools/prs-cloudflare-wrangler-version.sh"
+require_prs_wrangler
 
 if grep -Fq 'REPLACE_WITH_PRODUCTION_D1_DATABASE_ID' "$config"; then
     echo "replace the production D1 ID before deploying" >&2

@@ -8,16 +8,19 @@ This command creates the production PRSync D1 database and R2 bucket.
 It is a one-time bootstrap action. Ordinary Worker deploys do not create
 Cloudflare resources.
 
+Run this command with operator credentials that can create D1 databases and R2
+buckets. Do not use the restricted Worker-publishing credential.
+
 Usage:
   tools/prs-cloudflare-bootstrap.sh --confirm-production
 USAGE
     exit 2
 fi
 
-if ! command -v wrangler >/dev/null 2>&1; then
-    echo "wrangler is required; install it before running the bootstrap" >&2
-    exit 1
-fi
+repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+# shellcheck source=tools/prs-cloudflare-wrangler-version.sh
+source "$repo_root/tools/prs-cloudflare-wrangler-version.sh"
+require_prs_wrangler
 
 cat >&2 <<'NOTICE'
 You are about to create or reserve the production PRSync resources:
