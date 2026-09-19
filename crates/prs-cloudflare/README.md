@@ -82,6 +82,22 @@ commands only use the resources named in the configuration. They do not create
 a database or a bucket. Keep Cloudflare credentials outside the repository and
 outside pull request jobs.
 
+Before the production Worker can serve approval requests, configure these
+Worker variables in the production environment:
+
+- `PRS_ACCESS_ISSUER`: the HTTPS Cloudflare Access team domain.
+- `PRS_ACCESS_AUDIENCE`: the Access application audience tag.
+- `PRS_APPROVAL_BASE_URL`: the HTTPS base URL for the human approval
+  application.
+
+The Worker derives the Access signing-key URL from the issuer. It fetches the
+current JWK set, selects the key named by the JWT `kid`, and verifies the
+RS256 signature. It also requires the configured issuer, audience, and active
+`exp` and `nbf` claims. The approval routes accept requests only when the
+request hostname matches the hostname in `PRS_APPROVAL_BASE_URL`. Keep the
+public protocol routes on their public hostname; those routes use PRSync
+bearer capabilities and do not require an interactive Access login.
+
 ## Schema
 
 `migrations/0001_initial.sql` creates the original metadata tables. The
@@ -235,9 +251,8 @@ fails at the bearer check and cannot change the inbox.
 
 The approval routes accept only a platform-authenticated principal. In a
 production build, the input is the `Cf-Access-Jwt-Assertion` header supplied by
-Cloudflare Access. Access must validate the JWT signature before the request
-reaches the Worker. The Worker then validates the JWT shape, requires the
-`RS256` algorithm, requires an HTTPS issuer and a subject, and compares the
+Cloudflare Access. The Worker verifies the JWT signature and validity claims,
+requires the configured issuer and application audience, and then compares the
 issuer and subject with the singleton row in `owner_identity`. If that row has
 an email, the JWT must contain the same email. The Worker does not accept an
 identity from the approval URL, query string, form body, cookie, or ordinary
@@ -247,7 +262,8 @@ Local integration tests can be built with the `local-test` Cargo feature. When
 `PRS_ENVIRONMENT=local`, the same boundary can parse
 `X-PRSync-Test-Owner: <issuer>|<subject>|<email>`. The production fetch path
 does not select this source, and a default production build does not compile
-the local test constructor.
+the local test constructor. The local Wrangler configuration uses
+`http://127.0.0.1` as its approval hostname.
 
 The approval URL contains only the public request ID. It is a lookup key, not
 an authentication factor. Owner authentication occurs before the Worker reads
