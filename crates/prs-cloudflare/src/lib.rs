@@ -7,9 +7,9 @@ mod api;
 mod approval;
 mod authorization;
 mod identity;
+mod schema;
 #[cfg(feature = "local-test")]
 mod test_support;
-mod schema;
 
 use prs_sync_protocol::Timestamp;
 

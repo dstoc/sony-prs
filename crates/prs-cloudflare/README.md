@@ -93,23 +93,17 @@ migration fails or when the final list still has pending work. Inspect the D1
 database and Wrangler history before retrying a failed migration.
 
 After migration verification, publish the Worker with the restricted deploy
-credential:
-
-```sh
-../../tools/prs-cloudflare-deploy.sh --production
-```
-
-The deploy script does not run D1 management commands. It disables Wrangler's
-automatic resource provisioning and only publishes the Worker that uses the
-existing bindings. Set `PRS_READER_URL` on the command to run the required
-readiness check immediately after publish. The command fails unless the
-response is ready and reports this checkout's exact release schema
-requirement:
+credential and the URL for its readiness check:
 
 ```sh
 PRS_READER_URL=https://reader.example.com \
   ../../tools/prs-cloudflare-deploy.sh --production
 ```
+
+The deploy script does not run D1 management commands. It disables Wrangler's
+automatic resource provisioning and only publishes the Worker that uses the
+existing bindings. The command fails unless the response is ready and reports
+this checkout's exact release schema requirement.
 
 To inspect an already-published Worker without publishing, run the same check
 explicitly:

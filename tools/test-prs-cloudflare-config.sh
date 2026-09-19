@@ -9,6 +9,7 @@ bootstrap="$repo_root/tools/prs-cloudflare-bootstrap.sh"
 migrate="$repo_root/tools/prs-cloudflare-migrate.sh"
 deploy="$repo_root/tools/prs-cloudflare-deploy.sh"
 readiness="$repo_root/tools/prs-cloudflare-readiness.sh"
+readme="$repo_root/crates/prs-cloudflare/README.md"
 
 required_config=(
     'name = "prs-reader-local"'
@@ -175,6 +176,22 @@ if ! grep -Fq 'PRS_READER_URL is required' "$deploy"; then
     echo "production deploy must require a readiness URL" >&2
     exit 1
 fi
+
+python3 - "$readme" <<'PY'
+from pathlib import Path
+import sys
+
+lines = Path(sys.argv[1]).read_text().splitlines()
+expected_url_line = "PRS_READER_URL=https://reader.example.com " + chr(92)
+expected_deploy_line = "  ../../tools/prs-cloudflare-deploy.sh --production"
+if not any(
+    line == expected_url_line and next_line == expected_deploy_line
+    for line, next_line in zip(lines, lines[1:])
+):
+    raise SystemExit("README must show the readiness URL in the production deploy command")
+if "../../tools/prs-cloudflare-deploy.sh --production" in lines:
+    raise SystemExit("README must not show a production deploy command without PRS_READER_URL")
+PY
 
 for expected in \
     'COMPATIBLE_FUTURE_MIGRATIONS' \
