@@ -15,11 +15,11 @@ use prs_sync_protocol::{
     ApiError, ApiErrorBody, ApiErrorCode, AuthorizationKind, AuthorizationRequestId,
     AuthorizationStart, AuthorizationStatus, BearerToken, EntityTag, InboxManifestResponse,
     InboxManifestState, InboxRevision, PollingSecretClaimRequest, PollingSecretClaimResult,
-    ProtocolVersion, SenderCredentialMetadata, SenderCredentialName, Timestamp,
-    CURRENT_PROTOCOL_VERSION, MAX_BUNDLE_SIZE,
+    ProtocolVersion, SenderCredentialMetadata, SenderCredentialName, CURRENT_PROTOCOL_VERSION,
+    MAX_BUNDLE_SIZE,
 };
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use worker::{Date, Env, Request, Response, ResponseBuilder, Result, RouteContext, Router};
+use worker::{Env, Request, Response, ResponseBuilder, Result, RouteContext, Router};
 
 type ApiResult<T> = std::result::Result<T, ApiFailure>;
 
@@ -127,9 +127,16 @@ struct EmptyInboxResponse {
     state: &'static str,
 }
 
+#[cfg(feature = "local-test")]
+#[derive(Debug, Serialize)]
+struct TestMaintenanceResponse {
+    authorization: crate::authorization::MaintenanceReport,
+    bundles: crate::storage::CleanupReport,
+}
+
 /// Adds the public health and versioned protocol routes to a Worker router.
 pub fn register(router: Router<'static, ()>) -> Router<'static, ()> {
-    router
+    let router = router
         .get_async("/", root)
         .get_async("/health", health)
         .post_async("/api/v1/authorization/sender", create_sender)
@@ -142,7 +149,12 @@ pub fn register(router: Router<'static, ()>) -> Router<'static, ()> {
         .delete_async("/api/v1/sender/credentials", revoke_credentials)
         .delete_async("/api/v1/sender/credentials/:name", revoke_named_credential)
         .get_async("/api/v1/reader/manifest", reader_manifest)
-        .get_async("/api/v1/reader/bundle", reader_bundle)
+        .get_async("/api/v1/reader/bundle", reader_bundle);
+
+    #[cfg(feature = "local-test")]
+    let router = router.post_async("/__test/maintenance", test_maintenance);
+
+    router
 }
 
 async fn root(_request: Request, _context: RouteContext<()>) -> Result<Response> {
@@ -160,6 +172,25 @@ async fn health(_request: Request, _context: RouteContext<()>) -> Result<Respons
     root(_request, _context).await
 }
 
+#[cfg(feature = "local-test")]
+async fn test_maintenance(request: Request, context: RouteContext<()>) -> Result<Response> {
+    if !crate::test_support::local_enabled(&context.env) {
+        return Response::error("local maintenance route is disabled", 404);
+    }
+    let current_time = crate::request_timestamp(&request, &context.env);
+    let authorization = authorization_service(&context.env)?
+        .cleanup(current_time)
+        .await
+        .map_err(AuthorizationError::into_worker)?;
+    let bundles = bundle_store_for_request(&context.env, &request)?
+        .cleanup(current_time.value())
+        .await?;
+    Response::from_json(&TestMaintenanceResponse {
+        authorization,
+        bundles,
+    })
+}
+
 async fn create_sender(mut request: Request, context: RouteContext<()>) -> Result<Response> {
     finish(create_sender_inner(&mut request, &context.env).await)
 }
@@ -169,9 +200,12 @@ async fn create_sender_inner(request: &mut Request, env: &Env) -> ApiResult<Auth
         read_json_body(request, MAX_AUTHORIZATION_BODY_SIZE).await?;
     require_version(body.protocol_version)?;
     let service = authorization_service(env).map_err(internal_error)?;
-    enforce_creation_rate_limit(&service, request).await?;
+    enforce_creation_rate_limit(&service, request, env).await?;
     service
-        .create_sender(&body.credential_name, now())
+        .create_sender(
+            &body.credential_name,
+            crate::request_timestamp(request, env),
+        )
         .await
         .map_err(map_authorization_error)
 }
@@ -185,9 +219,9 @@ async fn create_reader_inner(request: &mut Request, env: &Env) -> ApiResult<Auth
         read_json_body(request, MAX_AUTHORIZATION_BODY_SIZE).await?;
     require_version(body.protocol_version)?;
     let service = authorization_service(env).map_err(internal_error)?;
-    enforce_creation_rate_limit(&service, request).await?;
+    enforce_creation_rate_limit(&service, request, env).await?;
     service
-        .create_reader(now())
+        .create_reader(crate::request_timestamp(request, env))
         .await
         .map_err(map_authorization_error)
 }
@@ -204,19 +238,20 @@ async fn poll_authorization_inner(
         read_json_body(request, MAX_AUTHORIZATION_BODY_SIZE).await?;
     require_version(body.protocol_version)?;
     let service = authorization_service(env).map_err(internal_error)?;
-    enforce_poll_rate_limit(&service, request).await?;
+    enforce_poll_rate_limit(&service, request, env).await?;
+    let current_time = crate::request_timestamp(request, env);
     let status = service
-        .status(&body.request_id, now())
+        .status(&body.request_id, current_time)
         .await
         .map_err(map_authorization_error)?;
     let polling = PendingPollingCapability::new(body.request_id, body.polling_secret);
     match status.kind {
         AuthorizationKind::Sender => service
-            .claim_sender(&polling, now())
+            .claim_sender(&polling, current_time)
             .await
             .map_err(map_authorization_error),
         AuthorizationKind::Reader => service
-            .claim_reader(&polling, now())
+            .claim_reader(&polling, current_time)
             .await
             .map_err(map_authorization_error),
     }
@@ -233,9 +268,10 @@ async fn authorization_status_inner(
 ) -> ApiResult<AuthorizationStatus> {
     let request_id = parse_request_id(request_id)?;
     let service = authorization_service(env).map_err(internal_error)?;
-    enforce_poll_rate_limit(&service, request).await?;
+    enforce_poll_rate_limit(&service, request, env).await?;
+    let current_time = crate::request_timestamp(request, env);
     service
-        .status(&request_id, now())
+        .status(&request_id, current_time)
         .await
         .map_err(map_authorization_error)
 }
@@ -252,18 +288,18 @@ async fn push_bundle_inner(request: &mut Request, env: &Env) -> ApiResult<Bundle
         Err(error) if error.code == ApiErrorCode::PayloadTooLarge => {
             // Oversized uploads are failed replacements. Clear first so they
             // have the same inbox semantics as malformed bundle uploads.
-            bundle_store(env)
+            bundle_store_for_request(env, request)
                 .map_err(internal_error)?
-                .clear(now().value())
+                .clear(crate::request_timestamp(request, env).value())
                 .await
                 .map_err(internal_error)?;
             return Err(error);
         }
         Err(error) => return Err(error),
     };
-    let store = bundle_store(env).map_err(internal_error)?;
+    let store = bundle_store_for_request(env, request).map_err(internal_error)?;
     let published = store
-        .push(bytes, now().value())
+        .push(bytes, crate::request_timestamp(request, env).value())
         .await
         .map_err(map_bundle_error)?;
     published_bundle_response(published)
@@ -276,8 +312,11 @@ async fn clear_bundle(mut request: Request, context: RouteContext<()>) -> Result
 async fn clear_bundle_inner(request: &mut Request, env: &Env) -> ApiResult<EmptyInboxResponse> {
     let sender = authenticate_sender(request, env).await?;
     require_capability(sender, prs_sync_protocol::SenderCapability::ClearInbox)?;
-    let store = bundle_store(env).map_err(internal_error)?;
-    let revision = store.clear(now().value()).await.map_err(internal_error)?;
+    let store = bundle_store_for_request(env, request).map_err(internal_error)?;
+    let revision = store
+        .clear(crate::request_timestamp(request, env).value())
+        .await
+        .map_err(internal_error)?;
     Ok(EmptyInboxResponse {
         protocol_version: CURRENT_PROTOCOL_VERSION,
         revision,
@@ -340,7 +379,7 @@ async fn revoke_credentials_inner(
     };
     let revoked = authorization_service(env)
         .map_err(internal_error)?
-        .revoke_sender_credential(&name, now())
+        .revoke_sender_credential(&name, crate::request_timestamp(request, env))
         .await
         .map_err(map_authorization_error)?;
     if !revoked {
@@ -390,7 +429,7 @@ async fn reader_manifest_inner(
 ) -> ApiResult<(InboxManifestResponse, InboxRevision, Option<EntityTag>)> {
     let reader = authenticate_reader(request, env).await?;
     require_capability(reader, prs_sync_protocol::ReaderCapability::ReadManifest)?;
-    let current = bundle_store(env)
+    let current = bundle_store_for_request(env, request)
         .map_err(internal_error)?
         .current()
         .await
@@ -442,7 +481,7 @@ async fn reader_bundle(request: Request, context: RouteContext<()>) -> Result<Re
 async fn reader_bundle_inner(request: &Request, env: &Env) -> ApiResult<Response> {
     let reader = authenticate_reader(request, env).await?;
     require_capability(reader, prs_sync_protocol::ReaderCapability::DownloadBundle)?;
-    let store = bundle_store(env).map_err(internal_error)?;
+    let store = bundle_store_for_request(env, request).map_err(internal_error)?;
     let current = store.current().await.map_err(internal_error)?;
     let etag = current
         .etag
@@ -477,7 +516,7 @@ async fn authenticate_sender(
     let token = bearer_token(request)?;
     authorization_service(env)
         .map_err(internal_error)?
-        .authenticate_sender(&token, now())
+        .authenticate_sender(&token, crate::request_timestamp(request, env))
         .await
         .map_err(map_authorization_error)
 }
@@ -489,7 +528,7 @@ async fn authenticate_reader(
     let token = bearer_token(request)?;
     authorization_service(env)
         .map_err(internal_error)?
-        .authenticate_reader(&token, now())
+        .authenticate_reader(&token, crate::request_timestamp(request, env))
         .await
         .map_err(map_authorization_error)
 }
@@ -630,10 +669,11 @@ fn authorization_service(env: &Env) -> Result<AuthorizationService> {
 async fn enforce_creation_rate_limit(
     service: &AuthorizationService,
     request: &Request,
+    env: &Env,
 ) -> ApiResult<()> {
     let client_key = authorization_client_key(request)?;
     match service
-        .check_creation_rate_limit(&client_key, now())
+        .check_creation_rate_limit(&client_key, crate::request_timestamp(request, env))
         .await
         .map_err(internal_error)?
     {
@@ -647,10 +687,11 @@ async fn enforce_creation_rate_limit(
 async fn enforce_poll_rate_limit(
     service: &AuthorizationService,
     request: &Request,
+    env: &Env,
 ) -> ApiResult<()> {
     let client_key = authorization_client_key(request)?;
     match service
-        .check_poll_rate_limit(&client_key, now())
+        .check_poll_rate_limit(&client_key, crate::request_timestamp(request, env))
         .await
         .map_err(internal_error)?
     {
@@ -673,8 +714,19 @@ fn authorization_client_key(request: &Request) -> ApiResult<String> {
     Ok(client_key)
 }
 
-fn bundle_store(env: &Env) -> Result<BundleStore> {
-    crate::bundle_store(env)
+fn bundle_store_for_request(request_env: &Env, request: &Request) -> Result<BundleStore> {
+    #[cfg(feature = "local-test")]
+    {
+        crate::bundle_store_with_fault(
+            request_env,
+            crate::test_support::fault_for_request(request, request_env)?,
+        )
+    }
+    #[cfg(not(feature = "local-test"))]
+    {
+        let _ = request;
+        crate::bundle_store(request_env)
+    }
 }
 
 fn parse_request_id(value: Option<&String>) -> ApiResult<AuthorizationRequestId> {
@@ -742,10 +794,6 @@ fn published_bundle_response(published: PublishedBundle) -> ApiResult<BundleResp
         etag: EntityTag::new(published.etag).map_err(|_| ApiFailure::internal())?,
         size_bytes: published.size_bytes,
     })
-}
-
-fn now() -> Timestamp {
-    Timestamp::new(Date::now().as_millis() / 1_000)
 }
 
 fn internal_error<T>(_error: T) -> ApiFailure {

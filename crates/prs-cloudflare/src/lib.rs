@@ -7,6 +7,8 @@ mod api;
 mod approval;
 mod authorization;
 mod identity;
+#[cfg(feature = "local-test")]
+mod test_support;
 
 use prs_sync_protocol::Timestamp;
 
@@ -34,6 +36,30 @@ pub(crate) fn bundle_store(env: &Env) -> Result<storage::BundleStore> {
         env.d1(D1_BINDING)?,
         env.bucket(R2_BINDING)?,
     ))
+}
+
+#[cfg(feature = "local-test")]
+pub(crate) fn bundle_store_with_fault(
+    env: &Env,
+    fault: Option<test_support::FaultInjection>,
+) -> Result<storage::BundleStore> {
+    Ok(storage::BundleStore::from_env_with_fault(
+        env.d1(D1_BINDING)?,
+        env.bucket(R2_BINDING)?,
+        fault,
+    ))
+}
+
+pub(crate) fn request_timestamp(request: &Request, env: &Env) -> Timestamp {
+    #[cfg(feature = "local-test")]
+    {
+        test_support::timestamp_for_request(request, env)
+    }
+    #[cfg(not(feature = "local-test"))]
+    {
+        let _ = (request, env);
+        Timestamp::new(Date::now().as_millis() as u64 / MILLISECONDS_PER_SECOND)
+    }
 }
 
 #[event(fetch)]

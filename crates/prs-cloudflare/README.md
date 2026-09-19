@@ -56,12 +56,14 @@ python3 tools/test-prs-cloudflare-local.py
 
 The test uses `wrangler.local.toml`, a temporary local D1/R2 state directory,
 and the explicit `local-test` feature- and environment-gated
-`X-PRSync-Test-Owner` header seam. It does not exercise runtime `ctx.access`
-or contact Cloudflare. It covers
-sender and reader approval, bundle replacement, failed replacement clearing,
+`X-PRSync-Test-Owner` header seam. It does not contact Cloudflare. It covers
+runtime Access rejection of forged assertions, concurrent claims and cleanup,
+expiry and terminal retention, D1 and R2 failure injection, bundle replacement,
 conditional manifest reads, bundle download, inbox clearing, credential
 listing and revocation, capability rejection, and authorization rate-limit
-responses with their retry delays.
+responses with their retry delays. The test-only maintenance route and control
+headers compile only with `local-test` and remain disabled unless
+`PRS_ENVIRONMENT=local`.
 
 ## Production bootstrap and deployment
 

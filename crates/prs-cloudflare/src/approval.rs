@@ -4,11 +4,13 @@ use crate::authorization::{
     ApprovalRequestDetails, AuthorizationError, AuthorizationFailure, AuthorizationService,
 };
 use crate::identity::AccessContext;
-use prs_sync_protocol::{AuthorizationKind, AuthorizationRequestId, AuthorizationState, Timestamp};
+#[cfg(test)]
+use prs_sync_protocol::Timestamp;
+use prs_sync_protocol::{AuthorizationKind, AuthorizationRequestId, AuthorizationState};
 use sha2::{Digest, Sha256};
 use worker::js_sys::{self, Function, Uint8Array};
 use worker::wasm_bindgen::{JsCast, JsValue};
-use worker::{Date, Env, Request, Response, Result};
+use worker::{Env, Request, Response, Result};
 
 const APPROVAL_BASE_URL_ENV: &str = "PRS_APPROVAL_BASE_URL";
 const CSRF_SECRET_ENV: &str = "PRS_CSRF_SECRET";
@@ -110,7 +112,7 @@ async fn action_route(
         Ok(owner) => owner,
         Err(response) => return response,
     };
-    let current_time = now();
+    let current_time = crate::request_timestamp(&request, &env);
     let details = match service.approval_details(&request_id, current_time).await {
         Ok(details) => details,
         Err(error) => return authorization_error_response(error),
@@ -137,7 +139,10 @@ async fn action_route(
         return authorization_error_response(error);
     }
 
-    let details = match service.approval_details(&request_id, now()).await {
+    let details = match service
+        .approval_details(&request_id, crate::request_timestamp(&request, &env))
+        .await
+    {
         Ok(details) => details,
         Err(error) => return authorization_error_response(error),
     };
@@ -165,7 +170,10 @@ async fn render_route(
     if let Err(response) = approval_capability(Some(access)) {
         return response;
     }
-    let details = match service.approval_details(&request_id, now()).await {
+    let details = match service
+        .approval_details(&request_id, crate::request_timestamp(&_request, &env))
+        .await
+    {
         Ok(details) => details,
         Err(error) => return authorization_error_response(error),
     };
@@ -239,10 +247,6 @@ fn parse_request_id(value: Option<String>) -> Result<AuthorizationRequestId> {
             AuthorizationRequestId::new(value)
                 .map_err(|error| worker::Error::RustError(error.to_string()))
         })
-}
-
-fn now() -> Timestamp {
-    Timestamp::new(Date::now().as_millis() / 1_000)
 }
 
 fn render(

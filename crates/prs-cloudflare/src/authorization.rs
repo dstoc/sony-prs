@@ -12,7 +12,7 @@ use prs_sync_protocol::{
     SenderCredentialMetadata, SenderCredentialName, SenderScope, SessionId, Timestamp,
     CURRENT_PROTOCOL_VERSION,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fmt;
 use worker::js_sys::{self, Function, Uint8Array};
@@ -72,7 +72,7 @@ pub enum RateLimitDecision {
 }
 
 /// Counts changed by one bounded maintenance pass.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
 pub struct MaintenanceReport {
     pub expired_requests: usize,
     pub deleted_terminal_requests: usize,

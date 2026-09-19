@@ -174,11 +174,18 @@ def start_authorization(
     base_url: str,
     kind: str,
     credential_name: str | None = None,
+    headers: dict[str, str] | None = None,
 ) -> tuple[dict[str, Any], str]:
     body: dict[str, Any] = {"protocol_version": PROTOCOL_VERSION}
     if kind == "sender":
         body["credential_name"] = credential_name
-    response = json_request(base_url, "POST", f"/api/v1/authorization/{kind}", body)
+    response = json_request(
+        base_url,
+        "POST",
+        f"/api/v1/authorization/{kind}",
+        body,
+        headers=headers,
+    )
     assert_status(response, 200, f"create {kind} authorization")
     payload = response.json()
     return payload["request"], payload["polling_secret"]
@@ -245,8 +252,15 @@ def verify_http_rate_limits(base_url: str) -> None:
         raise AssertionError("authorization polling throttling did not return Retry-After")
 
 
-def approval_form_token(base_url: str, request_id: str, kind: str) -> str:
+def approval_form_token(
+    base_url: str,
+    request_id: str,
+    kind: str,
+    headers: dict[str, str] | None = None,
+) -> str:
     owner_headers = {"X-PRSync-Test-Owner": LOCAL_TEST_IDENTITY}
+    if headers:
+        owner_headers.update(headers)
     response = request(base_url, "GET", f"/a/{request_id}", headers=owner_headers)
     assert_status(response, 200, f"show {kind} approval request")
     csp = response.headers.get("content-security-policy", "")
@@ -270,59 +284,81 @@ def post_approval_action(
     action: str,
     token: str | None,
     origin: str,
+    headers: dict[str, str] | None = None,
 ) -> HttpResponse:
     body = b"" if token is None else urlencode({"csrf_token": token}).encode()
+    request_headers = {
+        "X-PRSync-Test-Owner": LOCAL_TEST_IDENTITY,
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Origin": origin,
+    }
+    if headers:
+        request_headers.update(headers)
     return request(
         base_url,
         "POST",
         f"/a/{request_id}/{action}",
         body=body,
-        headers={
-            "X-PRSync-Test-Owner": LOCAL_TEST_IDENTITY,
-            "Content-Type": "application/x-www-form-urlencoded",
-            "Origin": origin,
-        },
+        headers=request_headers,
     )
 
 
-def assert_pending(base_url: str, request_id: str, description: str) -> None:
-    response = request(base_url, "GET", f"/api/v1/authorization/{request_id}")
+def assert_pending(
+    base_url: str,
+    request_id: str,
+    description: str,
+    headers: dict[str, str] | None = None,
+) -> None:
+    response = request(base_url, "GET", f"/api/v1/authorization/{request_id}", headers=headers)
     assert_status(response, 200, description)
     if response.json()["state"] != "pending":
         raise AssertionError(f"{description}: authorization state changed unexpectedly")
 
 
-def approve(base_url: str, request_id: str, kind: str) -> None:
-    token = approval_form_token(base_url, request_id, kind)
+def approve(
+    base_url: str,
+    request_id: str,
+    kind: str,
+    headers: dict[str, str] | None = None,
+) -> None:
+    token = approval_form_token(base_url, request_id, kind, headers)
     origin = base_url
     response = post_approval_action(
-        base_url, request_id, "approve", token, "https://evil.example"
+        base_url, request_id, "approve", token, "https://evil.example", headers
     )
     assert_status(response, 403, f"cross-origin approve {kind} authorization")
-    assert_pending(base_url, request_id, f"state after cross-origin {kind} approval")
+    assert_pending(base_url, request_id, f"state after cross-origin {kind} approval", headers)
 
-    response = post_approval_action(base_url, request_id, "approve", None, origin)
+    response = post_approval_action(base_url, request_id, "approve", None, origin, headers)
     assert_status(response, 403, f"missing CSRF token for {kind} approval")
-    assert_pending(base_url, request_id, f"state after missing {kind} CSRF token")
+    assert_pending(base_url, request_id, f"state after missing {kind} CSRF token", headers)
 
     response = post_approval_action(
-        base_url, request_id, "approve", "invalid-token", origin
+        base_url, request_id, "approve", "invalid-token", origin, headers
     )
     assert_status(response, 403, f"invalid CSRF token for {kind} approval")
-    assert_pending(base_url, request_id, f"state after invalid {kind} CSRF token")
+    assert_pending(base_url, request_id, f"state after invalid {kind} CSRF token", headers)
 
     other_request, _ = start_authorization(
         base_url,
         kind,
         "csrf-other" if kind == "sender" else None,
+        headers,
     )
-    other_token = approval_form_token(base_url, other_request["request_id"], kind)
-    response = post_approval_action(base_url, request_id, "approve", other_token, origin)
+    other_token = approval_form_token(base_url, other_request["request_id"], kind, headers)
+    response = post_approval_action(
+        base_url, request_id, "approve", other_token, origin, headers
+    )
     assert_status(response, 403, f"incorrectly bound CSRF token for {kind} approval")
-    assert_pending(base_url, request_id, f"state after incorrectly bound {kind} CSRF token")
+    assert_pending(
+        base_url, request_id, f"state after incorrectly bound {kind} CSRF token", headers
+    )
 
     response = request(
-        base_url, "GET", f"/a/{request_id}", headers={"X-PRSync-Test-Owner": LOCAL_TEST_IDENTITY}
+        base_url,
+        "GET",
+        f"/a/{request_id}",
+        headers={"X-PRSync-Test-Owner": LOCAL_TEST_IDENTITY, **(headers or {})},
     )
     assert_status(response, 200, f"reload {kind} approval request")
     refreshed = re.search(
@@ -331,21 +367,28 @@ def approve(base_url: str, request_id: str, kind: str) -> None:
     )
     if not refreshed:
         raise AssertionError(f"{kind} approval page did not refresh its CSRF token")
-    response = post_approval_action(base_url, request_id, "approve", refreshed.group(1), origin)
+    response = post_approval_action(
+        base_url, request_id, "approve", refreshed.group(1), origin, headers
+    )
     assert_status(response, 200, f"approve {kind} authorization")
     if "approved" not in response.body.decode().lower():
         raise AssertionError(f"{kind} approval response did not show approved state")
 
 
-def deny(base_url: str, request_id: str, kind: str) -> None:
-    token = approval_form_token(base_url, request_id, kind)
+def deny(
+    base_url: str,
+    request_id: str,
+    kind: str,
+    headers: dict[str, str] | None = None,
+) -> None:
+    token = approval_form_token(base_url, request_id, kind, headers)
     response = post_approval_action(
-        base_url, request_id, "deny", token, "https://evil.example"
+        base_url, request_id, "deny", token, "https://evil.example", headers
     )
     assert_status(response, 403, f"cross-origin deny {kind} authorization")
-    assert_pending(base_url, request_id, f"state after cross-origin {kind} denial")
+    assert_pending(base_url, request_id, f"state after cross-origin {kind} denial", headers)
 
-    response = post_approval_action(base_url, request_id, "deny", token, base_url)
+    response = post_approval_action(base_url, request_id, "deny", token, base_url, headers)
     assert_status(response, 200, f"deny {kind} authorization")
     if "denied" not in response.body.decode().lower():
         raise AssertionError(f"{kind} denial response did not show denied state")
@@ -356,6 +399,7 @@ def claim(
     request_id: str,
     polling_secret: str,
     kind: str,
+    headers: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     response = json_request(
         base_url,
@@ -366,6 +410,7 @@ def claim(
             "request_id": request_id,
             "polling_secret": polling_secret,
         },
+        headers=headers,
     )
     assert_status(response, 200, f"claim {kind} authorization")
     outcome = response.json()["outcome"]
@@ -425,6 +470,234 @@ def verify_reader_flow(base_url: str) -> str:
     if capabilities != ["read_manifest", "download_bundle"]:
         raise AssertionError("reader claim returned mutation capabilities")
     return session["bearer_token"]
+
+
+def local_headers(clock: int, ip: str) -> dict[str, str]:
+    return {"X-PRSync-Test-Now": str(clock), "CF-Connecting-IP": ip}
+
+
+def maintenance(
+    base_url: str,
+    clock: int,
+    *,
+    fault: str | None = None,
+) -> HttpResponse:
+    headers = local_headers(clock, "198.51.100.90")
+    if fault:
+        headers["X-PRSync-Test-Fault"] = fault
+    return request(base_url, "POST", "/__test/maintenance", headers=headers)
+
+
+def verify_access_boundary(base_url: str) -> None:
+    request_data, _ = start_authorization(base_url, "reader")
+    request_id = request_data["request_id"]
+    forged = request(
+        base_url,
+        "GET",
+        f"/a/{request_id}",
+        headers={"Cf-Access-Jwt-Assertion": "eyJhbGciOiJSUzI1NiJ9.forged.signature"},
+    )
+    assert_status(forged, 403, "forged Access JWT without runtime Access context")
+    deny(base_url, request_id, "reader")
+
+
+def verify_concurrent_claims(base_url: str) -> None:
+    request_data, polling_secret = start_authorization(
+        base_url,
+        "reader",
+        headers={"CF-Connecting-IP": "198.51.100.61"},
+    )
+    request_id = request_data["request_id"]
+    approve(base_url, request_id, "reader")
+    poll_headers = {"CF-Connecting-IP": "198.51.100.62"}
+    poll_body = {
+        "protocol_version": PROTOCOL_VERSION,
+        "request_id": request_id,
+        "polling_secret": polling_secret,
+    }
+
+    def poll(_: int) -> HttpResponse:
+        return json_request(
+            base_url,
+            "POST",
+            "/api/v1/authorization/poll",
+            poll_body,
+            headers=poll_headers,
+        )
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        responses = list(executor.map(poll, range(8)))
+    outcomes = []
+    for response in responses:
+        assert_status(response, 200, "concurrent authorization claim")
+        outcomes.append(response.json()["outcome"]["kind"])
+    if outcomes.count("reader") != 1 or outcomes.count("already_claimed") != 7:
+        raise AssertionError(f"concurrent claim outcomes were not one-time: {outcomes}")
+
+
+def verify_expiry(base_url: str) -> None:
+    created_at = 1_900_000_000
+    headers = local_headers(created_at, "198.51.100.63")
+    request_data, polling_secret = start_authorization(base_url, "reader", headers=headers)
+    expires_at = request_data["expires_at"]
+    request_id = request_data["request_id"]
+    expired_headers = local_headers(expires_at, "198.51.100.64")
+    response = json_request(
+        base_url,
+        "POST",
+        "/api/v1/authorization/poll",
+        {
+            "protocol_version": PROTOCOL_VERSION,
+            "request_id": request_id,
+            "polling_secret": polling_secret,
+        },
+        headers=expired_headers,
+    )
+    assert_status(response, 200, "claim expired authorization")
+    if response.json()["outcome"]["kind"] != "expired":
+        raise AssertionError("authorization claim did not fail closed at its expiry")
+    status = request(
+        base_url,
+        "GET",
+        f"/api/v1/authorization/{request_id}",
+        headers=expired_headers,
+    )
+    assert_status(status, 200, "read expired authorization status")
+    if status.json()["state"] != "expired":
+        raise AssertionError("expired authorization did not persist its terminal state")
+
+
+def verify_retention(base_url: str) -> None:
+    created_at = 1_900_100_000
+    headers = local_headers(created_at, "198.51.100.65")
+    request_data, _ = start_authorization(base_url, "reader", headers=headers)
+    request_id = request_data["request_id"]
+    deny(base_url, request_id, "reader", local_headers(created_at + 1, "198.51.100.66"))
+    response = maintenance(base_url, created_at + 86_401)
+    assert_status(response, 200, "authorization retention maintenance")
+    status = request(
+        base_url,
+        "GET",
+        f"/api/v1/authorization/{request_id}",
+        headers=local_headers(created_at + 86_401, "198.51.100.67"),
+    )
+    assert_api_error(status, 404, "not_found", "terminal authorization after retention")
+
+
+def push_with_fault(
+    base_url: str,
+    sender_token: str,
+    bundle: bytes,
+    fault: str,
+    clock: int,
+) -> HttpResponse:
+    return request(
+        base_url,
+        "PUT",
+        "/api/v1/sender/bundle",
+        body=bundle,
+        headers={
+            "Authorization": f"Bearer {sender_token}",
+            "Content-Type": "application/x-tar",
+            "X-PRSync-Test-Fault": fault,
+            "X-PRSync-Test-Now": str(clock),
+        },
+    )
+
+
+def verify_fault_boundaries(base_url: str, sender_token: str, reader_token: str) -> None:
+    bundle_a = make_bundle({"index.md": b"# Fault boundary A\n"})
+    bundle_b = make_bundle({"index.md": b"# Fault boundary B\n"})
+    clock = 1_900_200_000
+
+    response = push_with_fault(base_url, sender_token, bundle_a, "d1-clear", clock)
+    assert_status(response, 500, "injected D1 clear failure")
+    verify_manifest(base_url, reader_token, "index.md")
+
+    response = request(
+        base_url,
+        "GET",
+        "/api/v1/reader/bundle",
+        headers={
+            "Authorization": f"Bearer {reader_token}",
+            "X-PRSync-Test-Fault": "r2-get",
+        },
+    )
+    assert_status(response, 500, "injected R2 read failure")
+
+    response = request(
+        base_url,
+        "DELETE",
+        "/api/v1/sender/bundle",
+        headers={
+            "Authorization": f"Bearer {sender_token}",
+            "X-PRSync-Test-Fault": "r2-delete",
+        },
+    )
+    assert_status(response, 500, "injected R2 delete failure")
+    empty = request(
+        base_url,
+        "GET",
+        "/api/v1/reader/manifest",
+        headers={"Authorization": f"Bearer {reader_token}"},
+    )
+    assert_status(empty, 200, "read inbox after injected R2 delete failure")
+    if empty.json()["state"]["kind"] != "empty":
+        raise AssertionError("R2 delete failure restored a cleared inbox reference")
+
+    response = request(
+        base_url,
+        "PUT",
+        "/api/v1/sender/bundle",
+        body=bundle_a,
+        headers={
+            "Authorization": f"Bearer {sender_token}",
+            "Content-Type": "application/x-tar",
+        },
+    )
+    assert_status(response, 200, "restore bundle after injected R2 delete failure")
+
+    response = push_with_fault(base_url, sender_token, bundle_b, "d1-publish", clock)
+    assert_status(response, 500, "injected D1 publication failure")
+    empty = request(
+        base_url,
+        "GET",
+        "/api/v1/reader/manifest",
+        headers={"Authorization": f"Bearer {reader_token}"},
+    )
+    assert_status(empty, 200, "read inbox after injected D1 publication failure")
+    if empty.json()["state"]["kind"] != "empty":
+        raise AssertionError("D1 publication failure left a readable bundle")
+
+    response = maintenance(base_url, clock + 86_400, fault="cleanup-d1-claim")
+    assert_status(response, 500, "injected cleanup D1 claim failure")
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        responses = list(
+            executor.map(lambda _: maintenance(base_url, clock + 86_400), range(4))
+        )
+    for response in responses:
+        assert_status(response, 200, "concurrent bundle cleanup")
+
+    response = push_with_fault(base_url, sender_token, bundle_a, "r2-put", clock + 1)
+    assert_status(response, 500, "injected R2 write failure")
+    response = maintenance(base_url, clock + 86_401, fault="cleanup-r2-delete")
+    assert_status(response, 200, "injected cleanup R2 delete failure")
+    if response.json()["bundles"]["failures"] < 1:
+        raise AssertionError("cleanup R2 failure was not reported")
+    response = maintenance(base_url, clock + 86_401)
+    assert_status(response, 200, "retry cleanup after injected R2 failure")
+
+    response = request(
+        base_url,
+        "PUT",
+        "/api/v1/sender/bundle",
+        body=bundle_b,
+        headers={
+            "Authorization": f"Bearer {sender_token}",
+            "Content-Type": "application/x-tar",
+        },
+    )
+    assert_status(response, 200, "restore bundle after fault injection")
 
 
 def verify_manifest(base_url: str, token: str, expected_entry: str) -> tuple[int, str]:
@@ -708,6 +981,10 @@ def run_workflow(base_url: str) -> None:
         "oversized credential-management body without Content-Length",
     )
     reader_token = verify_reader_flow(base_url)
+    verify_access_boundary(base_url)
+    verify_concurrent_claims(base_url)
+    verify_expiry(base_url)
+    verify_retention(base_url)
     denied_request, _ = start_authorization(base_url, "reader")
     deny(base_url, denied_request["request_id"], "reader")
     bundle_a = make_bundle({"index.md": b"# First bundle\n"})
@@ -846,6 +1123,7 @@ def run_workflow(base_url: str) -> None:
         },
     )
     assert_status(response, 200, "republish bundle after failed replacement")
+    verify_fault_boundaries(base_url, sender_token, reader_token)
     verify_capability_separation(base_url, sender_token, reader_token)
 
     response = request(

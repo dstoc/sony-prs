@@ -11,6 +11,8 @@ use std::io::Cursor;
 use prs_sync_bundle::validate;
 use prs_sync_protocol::{EntityTag, InboxRevision, Manifest, MAX_BUNDLE_SIZE};
 use serde::Deserialize;
+#[cfg(feature = "local-test")]
+use serde::Serialize;
 use worker::{wasm_bindgen::JsCast, Bucket, D1Database, Error, Object, Result};
 
 /// Bundle objects are private Worker storage. Cleanup lists this prefix so it
@@ -34,6 +36,8 @@ const CANDIDATE_STATE_METADATA: &str = "candidate";
 pub(crate) struct BundleStore {
     database: D1Database,
     bucket: Bucket,
+    #[cfg(feature = "local-test")]
+    fault: Option<crate::test_support::FaultInjection>,
 }
 
 /// Errors from a bundle replacement, separated by client input and Worker
@@ -51,7 +55,30 @@ impl From<Error> for BundlePushError {
 
 impl BundleStore {
     pub(crate) fn from_env(database: D1Database, bucket: Bucket) -> Self {
-        Self { database, bucket }
+        Self {
+            database,
+            bucket,
+            #[cfg(feature = "local-test")]
+            fault: None,
+        }
+    }
+
+    #[cfg(feature = "local-test")]
+    pub(crate) fn from_env_with_fault(
+        database: D1Database,
+        bucket: Bucket,
+        fault: Option<crate::test_support::FaultInjection>,
+    ) -> Self {
+        Self {
+            database,
+            bucket,
+            fault,
+        }
+    }
+
+    #[cfg(feature = "local-test")]
+    fn inject(&self, expected: crate::test_support::FaultInjection) -> Result<()> {
+        crate::test_support::injected_failure(self.fault, expected)
     }
 
     /// Replaces the current bundle using the destructive replacement policy.
@@ -67,6 +94,8 @@ impl BundleStore {
         let previous = self.current_bundle().await?;
         self.clear_inbox(updated_at).await?;
         if let Some(previous) = previous {
+            #[cfg(feature = "local-test")]
+            self.inject(crate::test_support::FaultInjection::R2Delete)?;
             self.bucket.delete(previous.object_key).await?;
         }
 
@@ -76,6 +105,8 @@ impl BundleStore {
         let object_key = candidate_object_key(&bundle_id);
         self.reserve_lifecycle(&bundle_id, &object_key, updated_at)
             .await?;
+        #[cfg(feature = "local-test")]
+        self.inject(crate::test_support::FaultInjection::R2Put)?;
         let object = self
             .bucket
             .put(&object_key, bytes)
@@ -98,6 +129,8 @@ impl BundleStore {
             )))
         })?;
 
+        #[cfg(feature = "local-test")]
+        self.inject(crate::test_support::FaultInjection::D1Publish)?;
         let revision = self
             .publish(
                 &bundle_id,
@@ -128,6 +161,8 @@ impl BundleStore {
         let previous = self.current_bundle().await?;
         let revision = self.clear_inbox(updated_at).await?;
         if let Some(previous) = previous {
+            #[cfg(feature = "local-test")]
+            self.inject(crate::test_support::FaultInjection::R2Delete)?;
             self.bucket.delete(previous.object_key).await?;
         }
         Ok(revision)
@@ -194,6 +229,8 @@ impl BundleStore {
         let Some(object_key) = current.object_key.clone() else {
             return Ok(None);
         };
+        #[cfg(feature = "local-test")]
+        self.inject(crate::test_support::FaultInjection::R2Get)?;
         self.bucket.get(object_key).execute().await
     }
 
@@ -227,6 +264,8 @@ impl BundleStore {
     }
 
     async fn clear_inbox(&self, updated_at: u64) -> Result<InboxRevision> {
+        #[cfg(feature = "local-test")]
+        self.inject(crate::test_support::FaultInjection::D1Clear)?;
         let row: Option<RevisionRow> = self
             .database
             .prepare(
@@ -251,6 +290,8 @@ impl BundleStore {
         size_bytes: u64,
         created_at: u64,
     ) -> Result<InboxRevision> {
+        #[cfg(feature = "local-test")]
+        self.inject(crate::test_support::FaultInjection::D1Publish)?;
         let insert_bundle = self
             .database
             .prepare(
@@ -333,11 +374,23 @@ impl BundleStore {
         report.lifecycle_candidates = candidates.len() as u32;
 
         for candidate in candidates {
+            #[cfg(feature = "local-test")]
+            self.inject(crate::test_support::FaultInjection::CleanupD1Claim)?;
             if !self.claim_lifecycle(&candidate, now).await? {
                 continue;
             }
             report.lifecycle_claimed += 1;
 
+            #[cfg(feature = "local-test")]
+            if let Err(error) = self.inject(crate::test_support::FaultInjection::CleanupR2Delete) {
+                worker::console_error!(
+                    "bundle cleanup could not delete {}: {}",
+                    candidate.object_key,
+                    error
+                );
+                report.failures += 1;
+                continue;
+            }
             if let Err(error) = self.bucket.delete(candidate.object_key.clone()).await {
                 worker::console_error!(
                     "bundle cleanup could not delete {}: {}",
@@ -583,6 +636,7 @@ pub(crate) struct CurrentBundle {
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "local-test", derive(Serialize))]
 pub(crate) struct CleanupReport {
     pub(crate) lifecycle_candidates: u32,
     pub(crate) lifecycle_claimed: u32,
