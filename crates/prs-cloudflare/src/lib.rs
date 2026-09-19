@@ -8,10 +8,13 @@ mod approval;
 mod authorization;
 mod identity;
 
+use prs_sync_protocol::Timestamp;
+
 pub use authorization::{
     ApprovalRequestDetails, AuthenticatedCapability, AuthorizationConfig, AuthorizationError,
-    AuthorizationFailure, AuthorizationResult, AuthorizationService, OwnerApprovalCapability,
-    PendingPollingCapability, ReaderAuthorization, SenderAuthorization,
+    AuthorizationFailure, AuthorizationResult, AuthorizationService, MaintenanceReport,
+    OwnerApprovalCapability, PendingPollingCapability, RateLimitDecision, ReaderAuthorization,
+    SenderAuthorization,
 };
 pub use identity::{PrincipalBoundary, PrincipalError, TrustedPrincipal};
 use worker::*;
@@ -56,6 +59,21 @@ pub async fn fetch(request: Request, env: Env, _context: Context) -> Result<Resp
 pub async fn scheduled(event: ScheduledEvent, env: Env, _context: ScheduleContext) {
     let now = schedule_timestamp_seconds(event.schedule())
         .unwrap_or_else(|| Date::now().as_millis() / MILLISECONDS_PER_SECOND);
+
+    match env.d1(D1_BINDING) {
+        Ok(database) => {
+            let service = AuthorizationService::new(database, AuthorizationConfig::default());
+            if let Err(error) = service.cleanup(Timestamp::new(now)).await {
+                worker::console_error!("PRSync authorization maintenance failed: {}", error);
+            }
+        }
+        Err(error) => {
+            worker::console_error!(
+                "PRSync authorization maintenance could not open D1: {}",
+                error
+            );
+        }
+    }
 
     match bundle_store(&env) {
         Ok(store) => match store.cleanup(now).await {

@@ -280,6 +280,102 @@ def authenticate_reader(connection: sqlite3.Connection, token: str, now: int) ->
     return row is not None
 
 
+def check_rate_limit(
+    connection: sqlite3.Connection,
+    bucket_key: str,
+    limit: int,
+    now: int,
+    window: int = 60,
+) -> int | None:
+    row = connection.execute(
+        """
+        INSERT INTO authorization_rate_limits
+            (bucket_key, window_started_at, request_count)
+        VALUES (?, ?, 1)
+        ON CONFLICT(bucket_key) DO UPDATE SET
+            window_started_at = CASE
+                WHEN authorization_rate_limits.window_started_at + ? <= excluded.window_started_at
+                THEN excluded.window_started_at
+                ELSE authorization_rate_limits.window_started_at
+            END,
+            request_count = CASE
+                WHEN authorization_rate_limits.window_started_at + ? <= excluded.window_started_at
+                THEN 1
+                ELSE MIN(authorization_rate_limits.request_count + 1, 2147483647)
+            END
+        RETURNING window_started_at, request_count
+        """,
+        (bucket_key, now, window, window),
+    ).fetchone()
+    if row["request_count"] <= limit:
+        return None
+    return max(1, row["window_started_at"] + window - now)
+
+
+def run_maintenance(connection: sqlite3.Connection, now: int) -> dict[str, int]:
+    cutoff = max(0, now - 24 * 60 * 60)
+    expired = connection.execute(
+        """
+        UPDATE authorization_requests
+        SET state = 'expired', expired_at = expires_at
+        WHERE rowid IN (
+            SELECT rowid FROM authorization_requests
+            WHERE state IN ('pending', 'approved') AND expires_at <= ?
+            ORDER BY expires_at ASC
+            LIMIT 100
+        )
+        """,
+        (now,),
+    ).rowcount
+    sessions = connection.execute(
+        """
+        DELETE FROM reader_sessions
+        WHERE rowid IN (
+            SELECT rowid FROM reader_sessions
+            WHERE expires_at <= ?
+              AND NOT EXISTS (
+                  SELECT 1 FROM authorization_requests
+                  WHERE authorization_requests.session_id = reader_sessions.session_id
+              )
+            ORDER BY expires_at ASC
+            LIMIT 100
+        )
+        """,
+        (cutoff,),
+    ).rowcount
+    requests = connection.execute(
+        """
+        DELETE FROM authorization_requests
+        WHERE rowid IN (
+            SELECT rowid FROM authorization_requests
+            WHERE state IN ('denied', 'expired', 'consumed')
+              AND COALESCE(consumed_at, denied_at, expired_at) <= ?
+            ORDER BY COALESCE(consumed_at, denied_at, expired_at) ASC
+            LIMIT 100
+        )
+        """,
+        (cutoff,),
+    ).rowcount
+    buckets = connection.execute(
+        """
+        DELETE FROM authorization_rate_limits
+        WHERE rowid IN (
+            SELECT rowid FROM authorization_rate_limits
+            WHERE window_started_at + ? <= ?
+            ORDER BY window_started_at ASC
+            LIMIT 100
+        )
+        """,
+        (60, now),
+    ).rowcount
+    return {
+        "expired_requests": expired,
+        "deleted_reader_sessions": sessions,
+        "deleted_terminal_requests": requests,
+        "deleted_rate_limit_buckets": buckets,
+    }
+
+
 def verify_sender_lifecycle() -> None:
     connection = database()
     request = create_request(
@@ -475,6 +571,110 @@ def verify_claim_expiry_race() -> None:
     ).fetchone()[0] == 0
 
 
+def verify_rate_limits() -> None:
+    connection = database()
+    for _ in range(10):
+        assert check_rate_limit(connection, "create:198.51.100.20", 10, 100) is None
+    assert check_rate_limit(connection, "create:198.51.100.20", 10, 100) == 60
+    assert check_rate_limit(connection, "create:198.51.100.21", 10, 100) is None
+    assert check_rate_limit(connection, "create:198.51.100.20", 10, 159) == 1
+    assert check_rate_limit(connection, "create:198.51.100.20", 10, 160) is None
+
+    for _ in range(60):
+        assert check_rate_limit(connection, "poll:198.51.100.20", 60, 200) is None
+    assert check_rate_limit(connection, "poll:198.51.100.20", 60, 200) == 60
+
+
+def verify_bounded_maintenance() -> None:
+    connection = database()
+    now = 100_000
+    cutoff = now - 24 * 60 * 60
+    connection.execute(
+        "INSERT INTO sender_credentials (credential_id, name, bearer_token_hash, created_at) VALUES (?, ?, ?, ?)",
+        ("active-credential", "active", digest("active"), 1),
+    )
+    connection.execute(
+        "INSERT INTO reader_sessions (session_id, bearer_token_hash, issued_at, expires_at) VALUES (?, ?, ?, ?)",
+        ("referenced-session", digest("referenced"), 1, cutoff),
+    )
+    connection.execute(
+        """
+        INSERT INTO authorization_requests
+            (request_id, kind, polling_secret_hash, approval_url, state,
+             created_at, expires_at, approved_at, consumed_at, credential_id, credential_name)
+        VALUES (?, 'sender', ?, ?, 'consumed', 1, 2, 1, 2, ?, 'active')
+        """,
+        ("old-consumed-sender", digest("old-sender"), "https://example/old-sender", "active-credential"),
+    )
+    connection.execute(
+        """
+        INSERT INTO authorization_requests
+            (request_id, kind, polling_secret_hash, approval_url, state,
+             created_at, expires_at, approved_at, consumed_at, session_id)
+        VALUES (?, 'reader', ?, ?, 'consumed', 1, 2, 1, 2, ?)
+        """,
+        ("old-consumed-reader", digest("old-reader"), "https://example/old-reader", "referenced-session"),
+    )
+    connection.execute(
+        """
+        INSERT INTO authorization_requests
+            (request_id, kind, polling_secret_hash, approval_url, state,
+             created_at, expires_at, denied_at, credential_name)
+        VALUES (?, 'sender', ?, ?, 'denied', 1, 2, 2, 'denied')
+        """,
+        ("old-denied", digest("old-denied"), "https://example/old-denied"),
+    )
+    create_request(connection, "old-pending", "reader", "old-pending-secret", 1)
+    connection.execute(
+        "INSERT INTO authorization_rate_limits (bucket_key, window_started_at, request_count) VALUES (?, ?, ?)",
+        ("old-bucket", 1, 100),
+    )
+    connection.execute(
+        "INSERT INTO authorization_rate_limits (bucket_key, window_started_at, request_count) VALUES (?, ?, ?)",
+        ("current-bucket", now - 1, 1),
+    )
+
+    report = run_maintenance(connection, now)
+    assert report["expired_requests"] == 1
+    assert report["deleted_terminal_requests"] == 4
+    assert report["deleted_reader_sessions"] == 0
+    assert report["deleted_rate_limit_buckets"] == 1
+    assert connection.execute(
+        "SELECT count(*) FROM sender_credentials WHERE credential_id = 'active-credential'"
+    ).fetchone()[0] == 1
+    assert connection.execute(
+        "SELECT count(*) FROM reader_sessions WHERE session_id = 'referenced-session'"
+    ).fetchone()[0] == 1
+    assert connection.execute(
+        "SELECT count(*) FROM authorization_requests WHERE request_id = 'old-pending'"
+    ).fetchone()[0] == 0
+    assert connection.execute(
+        "SELECT count(*) FROM authorization_rate_limits WHERE bucket_key = 'current-bucket'"
+    ).fetchone()[0] == 1
+
+    second_report = run_maintenance(connection, now)
+    assert second_report["deleted_reader_sessions"] == 1
+    assert connection.execute(
+        "SELECT count(*) FROM reader_sessions WHERE session_id = 'referenced-session'"
+    ).fetchone()[0] == 0
+
+    bounded = database()
+    for index in range(101):
+        bounded.execute(
+            """
+            INSERT INTO authorization_requests
+                (request_id, kind, polling_secret_hash, approval_url, state,
+                 created_at, expires_at, denied_at, credential_name)
+            VALUES (?, 'sender', ?, ?, 'denied', 1, 2, 2, ?)
+            """,
+            (f"bounded-{index}", digest(str(index)), f"https://example/{index}", f"name-{index}"),
+        )
+    assert run_maintenance(bounded, now)["deleted_terminal_requests"] == 100
+    assert bounded.execute(
+        "SELECT count(*) FROM authorization_requests"
+    ).fetchone()[0] == 1
+
+
 def expect_failure(action, message: str) -> None:
     try:
         action()
@@ -490,6 +690,8 @@ def main() -> None:
     verify_denial_and_expiration()
     verify_same_name_claim_conflict()
     verify_claim_expiry_race()
+    verify_rate_limits()
+    verify_bounded_maintenance()
     print("prs-cloudflare authorization checks passed")
 
 
