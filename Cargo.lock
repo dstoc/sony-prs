@@ -1183,6 +1183,8 @@ version = "0.9.0"
 dependencies = [
  "embedded-graphics",
  "prs-markdown",
+ "reqwest",
+ "webpki-root-certs",
 ]
 
 [[package]]

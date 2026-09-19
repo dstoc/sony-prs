@@ -71,6 +71,7 @@ different device.
 | `input` | Read-only | Queries evdev capabilities without opening an event stream, grabbing a device, or injecting events. |
 | `events [EVENT_DEVICE] [SECONDS]` | Read-only | Logs a finite raw evdev stream. It defaults to `/dev/input/event1` for 10 seconds and never calls `EVIOCGRAB`. |
 | `capture [FRAMEBUFFER]` | Read-only | Maps the visible RGB565 framebuffer with read access and emits an 8-bit grayscale PGM to stdout. |
+| `network-probe HOSTNAME_OR_HTTPS_URL [--invalid-hostname]` | Read-only | Resolves the supplied host and performs a bounded HTTPS `GET /health` with rustls certificate and hostname validation. The optional negative test must fail TLS validation. |
 | `render-test [FRAMEBUFFER] [SECONDS] [WAVEFORM] [WAIT\|NOWAIT]` | Writes framebuffer | Draws a centered 200x120 RGB565 marker, requests a bounded EPDC update, captures the mapping, waits, and restores the original rectangle. Defaults to 3 seconds, `GC16`, and `WAIT`. |
 | `display-test [FRAMEBUFFER] [SECONDS] [WAVEFORM]` | Writes framebuffer | Draws a full-screen grayscale calibration pattern with fill/text swatches, gradients, a grayscale ramp, and 1-, 2-, 4-, and 8-pixel lines. Defaults to 60 seconds and `GC16`; it leaves the pattern visible and does not restore the previous framebuffer. |
 | `standalone-test [FRAMEBUFFER] [standby\|mem]` | Owns framebuffer/input | Runs the long-lived native shell after `zygote` and `system_server` have stopped. The default suspend mode is T1 EINK `standby`. |
@@ -112,6 +113,50 @@ adb pull /data/local/tmp/t1-screen.pgm ./t1-screen.pgm
 The old T1 ADB daemon closes the `exec-out` channel and `adb shell` can
 translate binary output through a PTY. Redirect the PGM on the reader and pull
 it as shown above.
+
+### Network and TLS capability probe
+
+`network-probe` is the read-only artifact for physical validation before the
+full PRSync client exists. It does not enable Wi-Fi, read Wi-Fi credentials,
+send authorization data, or persist any data.
+
+The probe resolves the supplied hostname, pins the request to the resolved
+addresses, and performs one HTTPS `GET /health`. It uses reqwest with rustls,
+bundles Mozilla public roots for the static T1 target, rejects redirects, and
+keeps certificate-chain and hostname validation enabled. It uses a 10-second
+connect limit, a 20-second request and response-read limit, and a 64 KiB
+response-body limit. The command prints one-line fields such as
+`dns_addresses`, `tls_validation`, `http_status`, and `result`.
+
+Set the production protocol hostname selected for #99. A hostname is enough;
+the command adds `https://` and requests `/health`.
+
+```sh
+PROBE_HOST='your-production-host.example'
+adb shell /data/local/tmp/prs-t1-agent network-probe "$PROBE_HOST"
+```
+
+The command exits with status 0 only after DNS, TLS validation, an HTTP 2xx
+response, and the bounded response read succeed. Network loss, DNS failure,
+timeouts, certificate failures, non-2xx responses, and oversized responses
+produce structured failure fields and a non-zero exit status. Resources are
+owned by the single command and are released when it exits.
+
+Run the safe negative test after a normal probe. It routes the reserved invalid
+hostname to the already-resolved production addresses, so the TLS server name
+and hostname check are wrong while the TCP destination remains reachable. The
+request must fail certificate or hostname validation. The command reports
+`tls_validation=failed_as_expected` and exits 0 when that failure occurs.
+
+```sh
+adb shell /data/local/tmp/prs-t1-agent network-probe "$PROBE_HOST" \
+  --invalid-hostname
+```
+
+Do not use an IP address as a substitute for the production hostname in the
+normal test. The production hostname is required for SNI and certificate
+hostname validation. Save the complete stdout and the command exit status in
+the #99 hardware test record.
 
 To run the display calibration pattern, keep Android active for a bounded
 framebuffer probe:

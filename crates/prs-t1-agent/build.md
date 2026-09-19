@@ -96,6 +96,17 @@ The deployable binary is:
 target/armv7-unknown-linux-musleabi/release/prs-t1-agent
 ```
 
+The pinned CI-equivalent command builds and verifies the same artifact and
+copies a validated release binary to `dist/prs-t1-agent-armv7`:
+
+```sh
+tools/prs-t1-agent-build.sh build-and-verify
+```
+
+The ELF verification checks ARMv7, EABI5 soft-float attributes, static
+linking, and the absence of a dynamic loader. The network probe is part of
+this `prs-t1-agent` executable, so the same check covers the probe artifact.
+
 For a quick sanity check, confirm that the result is ARM, EABI5, soft-float,
 and static:
 
@@ -120,6 +131,28 @@ adb wait-for-device
 adb push "$AGENT_BINARY" /data/local/tmp/prs-t1-agent
 adb shell chmod 755 /data/local/tmp/prs-t1-agent
 ```
+
+Run the network capability probe while Android remains active. Replace the
+placeholder with the production protocol hostname selected for #99:
+
+```sh
+PROBE_HOST='your-production-host.example'
+adb shell /data/local/tmp/prs-t1-agent network-probe "$PROBE_HOST"
+adb shell /data/local/tmp/prs-t1-agent network-probe "$PROBE_HOST" \
+  --invalid-hostname
+```
+
+The first command must report `result=success` and
+`tls_validation=passed`. The second command is a safe negative test. It must
+report `tls_validation=failed_as_expected` and `result=success`. The probe
+does not require an authorization request, bearer token, Cloudflare secret, or
+Wi-Fi credential. It does not change the device network configuration.
+
+The normal probe performs only `GET /health`. It resolves the hostname before
+the request, uses the bundled Mozilla root set with rustls chain and hostname
+validation, rejects redirects, limits connection setup to 10 seconds, limits
+the request and response reads to 20 seconds, and accepts at most 64 KiB of
+response data. Capture stdout and the exit status for the #99 hardware record.
 
 The agent's read-only commands can then be exercised while Android is still
 running:

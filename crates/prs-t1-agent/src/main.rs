@@ -3,6 +3,7 @@ mod damage;
 mod display;
 mod framebuffer;
 mod input;
+mod network;
 mod reader;
 mod refresh;
 mod runtime;
@@ -105,6 +106,7 @@ fn run() -> io::Result<()> {
             );
             Ok(())
         }
+        Some("network-probe") => network::run(args.collect()),
         Some("render-test") => {
             let device = args.next().unwrap_or_else(|| DEFAULT_FRAMEBUFFER.into());
             let seconds = args
@@ -227,6 +229,7 @@ fn probe(device: &Path) {
 }
 
 fn print_usage() {
+    println!("  prs-t1-agent network-probe HOSTNAME_OR_HTTPS_URL [--invalid-hostname]");
     println!(
         "prs-t1-agent {}\n\nUsage:\n  prs-t1-agent probe [FRAMEBUFFER]\n  prs-t1-agent status\n  prs-t1-agent input\n  prs-t1-agent events [EVENT_DEVICE] [SECONDS]\n  prs-t1-agent capture [FRAMEBUFFER] > screen.pgm\n  prs-t1-agent render-test [FRAMEBUFFER] [SECONDS] [WAVEFORM] [WAIT|NOWAIT] > render-test.pgm\n  prs-t1-agent display-test [FRAMEBUFFER] [SECONDS] [WAVEFORM]\n  prs-t1-agent standalone-test [FRAMEBUFFER] [standby|mem]\n  prs-t1-agent launch-standalone [FRAMEBUFFER] [standby|mem]\n\n`probe`, `status`, `input`, `events`, and `capture` are read-only. `status`\nprints battery, power, USB, Wi-Fi, ADB, uptime, and Android-process state.\n`events` logs a bounded raw evdev stream without grabbing or injecting events.\n`capture` emits an 8-bit grayscale PGM. `render-test` is a write-capable\ncommand that briefly writes a centered RGB565 marker, requests a T1 e-ink\nupdate, captures the framebuffer, and restores the original rectangle. Its\noptional waveform is one of `DU`, `GC16`, `GC4`, or `A2`; it defaults to\n`GC16`. `NOWAIT` measures asynchronous submission and leaves completion to the\nbounded wait interval before the restore update; `WAIT` is the default.\n`display-test` draws a full-screen grayscale calibration pattern with contrast\nswatches, gradients, a 16-level ramp, and 1-, 2-, 4-, and 8-pixel lines. It\ndefaults to 60 seconds and `GC16`, leaves the pattern visible, and does not\nrestore the previous framebuffer contents. Use `capture` during the wait to\nrecord the framebuffer and use a physical camera to compare the panel output.\n`standalone-test` is a long-running write-capable native UI test for use after\nstopping zygote; it holds a kernel wake lock, displays input data, sleeps on a\nshort power press, and reboots on a long power press. Its optional suspend mode\ndefaults to `standby`; `mem` selects Android's normal early-suspend path for\nwake testing. `launch-standalone` is the privileged `su` entry point: it\ncreates a new session before stopping zygote, waits for the Android framework\nto exit, and then enters the same test loop.",
         env!("CARGO_PKG_VERSION")
