@@ -25,6 +25,19 @@ for expected in "${required_config[@]}"; do
     fi
 done
 
+python3 - "$config" "$local_test_config" <<'PY'
+from pathlib import Path
+import sys
+import tomllib
+
+for config_path in map(Path, sys.argv[1:]):
+    try:
+        with config_path.open("rb") as config_file:
+            tomllib.load(config_file)
+    except tomllib.TOMLDecodeError as error:
+        raise SystemExit(f"invalid TOML in {config_path}: {error}") from error
+PY
+
 for expected in \
     'name = "prs-reader-local-e2e"' \
     'command = "worker-build --release --features local-test"' \
