@@ -642,8 +642,6 @@ def run_workflow(base_url: str) -> None:
         if archive.getnames() != ["manifest.json", "index.md", "chapter.md"]:
             raise AssertionError("downloaded bundle did not retain its archive entries")
 
-    verify_concurrent_mutation_results(base_url, sender_token)
-
     unauthorized = request(
         base_url,
         "PUT",
@@ -656,6 +654,8 @@ def run_workflow(base_url: str) -> None:
     )
     assert_api_error(unauthorized, 401, "unauthorized", "unauthorized oversized upload")
     verify_manifest(base_url, reader_token, "index.md")
+
+    verify_concurrent_mutation_results(base_url, sender_token)
 
     oversized = request(
         base_url,
