@@ -9,7 +9,7 @@ use crate::authorization::{
     AuthorizationConfig, AuthorizationError, AuthorizationFailure, AuthorizationService,
     PendingPollingCapability,
 };
-use crate::storage::{BundlePushError, BundleStore, CurrentBundle};
+use crate::storage::{BundlePushError, BundleStore, PublishedBundle};
 use prs_sync_protocol::{
     ApiError, ApiErrorBody, ApiErrorCode, AuthorizationKind, AuthorizationRequestId,
     AuthorizationStart, AuthorizationStatus, BearerToken, EntityTag, InboxManifestResponse,
@@ -245,12 +245,11 @@ async fn push_bundle_inner(request: &mut Request, env: &Env) -> ApiResult<Bundle
         ));
     }
     let store = bundle_store(env).map_err(internal_error)?;
-    store
+    let published = store
         .push(bytes, now().value())
         .await
         .map_err(map_bundle_error)?;
-    let current = store.current().await.map_err(internal_error)?;
-    current_bundle_response(current)
+    published_bundle_response(published)
 }
 
 async fn clear_bundle(mut request: Request, context: RouteContext<()>) -> Result<Response> {
@@ -261,11 +260,10 @@ async fn clear_bundle_inner(request: &mut Request, env: &Env) -> ApiResult<Empty
     let sender = authenticate_sender(request, env).await?;
     require_capability(sender, prs_sync_protocol::SenderCapability::ClearInbox)?;
     let store = bundle_store(env).map_err(internal_error)?;
-    store.clear(now().value()).await.map_err(internal_error)?;
-    let current = store.current().await.map_err(internal_error)?;
+    let revision = store.clear(now().value()).await.map_err(internal_error)?;
     Ok(EmptyInboxResponse {
         protocol_version: CURRENT_PROTOCOL_VERSION,
-        revision: current.revision,
+        revision,
         state: "empty",
     })
 }
@@ -604,12 +602,12 @@ fn quoted_etag(etag: &EntityTag) -> String {
     format!("\"{}\"", etag.as_str())
 }
 
-fn current_bundle_response(current: CurrentBundle) -> ApiResult<BundleResponse> {
+fn published_bundle_response(published: PublishedBundle) -> ApiResult<BundleResponse> {
     Ok(BundleResponse {
         protocol_version: CURRENT_PROTOCOL_VERSION,
-        revision: current.revision,
-        etag: current.etag.ok_or_else(ApiFailure::internal)?,
-        size_bytes: current.size_bytes,
+        revision: published.revision,
+        etag: EntityTag::new(published.etag).map_err(|_| ApiFailure::internal())?,
+        size_bytes: published.size_bytes,
     })
 }
 
@@ -735,6 +733,28 @@ mod tests {
         let json = serde_json::to_string(&response).unwrap();
         assert!(json.contains("size_bytes"));
         assert!(!json.contains("manifest"));
+    }
+
+    #[test]
+    fn sender_push_response_uses_committed_publication_metadata() {
+        let response = published_bundle_response(PublishedBundle {
+            bundle_id: "bundle-1".into(),
+            object_key: "bundles/candidates/bundle-1.tar".into(),
+            revision: InboxRevision::new(9),
+            etag: "etag-1".into(),
+            manifest: prs_sync_protocol::Manifest {
+                protocol_version: CURRENT_PROTOCOL_VERSION,
+                bundle_format_version: prs_sync_protocol::CURRENT_BUNDLE_FORMAT_VERSION,
+                entry_point: prs_sync_protocol::BundlePath::new("index.md").unwrap(),
+                files: Vec::new(),
+            },
+            size_bytes: 256,
+        })
+        .unwrap();
+
+        assert_eq!(response.revision, InboxRevision::new(9));
+        assert_eq!(response.etag.as_str(), "etag-1");
+        assert_eq!(response.size_bytes, 256);
     }
 
     #[test]

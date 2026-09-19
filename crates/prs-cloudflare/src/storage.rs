@@ -86,19 +86,21 @@ impl BundleStore {
             )))
         })?;
 
-        self.publish(
-            &bundle_id,
-            &object_key,
-            &etag,
-            &manifest_json,
-            size_bytes,
-            updated_at,
-        )
-        .await?;
+        let revision = self
+            .publish(
+                &bundle_id,
+                &object_key,
+                &etag,
+                &manifest_json,
+                size_bytes,
+                updated_at,
+            )
+            .await?;
 
         Ok(PublishedBundle {
             bundle_id,
             object_key,
+            revision,
             etag,
             manifest,
             size_bytes,
@@ -110,13 +112,13 @@ impl BundleStore {
     /// Clearing D1 first prevents a failed R2 delete from leaving a reference
     /// to an object that the reader cannot retrieve. The old object is then an
     /// unreferenced cleanup candidate if deletion fails.
-    pub(crate) async fn clear(&self, updated_at: u64) -> Result<()> {
+    pub(crate) async fn clear(&self, updated_at: u64) -> Result<InboxRevision> {
         let previous = self.current_bundle().await?;
-        self.clear_inbox(updated_at).await?;
+        let revision = self.clear_inbox(updated_at).await?;
         if let Some(previous) = previous {
             self.bucket.delete(previous.object_key).await?;
         }
-        Ok(())
+        Ok(revision)
     }
 
     /// Reads only the current inbox metadata. The returned object key is an
@@ -212,15 +214,20 @@ impl BundleStore {
         }))
     }
 
-    async fn clear_inbox(&self, updated_at: u64) -> Result<()> {
-        self.database
+    async fn clear_inbox(&self, updated_at: u64) -> Result<InboxRevision> {
+        let row: Option<RevisionRow> = self
+            .database
             .prepare(
-                "UPDATE inbox SET current_bundle_id = NULL, revision = revision + 1, updated_at = ? WHERE singleton = 1",
+                "UPDATE inbox
+                 SET current_bundle_id = NULL, revision = revision + 1, updated_at = ?
+                 WHERE singleton = 1
+                 RETURNING revision",
             )
             .bind(&[number(updated_at)])?
-            .run()
+            .first(None)
             .await?;
-        Ok(())
+        row.map(|row| revision(row.revision))
+            .ok_or_else(|| Error::RustError("inbox singleton is missing".into()))?
     }
 
     async fn publish(
@@ -231,7 +238,7 @@ impl BundleStore {
         manifest_json: &str,
         size_bytes: u64,
         created_at: u64,
-    ) -> Result<()> {
+    ) -> Result<InboxRevision> {
         let insert_bundle = self
             .database
             .prepare(
@@ -248,17 +255,37 @@ impl BundleStore {
         let update_inbox = self
             .database
             .prepare(
-                "UPDATE inbox SET current_bundle_id = ?, revision = revision + 1, updated_at = ? WHERE singleton = 1",
+                "UPDATE inbox
+                 SET current_bundle_id = ?, revision = revision + 1, updated_at = ?
+                 WHERE singleton = 1
+                 RETURNING revision",
             )
             .bind(&[
                 worker::wasm_bindgen::JsValue::from_str(bundle_id),
                 number(created_at),
             ])?;
 
-        self.database
+        let results = self
+            .database
             .batch(vec![insert_bundle, update_inbox])
             .await?;
-        Ok(())
+        let result = results
+            .into_iter()
+            .nth(1)
+            .ok_or_else(|| Error::RustError("publication result is missing".into()))?;
+        if !result.success() {
+            return Err(Error::RustError(
+                result
+                    .error()
+                    .unwrap_or_else(|| "publication update failed".into()),
+            ));
+        }
+        let row = result
+            .results::<RevisionRow>()?
+            .into_iter()
+            .next()
+            .ok_or_else(|| Error::RustError("publication revision is missing".into()))?;
+        revision(row.revision)
     }
 }
 
@@ -267,6 +294,7 @@ impl BundleStore {
 pub(crate) struct PublishedBundle {
     pub(crate) bundle_id: String,
     pub(crate) object_key: String,
+    pub(crate) revision: InboxRevision,
     pub(crate) etag: String,
     pub(crate) manifest: Manifest,
     pub(crate) size_bytes: u64,
@@ -309,6 +337,11 @@ struct BundleMetadataRow {
 #[derive(Debug, Deserialize)]
 struct BundleRow {
     object_key: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct RevisionRow {
+    revision: i32,
 }
 
 fn number(value: u64) -> worker::wasm_bindgen::JsValue {
@@ -376,6 +409,7 @@ mod tests {
         let published = PublishedBundle {
             bundle_id: "bundle-1".into(),
             object_key: candidate_object_key("bundle-1"),
+            revision: InboxRevision::new(3),
             etag: "etag-1".into(),
             manifest: Manifest {
                 protocol_version: prs_sync_protocol::CURRENT_PROTOCOL_VERSION,

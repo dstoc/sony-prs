@@ -14,6 +14,7 @@ import sys
 import tarfile
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -336,6 +337,68 @@ def verify_capability_separation(base_url: str, sender_token: str, reader_token:
         assert_api_error(response, 401, "unauthorized", f"reader mutation at {path}")
 
 
+def verify_concurrent_mutation_results(base_url: str, sender_token: str) -> None:
+    bundles = [
+        make_bundle(
+            {
+                "index.md": f"# Concurrent bundle {index}\n".encode(),
+                f"payload-{index}.txt": bytes([65 + index]) * (index + 1),
+            }
+        )
+        for index in range(8)
+    ]
+
+    def push(bundle: bytes) -> HttpResponse:
+        return request(
+            base_url,
+            "PUT",
+            "/api/v1/sender/bundle",
+            body=bundle,
+            headers={
+                "Authorization": f"Bearer {sender_token}",
+                "Content-Type": "application/x-tar",
+            },
+        )
+
+    with ThreadPoolExecutor(max_workers=len(bundles)) as executor:
+        responses = list(executor.map(push, bundles))
+
+    revisions: set[int] = set()
+    for bundle, response in zip(bundles, responses):
+        assert_status(response, 200, "concurrent push")
+        payload = response.json()
+        if payload["size_bytes"] != len(bundle):
+            raise AssertionError("concurrent push returned another bundle's size")
+        if not payload["etag"]:
+            raise AssertionError("concurrent push returned an empty ETag")
+        revision = payload["revision"]
+        if revision in revisions:
+            raise AssertionError("concurrent pushes returned a duplicate revision")
+        revisions.add(revision)
+
+    def clear(_: int) -> HttpResponse:
+        return request(
+            base_url,
+            "DELETE",
+            "/api/v1/sender/bundle",
+            headers={"Authorization": f"Bearer {sender_token}"},
+        )
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        clear_responses = list(executor.map(clear, range(4)))
+
+    clear_revisions: set[int] = set()
+    for response in clear_responses:
+        assert_status(response, 200, "concurrent clear")
+        payload = response.json()
+        if payload["state"] != "empty":
+            raise AssertionError("concurrent clear returned a non-empty state")
+        revision = payload["revision"]
+        if revision in clear_revisions:
+            raise AssertionError("concurrent clears returned a duplicate revision")
+        clear_revisions.add(revision)
+
+
 def verify_credentials(base_url: str, sender_token: str) -> None:
     response = request(
         base_url,
@@ -510,6 +573,8 @@ def run_workflow(base_url: str) -> None:
     with tarfile.open(fileobj=io.BytesIO(downloaded.body), mode="r:") as archive:
         if archive.getnames() != ["manifest.json", "index.md", "chapter.md"]:
             raise AssertionError("downloaded bundle did not retain its archive entries")
+
+    verify_concurrent_mutation_results(base_url, sender_token)
 
     invalid = request(
         base_url,
