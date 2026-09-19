@@ -85,10 +85,11 @@ outside pull request jobs.
 
 `migrations/0001_initial.sql` creates the original metadata tables. The
 numbered `0002_metadata_schema_upgrade.sql` migration upgrades those tables
-for existing local and production databases. The numbered migrations include
-`0004_approved_authorization_expiry.sql` for the authorization expiry rules and
-`0004_bundle_cleanup_lifecycle.sql` adds lifecycle coordination for bundle
-publication and cleanup. A fresh database applies all migrations in order.
+for existing local and production databases. Migration
+`0004_approved_authorization_expiry.sql` applies the authorization expiry
+rules. Migration `0005_bundle_cleanup_lifecycle.sql` adds lifecycle
+coordination for bundle publication and cleanup. A fresh database applies all
+migrations in order.
 
 The resulting schema contains:
 
