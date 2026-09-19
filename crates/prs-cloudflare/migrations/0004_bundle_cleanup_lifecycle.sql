@@ -16,7 +16,8 @@ CREATE TABLE bundle_lifecycle (
 );
 
 -- Existing rows predate lifecycle tracking. Keep them publishable and apply
--- the same retention policy from their original creation time.
+-- the same 24-hour retention policy from their original creation time. All
+-- lifecycle timestamps use Unix seconds, like the existing D1 timestamps.
 INSERT INTO bundle_lifecycle
     (lifecycle_id, object_key, state, created_at, updated_at, cleanup_after)
 SELECT
@@ -25,7 +26,7 @@ SELECT
     'published',
     created_at,
     created_at,
-    created_at + 86400000
+    created_at + 86400
 FROM bundles;
 
 ALTER TABLE bundles

@@ -13,7 +13,7 @@ UPGRADE_MIGRATION = MIGRATIONS_DIRECTORY / "0002_metadata_schema_upgrade.sql"
 AUTHORIZATION_NAME_MIGRATION = MIGRATIONS_DIRECTORY / "0003_authorization_credential_name.sql"
 APPROVED_EXPIRY_MIGRATION = MIGRATIONS_DIRECTORY / "0004_approved_authorization_expiry.sql"
 BUNDLE_CLEANUP_MIGRATION = MIGRATIONS_DIRECTORY / "0004_bundle_cleanup_lifecycle.sql"
-CLEANUP_RETENTION_MS = 86_400_000
+CLEANUP_RETENTION_SECONDS = 86_400
 
 
 def database() -> sqlite3.Connection:
@@ -185,7 +185,13 @@ def verify_upgrade_path() -> None:
             WHERE lifecycle_id = 'legacy-inbox'
             """
         ).fetchone()
-    ) == ("legacy-inbox", "bundles/legacy.tar", "published", 100, 100 + CLEANUP_RETENTION_MS)
+    ) == (
+        "legacy-inbox",
+        "bundles/legacy.tar",
+        "published",
+        100,
+        100 + CLEANUP_RETENTION_SECONDS,
+    )
 
     # The old nullable expiry is converted to a short, finite lifetime.
     assert tuple(
@@ -234,7 +240,13 @@ def verify_current_schema_behavior() -> None:
             (lifecycle_id, object_key, state, created_at, updated_at, cleanup_after)
         VALUES (?, ?, 'uploading', ?, ?, ?)
         """,
-        ("bundle-1", "bundles/bundle-1.tar", 10, 10, 10 + CLEANUP_RETENTION_MS),
+        (
+            "bundle-1",
+            "bundles/bundle-1.tar",
+            10,
+            10,
+            10 + CLEANUP_RETENTION_SECONDS,
+        ),
     )
     connection.execute(
         """
@@ -498,13 +510,13 @@ def add_lifecycle(
             state,
             created_at,
             created_at,
-            created_at + CLEANUP_RETENTION_MS,
+            created_at + CLEANUP_RETENTION_SECONDS,
         ),
     )
 
 
 def publish_lifecycle(connection: sqlite3.Connection, lifecycle_id: str) -> None:
-    now = CLEANUP_RETENTION_MS + 200
+    now = CLEANUP_RETENTION_SECONDS + 200
     connection.execute("BEGIN IMMEDIATE")
     connection.execute(
         """
@@ -526,13 +538,14 @@ def publish_lifecycle(connection: sqlite3.Connection, lifecycle_id: str) -> None
         SET state = 'published', updated_at = ?, cleanup_after = ?
         WHERE lifecycle_id = ? AND state = 'uploading'
         """,
-        (now, now + CLEANUP_RETENTION_MS, lifecycle_id),
+        (now, now + CLEANUP_RETENTION_SECONDS, lifecycle_id),
     )
     connection.commit()
 
 
-def claim_lifecycle(connection: sqlite3.Connection, lifecycle_id: str) -> int:
-    now = CLEANUP_RETENTION_MS + 200
+def claim_lifecycle(
+    connection: sqlite3.Connection, lifecycle_id: str, now: int
+) -> int:
     cursor = connection.execute(
         """
         UPDATE bundle_lifecycle
@@ -552,6 +565,44 @@ def claim_lifecycle(connection: sqlite3.Connection, lifecycle_id: str) -> int:
     return cursor.rowcount
 
 
+def verify_cleanup_retention() -> None:
+    connection = database()
+    apply_all_migrations(connection)
+
+    # Use a realistic Unix epoch so a seconds/milliseconds mismatch cannot
+    # hide behind small test values.
+    upload_started_at = 1_800_000_000
+    add_lifecycle(
+        connection,
+        "retained-upload",
+        "bundles/candidates/retained.tar",
+        state="published",
+        created_at=upload_started_at,
+    )
+    before_expiry = upload_started_at + CLEANUP_RETENTION_SECONDS - 1
+    assert claim_lifecycle(connection, "retained-upload", before_expiry) == 0
+    assert connection.execute(
+        "SELECT state FROM bundle_lifecycle WHERE lifecycle_id = 'retained-upload'"
+    ).fetchone()[0] == "published"
+
+    at_expiry = upload_started_at + CLEANUP_RETENTION_SECONDS
+    assert claim_lifecycle(connection, "retained-upload", at_expiry) == 1
+
+    # A newly reserved upload remains protected during the next scheduled run.
+    newly_reserved_at = 1_800_100_000
+    add_lifecycle(
+        connection,
+        "new-upload",
+        "bundles/candidates/new.tar",
+        created_at=newly_reserved_at,
+    )
+    next_scheduled_run = newly_reserved_at + 60 * 60
+    assert claim_lifecycle(connection, "new-upload", next_scheduled_run) == 0
+    assert connection.execute(
+        "SELECT state FROM bundle_lifecycle WHERE lifecycle_id = 'new-upload'"
+    ).fetchone()[0] == "uploading"
+
+
 def verify_cleanup_race_safety() -> None:
     connection = database()
     apply_all_migrations(connection)
@@ -560,9 +611,13 @@ def verify_cleanup_race_safety() -> None:
     # that claim cannot create metadata or point the inbox at a deleted R2
     # object.
     add_lifecycle(connection, "racing-upload", "bundles/candidates/racing.tar")
-    assert claim_lifecycle(connection, "racing-upload") == 1
+    assert claim_lifecycle(
+        connection, "racing-upload", CLEANUP_RETENTION_SECONDS + 200
+    ) == 1
     # A failed R2 delete leaves the claim eligible for the next run.
-    assert claim_lifecycle(connection, "racing-upload") == 1
+    assert claim_lifecycle(
+        connection, "racing-upload", CLEANUP_RETENTION_SECONDS + 200
+    ) == 1
     try:
         publish_lifecycle(connection, "racing-upload")
     except sqlite3.IntegrityError:
@@ -576,7 +631,9 @@ def verify_cleanup_race_safety() -> None:
     # foreign-key reference and preserves both the current object and metadata.
     add_lifecycle(connection, "current-upload", "bundles/candidates/current.tar")
     publish_lifecycle(connection, "current-upload")
-    assert claim_lifecycle(connection, "current-upload") == 0
+    assert claim_lifecycle(
+        connection, "current-upload", CLEANUP_RETENTION_SECONDS + 200
+    ) == 0
     assert connection.execute("SELECT current_bundle_id FROM inbox").fetchone()[0] == "current-upload"
     assert connection.execute("SELECT state FROM bundle_lifecycle WHERE lifecycle_id = 'current-upload'").fetchone()[0] == "published"
 
@@ -608,7 +665,9 @@ def verify_cleanup_race_safety() -> None:
     connection.execute(
         "UPDATE bundle_lifecycle SET state = 'published' WHERE lifecycle_id = 'superseded-upload'"
     )
-    assert claim_lifecycle(connection, "superseded-upload") == 1
+    assert claim_lifecycle(
+        connection, "superseded-upload", CLEANUP_RETENTION_SECONDS + 200
+    ) == 1
     connection.execute(
         "DELETE FROM bundles WHERE lifecycle_id = 'superseded-upload'"
     )
@@ -631,6 +690,7 @@ def main() -> None:
     assert_d1_reapplication_is_a_noop()
     verify_upgrade_path()
     verify_current_schema_behavior()
+    verify_cleanup_retention()
     verify_cleanup_race_safety()
 
     print(

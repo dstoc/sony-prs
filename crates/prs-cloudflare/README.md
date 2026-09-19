@@ -132,6 +132,8 @@ publication can still make current.
 An hourly Worker schedule scans at most 100 lifecycle rows and 100 R2 objects
 per invocation. R2 list cursors are followed until that bound is reached.
 Each abandoned object and unreferenced metadata row is retained for 24 hours.
+All D1 lifecycle timestamps use Unix seconds. The scheduled event timestamp and
+R2 upload timestamp are converted to Unix seconds before cleanup compares them.
 Current inbox references are protected by the D1 foreign key relationship.
 Legacy objects under `bundles/` that have no lifecycle row are deleted only
 after the same R2 upload-age retention period. A failed R2 delete leaves the

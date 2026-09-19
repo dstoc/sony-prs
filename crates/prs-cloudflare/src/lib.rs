@@ -24,6 +24,7 @@ pub const R2_BINDING: &str = "BUNDLES";
 /// Runs cleanup hourly. The storage operation bounds both D1 lifecycle work
 /// and the R2 list scan, so a large backlog is retried by the next run.
 pub const CLEANUP_CRON: &str = "0 * * * *";
+const MILLISECONDS_PER_SECOND: u64 = 1_000;
 
 pub(crate) fn bundle_store(env: &Env) -> Result<storage::BundleStore> {
     Ok(storage::BundleStore::from_env(
@@ -53,12 +54,8 @@ pub async fn fetch(request: Request, env: Env, _context: Context) -> Result<Resp
 
 #[event(scheduled)]
 pub async fn scheduled(event: ScheduledEvent, env: Env, _context: ScheduleContext) {
-    let scheduled_at = event.schedule();
-    let now = if scheduled_at.is_finite() && scheduled_at >= 0.0 {
-        scheduled_at as u64
-    } else {
-        Date::now().as_millis()
-    };
+    let now = schedule_timestamp_seconds(event.schedule())
+        .unwrap_or_else(|| Date::now().as_millis() / MILLISECONDS_PER_SECOND);
 
     match bundle_store(&env) {
         Ok(store) => match store.cleanup(now).await {
@@ -68,6 +65,14 @@ pub async fn scheduled(event: ScheduledEvent, env: Env, _context: ScheduleContex
         Err(error) => {
             worker::console_error!("PRSync bundle cleanup could not open storage: {}", error)
         }
+    }
+}
+
+fn schedule_timestamp_seconds(scheduled_at_millis: f64) -> Option<u64> {
+    if scheduled_at_millis.is_finite() && scheduled_at_millis >= 0.0 {
+        Some((scheduled_at_millis as u64) / MILLISECONDS_PER_SECOND)
+    } else {
+        None
     }
 }
 
@@ -84,6 +89,14 @@ mod tests {
     #[test]
     fn cleanup_schedule_is_hourly() {
         assert_eq!(CLEANUP_CRON, "0 * * * *");
+    }
+
+    #[test]
+    fn scheduled_timestamp_uses_unix_seconds() {
+        assert_eq!(
+            schedule_timestamp_seconds(1_800_000_000_999.0),
+            Some(1_800_000_000)
+        );
     }
 
     #[test]

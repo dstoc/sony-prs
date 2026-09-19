@@ -22,7 +22,7 @@ pub(crate) const CANDIDATE_OBJECT_PREFIX: &str = "bundles/candidates/";
 
 /// An abandoned object or metadata row is retained for 24 hours. This gives a
 /// failed request time to retry while keeping cleanup eventually effective.
-pub(crate) const CLEANUP_RETENTION_MS: u64 = 24 * 60 * 60 * 1000;
+pub(crate) const CLEANUP_RETENTION_SECONDS: u64 = 24 * 60 * 60;
 
 const CLEANUP_BATCH_SIZE: u32 = 100;
 const CLEANUP_MAX_R2_OBJECTS: u32 = 100;
@@ -291,7 +291,7 @@ impl BundleStore {
             )
             .bind(&[
                 number(created_at),
-                number(created_at.saturating_add(CLEANUP_RETENTION_MS)),
+                number(created_at.saturating_add(CLEANUP_RETENTION_SECONDS)),
                 worker::wasm_bindgen::JsValue::from_str(bundle_id),
             ])?;
 
@@ -463,10 +463,7 @@ impl BundleStore {
             for object in page.objects() {
                 report.r2_scanned += 1;
                 let object_key = object.key();
-                if object
-                    .uploaded()
-                    .as_millis()
-                    .saturating_add(CLEANUP_RETENTION_MS)
+                if (object.uploaded().as_millis() / 1_000).saturating_add(CLEANUP_RETENTION_SECONDS)
                     > now
                 {
                     continue;
@@ -537,7 +534,7 @@ impl BundleStore {
         object_key: &str,
         created_at: u64,
     ) -> Result<()> {
-        let cleanup_after = created_at.saturating_add(CLEANUP_RETENTION_MS);
+        let cleanup_after = created_at.saturating_add(CLEANUP_RETENTION_SECONDS);
         let result = self
             .database
             .prepare(
