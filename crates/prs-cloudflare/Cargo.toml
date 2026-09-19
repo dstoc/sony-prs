@@ -16,6 +16,7 @@ default = []
 local-test = []
 
 [dependencies]
+futures-util = { version = "0.3.31", default-features = false, features = ["async-await"] }
 prs-sync-bundle = { path = "../prs-sync-bundle" }
 prs-sync-protocol = { path = "../prs-sync-protocol" }
 sha2 = { version = "0.11.0", default-features = false }

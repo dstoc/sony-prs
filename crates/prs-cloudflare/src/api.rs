@@ -10,6 +10,7 @@ use crate::authorization::{
     PendingPollingCapability,
 };
 use crate::storage::{BundlePushError, BundleStore, PublishedBundle};
+use futures_util::StreamExt;
 use prs_sync_protocol::{
     ApiError, ApiErrorBody, ApiErrorCode, AuthorizationKind, AuthorizationRequestId,
     AuthorizationStart, AuthorizationStatus, BearerToken, EntityTag, InboxManifestResponse,
@@ -17,10 +18,13 @@ use prs_sync_protocol::{
     ProtocolVersion, SenderCredentialMetadata, SenderCredentialName, Timestamp,
     CURRENT_PROTOCOL_VERSION, MAX_BUNDLE_SIZE,
 };
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use worker::{Date, Env, Request, Response, ResponseBuilder, Result, RouteContext, Router};
 
 type ApiResult<T> = std::result::Result<T, ApiFailure>;
+
+const MAX_AUTHORIZATION_BODY_SIZE: u64 = 4 * 1024;
+const MAX_CREDENTIAL_MANAGEMENT_BODY_SIZE: u64 = 4 * 1024;
 
 #[derive(Debug)]
 struct ApiFailure {
@@ -150,10 +154,8 @@ async fn create_sender(mut request: Request, context: RouteContext<()>) -> Resul
 }
 
 async fn create_sender_inner(request: &mut Request, env: &Env) -> ApiResult<AuthorizationStart> {
-    let body: SenderAuthorizationBody = request
-        .json()
-        .await
-        .map_err(|_| ApiFailure::invalid("request body must be valid JSON"))?;
+    let body: SenderAuthorizationBody =
+        read_json_body(request, MAX_AUTHORIZATION_BODY_SIZE).await?;
     require_version(body.protocol_version)?;
     authorization_service(env)
         .map_err(internal_error)?
@@ -167,10 +169,8 @@ async fn create_reader(mut request: Request, context: RouteContext<()>) -> Resul
 }
 
 async fn create_reader_inner(request: &mut Request, env: &Env) -> ApiResult<AuthorizationStart> {
-    let body: ReaderAuthorizationBody = request
-        .json()
-        .await
-        .map_err(|_| ApiFailure::invalid("request body must be valid JSON"))?;
+    let body: ReaderAuthorizationBody =
+        read_json_body(request, MAX_AUTHORIZATION_BODY_SIZE).await?;
     require_version(body.protocol_version)?;
     authorization_service(env)
         .map_err(internal_error)?
@@ -187,10 +187,8 @@ async fn poll_authorization_inner(
     request: &mut Request,
     env: &Env,
 ) -> ApiResult<PollingSecretClaimResult> {
-    let body: PollingSecretClaimRequest = request
-        .json()
-        .await
-        .map_err(|_| ApiFailure::invalid("request body must be valid JSON"))?;
+    let body: PollingSecretClaimRequest =
+        read_json_body(request, MAX_AUTHORIZATION_BODY_SIZE).await?;
     require_version(body.protocol_version)?;
     let service = authorization_service(env).map_err(internal_error)?;
     let status = service
@@ -233,17 +231,20 @@ async fn push_bundle(mut request: Request, context: RouteContext<()>) -> Result<
 async fn push_bundle_inner(request: &mut Request, env: &Env) -> ApiResult<BundleResponse> {
     let sender = authenticate_sender(request, env).await?;
     require_capability(sender, prs_sync_protocol::SenderCapability::UploadBundle)?;
-    let bytes = request
-        .bytes()
-        .await
-        .map_err(|_| ApiFailure::invalid("request body could not be read"))?;
-    if bytes.len() as u64 > MAX_BUNDLE_SIZE {
-        return Err(ApiFailure::new(
-            413,
-            ApiErrorCode::PayloadTooLarge,
-            "bundle exceeds the protocol size limit",
-        ));
-    }
+    let bytes = match read_limited_body(request, MAX_BUNDLE_SIZE).await {
+        Ok(bytes) => bytes,
+        Err(error) if error.code == ApiErrorCode::PayloadTooLarge => {
+            // Oversized uploads are failed replacements. Clear first so they
+            // have the same inbox semantics as malformed bundle uploads.
+            bundle_store(env)
+                .map_err(internal_error)?
+                .clear(now().value())
+                .await
+                .map_err(internal_error)?;
+            return Err(error);
+        }
+        Err(error) => return Err(error),
+    };
     let store = bundle_store(env).map_err(internal_error)?;
     let published = store
         .push(bytes, now().value())
@@ -315,10 +316,8 @@ async fn revoke_credentials_inner(
         Some(name) => SenderCredentialName::new(name)
             .map_err(|_| ApiFailure::invalid("invalid credential name"))?,
         None => {
-            let body: CredentialRevokeBody = request
-                .json()
-                .await
-                .map_err(|_| ApiFailure::invalid("request body must be valid JSON"))?;
+            let body: CredentialRevokeBody =
+                read_json_body(request, MAX_CREDENTIAL_MANAGEMENT_BODY_SIZE).await?;
             require_version(body.protocol_version)?;
             body.name
         }
@@ -491,6 +490,64 @@ fn bearer_token(request: &Request) -> ApiResult<BearerToken> {
         .filter(|token| !token.is_empty() && !token.chars().any(char::is_whitespace))
         .ok_or_else(ApiFailure::unauthorized)?;
     BearerToken::new(token.to_owned()).map_err(|_| ApiFailure::unauthorized())
+}
+
+async fn read_json_body<T: DeserializeOwned>(request: &mut Request, limit: u64) -> ApiResult<T> {
+    let bytes = read_limited_body(request, limit).await?;
+    serde_json::from_slice(&bytes)
+        .map_err(|_| ApiFailure::invalid("request body must be valid JSON"))
+}
+
+async fn read_limited_body(request: &mut Request, limit: u64) -> ApiResult<Vec<u8>> {
+    let content_length = request
+        .headers()
+        .get("Content-Length")
+        .map_err(|_| ApiFailure::invalid("invalid Content-Length header"))?;
+    check_content_length(content_length.as_deref(), limit)?;
+
+    let mut stream = request
+        .stream()
+        .map_err(|_| ApiFailure::invalid("request body could not be read"))?;
+    let mut body = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|_| ApiFailure::invalid("request body could not be read"))?;
+        append_body_chunk(&mut body, &chunk, limit)?;
+    }
+    Ok(body)
+}
+
+fn check_content_length(value: Option<&str>, limit: u64) -> ApiResult<()> {
+    let Some(value) = value else {
+        return Ok(());
+    };
+    let length = value
+        .parse::<u64>()
+        .map_err(|_| ApiFailure::invalid("Content-Length must be an unsigned integer"))?;
+    if length > limit {
+        return Err(payload_too_large());
+    }
+    Ok(())
+}
+
+fn append_body_chunk(body: &mut Vec<u8>, chunk: &[u8], limit: u64) -> ApiResult<()> {
+    let body_length = u64::try_from(body.len()).map_err(|_| ApiFailure::internal())?;
+    let chunk_length = u64::try_from(chunk.len()).map_err(|_| ApiFailure::internal())?;
+    let new_length = body_length
+        .checked_add(chunk_length)
+        .ok_or_else(ApiFailure::internal)?;
+    if new_length > limit {
+        return Err(payload_too_large());
+    }
+    body.extend_from_slice(chunk);
+    Ok(())
+}
+
+fn payload_too_large() -> ApiFailure {
+    ApiFailure::new(
+        413,
+        ApiErrorCode::PayloadTooLarge,
+        "request body exceeds the applicable size limit",
+    )
 }
 
 fn require_capability<T>(authorization: T, capability: impl Capability<T>) -> ApiResult<()>
@@ -773,6 +830,37 @@ mod tests {
         )));
         assert_eq!(error.status, 422);
         assert_eq!(error.code, ApiErrorCode::InvalidRequest);
+    }
+
+    #[test]
+    fn body_limits_accept_the_boundary_and_reject_the_next_byte() {
+        let mut body = Vec::new();
+        assert!(append_body_chunk(&mut body, b"1234", 4).is_ok());
+        let error = append_body_chunk(&mut body, b"5", 4).unwrap_err();
+        assert_eq!(error.status, 413);
+        assert_eq!(error.code, ApiErrorCode::PayloadTooLarge);
+        assert_eq!(body, b"1234");
+    }
+
+    #[test]
+    fn content_length_is_an_early_check_only() {
+        assert!(check_content_length(Some("4"), 4).is_ok());
+        let mut body = Vec::new();
+        assert!(check_content_length(Some("0"), 4).is_ok());
+        assert_eq!(
+            append_body_chunk(&mut body, b"12345", 4).unwrap_err().code,
+            ApiErrorCode::PayloadTooLarge
+        );
+        assert_eq!(
+            check_content_length(Some("5"), 4).unwrap_err().code,
+            ApiErrorCode::PayloadTooLarge
+        );
+        assert_eq!(
+            check_content_length(Some("not-a-number"), 4)
+                .unwrap_err()
+                .code,
+            ApiErrorCode::InvalidRequest
+        );
     }
 
     #[test]

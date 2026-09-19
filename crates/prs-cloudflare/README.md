@@ -166,6 +166,18 @@ capabilities and do not require an interactive Access login.
 A successful sender push returns only publication metadata: revision, ETag,
 and encoded size. It does not return the manifest.
 
+Request bodies are bounded before parsing. Authorization JSON bodies are limited
+to 4 KiB. Credential-management JSON bodies are limited to 4 KiB. Bundle bodies
+are limited to the protocol maximum of 16 MiB. The Worker checks
+`Content-Length` when it is present, then enforces the same limit while it reads
+the body. A missing or inaccurate `Content-Length` cannot bypass the limit.
+
+An oversized bundle returns the versioned `payload_too_large` error with HTTP
+status 413. An authorized oversized bundle is a failed replacement: the Worker
+clears the inbox before it returns the error. This matches malformed bundle
+uploads, which also clear the inbox before validation. An unauthorized upload
+fails at the bearer check and cannot change the inbox.
+
 ### Trusted owner identity boundary
 
 The approval routes accept only a platform-authenticated principal. In a
