@@ -41,13 +41,34 @@ fi
 release_tag=$(git -C "$repo_root" rev-parse --verify HEAD)
 
 cd "$worker_dir"
-wrangler versions upload \
-    --env production \
-    --tag "$release_tag" \
-    --no-x-provision
+if upload_output=$(
+    wrangler versions upload \
+        --env production \
+        --tag "$release_tag" \
+        --no-x-provision \
+        2>&1
+); then
+    :
+else
+    upload_status=$?
+    printf '%s\n' "$upload_output"
+    echo "Worker version upload failed" >&2
+    exit "$upload_status"
+fi
+printf '%s\n' "$upload_output"
+
+uploaded_version_id=$(printf '%s\n' "$upload_output" | sed -nE \
+    's/.*Worker Version ID:[[:space:]]*([[:xdigit:]]{8}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{12}).*/\1/p' | \
+    tail -n 1)
+if [[ -z "$uploaded_version_id" ]]; then
+    echo "could not determine the uploaded Worker Version ID" >&2
+    exit 1
+fi
+
 wrangler versions deploy \
     --env production \
-    --version-tag "${release_tag}@100%" \
+    --version-id "$uploaded_version_id" \
+    --percentage 100 \
     --yes \
     --no-x-provision
 "$repo_root/tools/prs-cloudflare-readiness.sh" "$PRS_READER_URL"

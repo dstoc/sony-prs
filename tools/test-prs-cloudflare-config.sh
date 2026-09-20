@@ -173,7 +173,9 @@ for expected in \
     'wrangler versions upload' \
     'wrangler versions deploy' \
     'release_tag=$(git -C "$repo_root" rev-parse --verify HEAD)' \
-    '--version-tag "${release_tag}@100%"' \
+    'uploaded_version_id=' \
+    '--version-id "$uploaded_version_id"' \
+    '--percentage 100' \
     'token that can publish the Worker only' \
     'D1 or R2 management permission'; do
     if ! grep -Fq -- "$expected" "$deploy"; then

@@ -107,9 +107,14 @@ Expected result:
 - The only Wrangler management operations are
   `wrangler versions upload --env production --tag <commit-sha> --no-x-provision`
   and
-  `wrangler versions deploy --env production --version-tag <commit-sha>@100% --yes --no-x-provision`.
+  `wrangler versions deploy --env production --version-id <version-id> --percentage 100 --yes --no-x-provision`.
+- The script reads the `Worker Version ID` from the upload result and passes
+  that ID to the promotion command.
 - The upload creates a version without changing live traffic.
 - The promotion sends 100% of traffic to that exact uploaded version.
+- If promotion or readiness fails, a rerun uploads another version and
+  promotes its returned ID. Duplicate commit tags do not make the promotion
+  ambiguous.
 - The command does not create a D1 database or R2 bucket.
 - The command does not list or apply D1 migrations.
 - The command does not deploy routes, custom domains, or triggers.

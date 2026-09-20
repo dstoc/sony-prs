@@ -42,6 +42,30 @@ if not os.environ.get("ALLOW_RESOURCE_COMMANDS") and any(
 ):
     print("unexpected resource-management command", file=sys.stderr)
     raise SystemExit(97)
+
+state_path = Path(os.environ.get("WRANGLER_STATE", str(log_path.with_suffix(".state"))))
+if state_path.exists():
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+else:
+    state = {"uploads": 0, "promotions": 0}
+
+if args[:2] == ["versions", "upload"]:
+    state["uploads"] += 1
+    state["last_version_id"] = (
+        f"00000000-0000-4000-8000-{state['uploads']:012d}"
+    )
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    print(f"Worker Version ID: {state['last_version_id']}")
+elif args[:2] == ["versions", "deploy"]:
+    state["promotions"] += 1
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    if os.environ.get("FAIL_FIRST_PROMOTION") and state["promotions"] == 1:
+        print("simulated promotion failure", file=sys.stderr)
+        raise SystemExit(19)
+    version_id = args[args.index("--version-id") + 1]
+    if version_id != state.get("last_version_id"):
+        print("promotion used the wrong uploaded version", file=sys.stderr)
+        raise SystemExit(98)
 raise SystemExit(0)
 '''
 
@@ -241,8 +265,83 @@ def assert_fake_wrangler_boundaries() -> None:
                 "deploy",
                 "--env",
                 "production",
-                "--version-tag",
-                f"{release_tag}@100%",
+                "--version-id",
+                "00000000-0000-4000-8000-000000000001",
+                "--percentage",
+                "100",
+                "--yes",
+                "--no-x-provision",
+            ],
+        ]
+
+        retry_state = test_dir / "retry.state"
+        first_attempt = run_script(
+            TOOLS / "prs-cloudflare-deploy.sh",
+            ["--production"],
+            fake_bin,
+            log_path,
+            extra_environment={
+                "FAIL_FIRST_PROMOTION": "1",
+                "PRS_READER_URL": "https://reader.example.com",
+                "WRANGLER_STATE": str(retry_state),
+            },
+        )
+        assert first_attempt.returncode == 19, first_attempt.stderr
+        assert logged_commands(log_path) == [
+            [
+                "versions",
+                "upload",
+                "--env",
+                "production",
+                "--tag",
+                release_tag,
+                "--no-x-provision",
+            ],
+            [
+                "versions",
+                "deploy",
+                "--env",
+                "production",
+                "--version-id",
+                "00000000-0000-4000-8000-000000000001",
+                "--percentage",
+                "100",
+                "--yes",
+                "--no-x-provision",
+            ],
+        ]
+
+        second_attempt = run_script(
+            TOOLS / "prs-cloudflare-deploy.sh",
+            ["--production"],
+            fake_bin,
+            log_path,
+            extra_environment={
+                "FAIL_FIRST_PROMOTION": "1",
+                "PRS_READER_URL": "https://reader.example.com",
+                "WRANGLER_STATE": str(retry_state),
+            },
+        )
+        assert second_attempt.returncode == 0, second_attempt.stderr
+        assert logged_commands(log_path) == [
+            [
+                "versions",
+                "upload",
+                "--env",
+                "production",
+                "--tag",
+                release_tag,
+                "--no-x-provision",
+            ],
+            [
+                "versions",
+                "deploy",
+                "--env",
+                "production",
+                "--version-id",
+                "00000000-0000-4000-8000-000000000002",
+                "--percentage",
+                "100",
                 "--yes",
                 "--no-x-provision",
             ],
@@ -342,7 +441,7 @@ def assert_runbook_is_reproducible() -> None:
         "tools/prs-cloudflare-deploy.sh --production",
         "tools/prs-cloudflare-readiness.sh https://reader.example.com",
         "wrangler versions upload --env production --tag <commit-sha> --no-x-provision",
-        "wrangler versions deploy --env production --version-tag <commit-sha>@100% --yes --no-x-provision",
+        "wrangler versions deploy --env production --version-id <version-id> --percentage 100 --yes --no-x-provision",
         "no D1 API",
         "Workers Scripts",
         "binding",

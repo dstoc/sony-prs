@@ -107,10 +107,11 @@ PRS_READER_URL=https://reader.example.com \
 
 The deploy script does not run D1 management commands. It disables Wrangler's
 automatic resource provisioning with `--no-x-provision`, uploads a version
-tagged with the checked-out commit, and promotes that exact version to 100% of
-traffic. It does not deploy routes, custom domains, or triggers. The command
-fails unless the response is ready and reports this checkout's exact release
-schema requirement.
+tagged with the checked-out commit, reads the returned Worker Version ID, and
+promotes that ID to 100% of traffic. It does not deploy routes, custom domains,
+or triggers. The command fails unless the response is ready and reports this
+checkout's exact release schema requirement. A rerun promotes the ID from its
+new upload, so duplicate commit tags do not make a retry ambiguous.
 
 To inspect an already-published Worker without publishing, run the same check
 explicitly:

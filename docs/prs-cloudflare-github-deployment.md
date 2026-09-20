@@ -89,12 +89,14 @@ tools/prs-cloudflare-deploy.sh --production
 ```
 
 The script derives a tag from the checked-out release commit. It uploads a
-version with the existing D1 and R2 bindings, then promotes that tag to 100%
-of traffic with `--no-x-provision` and no interactive prompt. It does not run
-D1 migrations or deploy routes, custom domains, or triggers. The command also
-checks the read-only release-aware `/ready` endpoint. The workflow then checks
-`/health`. A failed build, upload, promotion, readiness check, or health check
-fails the deployment job.
+version with the existing D1 and R2 bindings, reads the returned Worker
+Version ID, and promotes that ID to 100% of traffic with
+`--no-x-provision` and no interactive prompt. It does not run D1 migrations or
+deploy routes, custom domains, or triggers. The command also checks the
+read-only release-aware `/ready` endpoint. The workflow then checks `/health`.
+A failed build, upload, promotion, readiness check, or health check fails the
+deployment job. A rerun promotes the ID from its new upload, even when an
+earlier upload used the same commit tag.
 
 ## Debug a production deployment
 
