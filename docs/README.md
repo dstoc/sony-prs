@@ -27,6 +27,8 @@
 
 - [`prs-sync-protocol` wire types](../crates/prs-sync-protocol/README.md)
 - [Worker and local Cloudflare setup](../crates/prs-cloudflare/README.md)
+- [Restricted publishing verification](prs-cloudflare-restricted-publishing.md)
+- [Protected GitHub deployment environment](prs-cloudflare-github-deployment.md)
 
 The Markdown-reader documents describe the implementation in layers: the
 library README covers host use and tests, the architecture guide covers the

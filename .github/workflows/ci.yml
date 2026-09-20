@@ -85,6 +85,9 @@ jobs:
       - name: Check Cloudflare Worker configuration
         run: tools/test-prs-cloudflare-config.sh
 
+      - name: Check Cloudflare deployment credential boundaries
+        run: python3 tools/test-prs-cloudflare-deployment-credentials.py
+
       - name: Test release-aware schema readiness probe
         run: tools/test-prs-cloudflare-readiness.sh
 

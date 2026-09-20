@@ -29,6 +29,7 @@ grep -Fq 'cargo +"${{ steps.build-pins.outputs.rust_toolchain }}" install worker
 grep -Fq 'npm install --global "wrangler@$WRANGLER_VERSION"' "$workflow"
 grep -Fq 'python3 tools/test-prs-cloudflare-local.py' "$workflow"
 grep -Fq 'python3 tools/test-prs-cloudflare-publishing.py' "$workflow"
+grep -Fq 'python3 tools/test-prs-cloudflare-deployment-credentials.py' "$workflow"
 grep -Fq 'cargo +"${{ steps.build-pins.outputs.rust_toolchain }}" install cargo-zigbuild' "$workflow"
 grep -Fq 'tools/prs-t1-agent-build.sh build-and-verify' "$workflow"
 grep -Fq 'version: "${{ steps.build-pins.outputs.zig_version }}"' "$workflow"
