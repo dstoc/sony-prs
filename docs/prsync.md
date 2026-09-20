@@ -835,12 +835,14 @@ Deployment should follow this order:
 1. review each checked-in migration for compatibility with the old Worker;
 2. apply compatible migrations with the operator credential;
 3. verify the complete Wrangler history and database integrity;
-4. publish the Worker with the restricted deployment credential. The publish
-   command uses the existing `DB` and `BUNDLES` bindings and
+4. upload a Worker version with the restricted deployment credential. The
+   version uses the existing `DB` and `BUNDLES` bindings and
    `--no-x-provision`;
-5. inspect `/ready` through the Worker D1 binding and compare its schema
+5. promote that exact version to 100% of traffic. The versioned release path
+   does not deploy routes, custom domains, or triggers;
+6. inspect `/ready` through the Worker D1 binding and compare its schema
    requirement with the release being published;
-6. serve traffic only when the new release reports `ready`.
+7. serve traffic only when the new release reports `ready`.
 
 The readiness endpoint is read-only. It must not use D1 API credentials or run
 migrations. `/health` only confirms that the Worker responds. An old Worker

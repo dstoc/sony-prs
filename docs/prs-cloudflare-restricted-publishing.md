@@ -1,7 +1,7 @@
 # Restricted PRSync publishing verification
 
-This runbook is the manual follow-up for `sony-prs/114`. It verifies that an
-ordinary Worker publish succeeds with a deployment token that has no D1 API
+This runbook is the manual follow-up for `sony-prs/114`. It verifies that a
+versioned Worker publish succeeds with a deployment token that has no D1 API
 permissions. It does not create resources and it does not apply migrations.
 
 Run the local command-contract test before this procedure:
@@ -103,10 +103,16 @@ tools/prs-cloudflare-deploy.sh --production
 
 Expected result:
 
-- The only Wrangler management operation is
-  `wrangler deploy --env production --no-x-provision`.
+- The script derives the version tag from the checked-out commit SHA.
+- The only Wrangler management operations are
+  `wrangler versions upload --env production --tag <commit-sha> --no-x-provision`
+  and
+  `wrangler versions deploy --env production --version-tag <commit-sha>@100% --yes --no-x-provision`.
+- The upload creates a version without changing live traffic.
+- The promotion sends 100% of traffic to that exact uploaded version.
 - The command does not create a D1 database or R2 bucket.
 - The command does not list or apply D1 migrations.
+- The command does not deploy routes, custom domains, or triggers.
 - The post-publish readiness check returns HTTP 200 with `status` `ready` and
   the exact schema requirement from this checkout.
 

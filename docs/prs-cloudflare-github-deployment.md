@@ -88,11 +88,13 @@ Worker, and runs:
 tools/prs-cloudflare-deploy.sh --production
 ```
 
-That command publishes the Worker with the existing D1 and R2 bindings. It
-passes `--no-x-provision` to Wrangler and does not run D1 migrations. The
-command also checks the read-only release-aware `/ready` endpoint. The
-workflow then checks `/health`. A failed build, publish, readiness check, or
-health check fails the deployment job.
+The script derives a tag from the checked-out release commit. It uploads a
+version with the existing D1 and R2 bindings, then promotes that tag to 100%
+of traffic with `--no-x-provision` and no interactive prompt. It does not run
+D1 migrations or deploy routes, custom domains, or triggers. The command also
+checks the read-only release-aware `/ready` endpoint. The workflow then checks
+`/health`. A failed build, upload, promotion, readiness check, or health check
+fails the deployment job.
 
 ## Debug a production deployment
 
@@ -108,7 +110,7 @@ To collect sanitized Wrangler details from a failed production deployment:
 2. Select **Re-run jobs** and enable **Enable debug logging**. Re-run the
    deployment job. Enable debug logging on this production workflow run, not
    only on the upstream `CI` run.
-3. Open the **Deploy existing production bindings and verify schema readiness**
+3. Open the **Upload and promote production version, then verify schema readiness**
    step in the new run.
 4. Review the Wrangler `debug` entries for the request endpoint, HTTP status,
    and sanitized Cloudflare API error. Wrangler omits request headers and
@@ -121,8 +123,9 @@ request reference that identify the failing bindings, routes, or services
 metadata request.
 
 Apply schema migrations separately with the operator procedure before the
-protected deployment. Ordinary publishing must not list, query, or mutate D1
-through Wrangler, and it must not create or replace production resources.
+protected deployment. Version publishing must not list, query, or mutate D1
+through Wrangler, and it must not create or replace production resources. It
+must not deploy routes, custom domains, or triggers.
 
 The first protected deployment and the live token rotation test require
 operator access. Do not record token values in workflow logs, artifacts,

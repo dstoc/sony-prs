@@ -170,7 +170,10 @@ fi
 
 for expected in \
     '--production' \
-    'wrangler deploy --env production --no-x-provision' \
+    'wrangler versions upload' \
+    'wrangler versions deploy' \
+    'release_tag=$(git -C "$repo_root" rev-parse --verify HEAD)' \
+    '--version-tag "${release_tag}@100%"' \
     'token that can publish the Worker only' \
     'D1 or R2 management permission'; do
     if ! grep -Fq -- "$expected" "$deploy"; then
@@ -182,7 +185,7 @@ if grep -Fq 'wrangler d1' "$deploy"; then
     echo "Worker deployment must not run D1 management commands" >&2
     exit 1
 fi
-if grep -Eq '^[[:space:]]*wrangler (r2|d1)|--remote|CLOUDFLARE_API_TOKEN' "$deploy"; then
+if grep -Eq '^[[:space:]]*wrangler (r2|d1)|wrangler deploy|wrangler triggers deploy|--remote|CLOUDFLARE_API_TOKEN' "$deploy"; then
     echo "Worker deployment must not use resource-management commands or operator credentials" >&2
     exit 1
 fi
@@ -207,7 +210,7 @@ deploy_commands = [
     for line in Path(sys.argv[2]).read_text().splitlines()
     if line.strip().startswith("wrangler ")
 ]
-if deploy_commands != ["wrangler deploy --env production --no-x-provision"]:
+if deploy_commands != ["wrangler versions upload \\", "wrangler versions deploy \\"]:
     raise SystemExit(f"restricted deploy must contain only the publish command: {deploy_commands}")
 PY
 

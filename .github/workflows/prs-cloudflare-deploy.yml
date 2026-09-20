@@ -82,7 +82,7 @@ jobs:
         shell: bash
         run: echo 'WRANGLER_LOG=debug' >> "$GITHUB_ENV"
 
-      - name: Deploy existing production bindings and verify schema readiness
+      - name: Upload and promote production version, then verify schema readiness
         env:
           WRANGLER_LOG_SANITIZE: "true"
         run: tools/prs-cloudflare-deploy.sh --production

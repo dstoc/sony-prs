@@ -109,9 +109,19 @@ def logged_commands(log_path: Path) -> list[list[str]]:
     return [json.loads(line) for line in log_path.read_text().splitlines()]
 
 
+def git_commit_sha() -> str:
+    return subprocess.run(
+        ["git", "rev-parse", "--verify", "HEAD"],
+        cwd=REPO_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
 def command_lines(path: Path) -> list[list[str]]:
     return [
-        shlex.split(line.strip())
+        shlex.split(line.strip().removesuffix("\\").rstrip())
         for line in path.read_text(encoding="utf-8").splitlines()
         if line.strip().startswith("wrangler ")
     ]
@@ -141,7 +151,8 @@ def assert_command_contracts() -> None:
     bootstrap = TOOLS / "prs-cloudflare-bootstrap.sh"
 
     assert command_lines(deploy) == [
-        ["wrangler", "deploy", "--env", "production", "--no-x-provision"]
+        ["wrangler", "versions", "upload"],
+        ["wrangler", "versions", "deploy"],
     ]
     assert command_lines(migrate) == [
         [
@@ -185,6 +196,8 @@ def assert_command_contracts() -> None:
     assert "CLOUDFLARE_API_TOKEN" not in deploy_source
     assert "wrangler d1" not in deploy_source
     assert "wrangler r2" not in deploy_source
+    assert "wrangler deploy" not in deploy_source
+    assert "wrangler triggers deploy" not in deploy_source
     assert "--remote" not in deploy_source
     assert "--x-provision" not in deploy_source.replace("--no-x-provision", "")
     assert "operator migration command" in deploy_source
@@ -212,8 +225,27 @@ def assert_fake_wrangler_boundaries() -> None:
             },
         )
         assert deploy_result.returncode == 0, deploy_result.stderr
+        release_tag = git_commit_sha()
         assert logged_commands(log_path) == [
-            ["deploy", "--env", "production", "--no-x-provision"]
+            [
+                "versions",
+                "upload",
+                "--env",
+                "production",
+                "--tag",
+                release_tag,
+                "--no-x-provision",
+            ],
+            [
+                "versions",
+                "deploy",
+                "--env",
+                "production",
+                "--version-tag",
+                f"{release_tag}@100%",
+                "--yes",
+                "--no-x-provision",
+            ],
         ]
 
         missing_url = run_script(
@@ -309,6 +341,8 @@ def assert_runbook_is_reproducible() -> None:
         "export PRS_READER_URL='https://reader.example.com'",
         "tools/prs-cloudflare-deploy.sh --production",
         "tools/prs-cloudflare-readiness.sh https://reader.example.com",
+        "wrangler versions upload --env production --tag <commit-sha> --no-x-provision",
+        "wrangler versions deploy --env production --version-tag <commit-sha>@100% --yes --no-x-provision",
         "no D1 API",
         "Workers Scripts",
         "binding",
@@ -342,7 +376,8 @@ def assert_deployment_debug_contract() -> None:
     workflow = DEPLOYMENT_WORKFLOW.read_text(encoding="utf-8")
     debug_step = workflow_step(workflow, "Enable sanitized Wrangler debug logging")
     deploy_step = workflow_step(
-        workflow, "Deploy existing production bindings and verify schema readiness"
+        workflow,
+        "Upload and promote production version, then verify schema readiness",
     )
 
     assert "if: ${{ runner.debug == '1' }}" in debug_step
@@ -376,6 +411,7 @@ def assert_deployment_workflow_contract() -> None:
         "worker-build --release",
         "tools/prs-cloudflare-deploy.sh --production",
         '"${PRS_READER_URL%/}/health"',
+        "Upload and promote production version, then verify schema readiness",
     )
     for required in required_phrases:
         assert required in workflow, f"deployment workflow is missing: {required}"
@@ -384,6 +420,8 @@ def assert_deployment_workflow_contract() -> None:
     assert "wrangler d1" not in workflow
     assert "wrangler r2" not in workflow
     assert "migrations apply" not in workflow
+    assert "wrangler deploy" not in workflow
+    assert "wrangler triggers deploy" not in workflow
     assert "--x-provision" not in workflow
 
 

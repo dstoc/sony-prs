@@ -3,7 +3,7 @@ set -euo pipefail
 
 if [[ "${1:-}" != "--production" || "$#" -ne 1 ]]; then
     cat >&2 <<'USAGE'
-Deploy the existing production PRSync resources.
+Upload and promote the production PRSync Worker version.
 
 This command only publishes the Worker. It never applies migrations and never
 creates a D1 database or R2 bucket. Use the operator migration command and
@@ -38,6 +38,16 @@ if [[ -z "${PRS_READER_URL:-}" ]]; then
     exit 2
 fi
 
+release_tag=$(git -C "$repo_root" rev-parse --verify HEAD)
+
 cd "$worker_dir"
-wrangler deploy --env production --no-x-provision
+wrangler versions upload \
+    --env production \
+    --tag "$release_tag" \
+    --no-x-provision
+wrangler versions deploy \
+    --env production \
+    --version-tag "${release_tag}@100%" \
+    --yes \
+    --no-x-provision
 "$repo_root/tools/prs-cloudflare-readiness.sh" "$PRS_READER_URL"
