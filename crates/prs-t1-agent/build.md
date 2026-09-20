@@ -225,4 +225,6 @@ adb shell chmod 755 /data/local/tmp/prs-t1-wifi-helper
 The helper accepts only `load-driver`, `unload-driver`, `start-supplicant`,
 and `stop-supplicant`. It does not receive a configuration path or any Wi-Fi
 credential. `wifi-up` polls the supplicant control socket for `wpa_state` and
-reads only the `dhcp.wlan0.result` property after starting `dhcpcd`.
+reads only the `dhcp.wlan0.result` property after starting `dhcpcd`. Shutdown
+waits up to 10 seconds for `init.svc.dhcpcd` to report `stopped` or disappear
+before it stops the supplicant and unloads the driver.

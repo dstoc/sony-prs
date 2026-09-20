@@ -17,12 +17,35 @@ done
 grep -Fq 'dlopen("/system/lib/libhardware_legacy.so", 2)' "$helper_source"
 grep -Fq -- '-Wl,--dynamic-linker,/system/bin/linker' "$helper_build"
 grep -Fq -- '-Wl,--allow-shlib-undefined' "$helper_build"
-grep -Fq 'set_property("ctl.stop", "dhcpcd")' "$wifi_source"
+grep -Fq 'set_property("ctl.stop", DHCP_SERVICE)' "$wifi_source"
+grep -Fq 'const DHCP_SERVICE_STATE_PROPERTY: &str = "init.svc.dhcpcd"' "$wifi_source"
+grep -Fq 'const DHCP_STOP_TIMEOUT: Duration = Duration::from_secs(10)' "$wifi_source"
+grep -Fq 'wait_for_dhcp_service_stop()' "$wifi_source"
+grep -Fq 'dhcp_service_is_stopped' "$wifi_source"
 grep -Fq 'run_helper("stop-supplicant")' "$wifi_source"
 grep -Fq 'run_helper("unload-driver")' "$wifi_source"
 grep -Fq 'ASSOCIATION_TIMEOUT: Duration = Duration::from_secs(60)' "$wifi_source"
 grep -Fq 'DHCP_TIMEOUT: Duration = Duration::from_secs(30)' "$wifi_source"
 grep -Fq 'strip_prefix("wpa_state=")' "$wifi_source"
 grep -Fq 'dhcp.wlan0.result' "$wifi_source"
+
+python3 - "$wifi_source" <<'PY'
+from pathlib import Path
+import sys
+
+source = Path(sys.argv[1]).read_text()
+shutdown = source[source.index("fn shutdown()"):source.index("fn stop_dhcp()")]
+stop_dhcp = source[source.index("fn stop_dhcp()"):source.index("fn wait_for_dhcp_service_stop()")]
+
+assert shutdown.index("let dhcp_result = stop_dhcp();") < shutdown.index(
+    'run_helper("stop-supplicant")'
+)
+assert shutdown.index('run_helper("stop-supplicant")') < shutdown.index(
+    'run_helper("unload-driver")'
+)
+assert stop_dhcp.index('set_property("ctl.stop", DHCP_SERVICE)') < stop_dhcp.index(
+    "wait_for_dhcp_service_stop()"
+)
+PY
 
 echo 'PRS-T1 Wi-Fi shim and lifecycle contract checks passed'

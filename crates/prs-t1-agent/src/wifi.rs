@@ -14,8 +14,11 @@ pub const WIFI_HELPER: &str = "/data/local/tmp/prs-t1-wifi-helper";
 const WIFI_INTERFACE: &str = "wlan0";
 const WPA_CONTROL_SOCKET: &str = "/data/misc/wifi/sockets/wpa_ctrl_";
 const WPA_CLIENT_SOCKET: &str = "/data/local/tmp/prs-t1-wpa";
+const DHCP_SERVICE: &str = "dhcpcd";
+const DHCP_SERVICE_STATE_PROPERTY: &str = "init.svc.dhcpcd";
 const ASSOCIATION_TIMEOUT: Duration = Duration::from_secs(60);
 const DHCP_TIMEOUT: Duration = Duration::from_secs(30);
+const DHCP_STOP_TIMEOUT: Duration = Duration::from_secs(10);
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
 const WPA_READ_TIMEOUT: Duration = Duration::from_secs(2);
 pub(crate) const STATUS_WPA_READ_TIMEOUT: Duration = Duration::from_millis(100);
@@ -82,6 +85,10 @@ fn run_up() -> io::Result<()> {
 fn run_down() -> io::Result<()> {
     print_operation("down");
     print_snapshot("before");
+    println!(
+        "wifi.dhcp_stop_timeout_seconds={}",
+        DHCP_STOP_TIMEOUT.as_secs()
+    );
     let result = shutdown();
     print_snapshot("after");
     match result {
@@ -147,6 +154,10 @@ fn print_timeouts() {
         ASSOCIATION_TIMEOUT.as_secs()
     );
     println!("wifi.dhcp_timeout_seconds={}", DHCP_TIMEOUT.as_secs());
+    println!(
+        "wifi.dhcp_stop_timeout_seconds={}",
+        DHCP_STOP_TIMEOUT.as_secs()
+    );
 }
 
 fn bring_up() -> Result<(), WifiFailure> {
@@ -162,7 +173,7 @@ fn bring_up() -> Result<(), WifiFailure> {
     println!("wifi.stage=associated");
 
     println!("wifi.stage=start_dhcp");
-    set_property("ctl.start", "dhcpcd")?;
+    set_property("ctl.start", DHCP_SERVICE)?;
     println!("wifi.stage=dhcp_started");
 
     wait_for_dhcp()?;
@@ -185,7 +196,7 @@ fn finish_failed_startup(error: WifiFailure) -> io::Result<()> {
 
 fn shutdown() -> Result<(), WifiFailure> {
     println!("wifi.stage=stop_dhcp");
-    let dhcp_result = set_property("ctl.stop", "dhcpcd");
+    let dhcp_result = stop_dhcp();
     print_shutdown_step("stop_dhcp", &dhcp_result);
 
     println!("wifi.stage=stop_supplicant");
@@ -211,6 +222,75 @@ fn shutdown() -> Result<(), WifiFailure> {
     } else {
         Err(WifiFailure::new("shutdown", failures.join("; ")))
     }
+}
+
+fn stop_dhcp() -> Result<(), WifiFailure> {
+    let stop_result = set_property("ctl.stop", DHCP_SERVICE);
+    let wait_result = wait_for_dhcp_service_stop();
+
+    match (stop_result, wait_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(stop_error), Ok(())) => Err(stop_error),
+        (Ok(()), Err(wait_error)) => Err(wait_error),
+        (Err(stop_error), Err(wait_error)) => Err(WifiFailure::new(
+            "dhcp_stop",
+            format!("{stop_error}; {wait_error}"),
+        )),
+    }
+}
+
+fn wait_for_dhcp_service_stop() -> Result<(), WifiFailure> {
+    let deadline = Instant::now() + DHCP_STOP_TIMEOUT;
+    let mut last_state = None;
+
+    loop {
+        match read_property(DHCP_SERVICE_STATE_PROPERTY) {
+            Ok(state) if dhcp_service_is_stopped(&state) => {
+                println!(
+                    "wifi.dhcp_service_state={}",
+                    if state.is_empty() {
+                        "absent"
+                    } else {
+                        "stopped"
+                    }
+                );
+                return Ok(());
+            }
+            Ok(state) => {
+                if last_state.as_deref() != Some(state.as_str()) {
+                    println!("wifi.dhcp_service_state={state}");
+                    last_state = Some(state);
+                }
+            }
+            Err(error) => {
+                if last_state.is_some() {
+                    println!("wifi.dhcp_service_state=unknown");
+                    last_state = None;
+                }
+                if Instant::now() >= deadline {
+                    return Err(WifiFailure::new(
+                        "dhcp_stop_timeout",
+                        format!("could not read {DHCP_SERVICE_STATE_PROPERTY}: {error}"),
+                    ));
+                }
+            }
+        }
+
+        if Instant::now() >= deadline {
+            return Err(WifiFailure::new(
+                "dhcp_stop_timeout",
+                format!(
+                    "{DHCP_SERVICE_STATE_PROPERTY} did not become stopped or absent (last={})",
+                    last_state.as_deref().unwrap_or("unknown")
+                ),
+            ));
+        }
+        thread::sleep(POLL_INTERVAL);
+    }
+}
+
+fn dhcp_service_is_stopped(state: &str) -> bool {
+    state.is_empty() || state == "stopped"
 }
 
 fn wait_for_association() -> Result<(), WifiFailure> {
@@ -432,7 +512,7 @@ fn reject_arguments(args: &[String], message: &str) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_wpa_state;
+    use super::{dhcp_service_is_stopped, parse_wpa_state};
 
     #[test]
     fn parses_only_the_wpa_state_field() {
@@ -444,5 +524,17 @@ mod tests {
     fn reports_missing_wpa_state_without_exposing_other_fields() {
         let response = "ssid=private-network\nkey_mgmt=WPA-PSK\n";
         assert_eq!(parse_wpa_state(response), None);
+    }
+
+    #[test]
+    fn treats_stopped_or_absent_dhcp_service_as_off() {
+        assert!(dhcp_service_is_stopped("stopped"));
+        assert!(dhcp_service_is_stopped(""));
+    }
+
+    #[test]
+    fn waits_for_active_dhcp_service_states() {
+        assert!(!dhcp_service_is_stopped("running"));
+        assert!(!dhcp_service_is_stopped("stopping"));
     }
 }

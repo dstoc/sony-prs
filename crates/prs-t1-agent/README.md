@@ -73,7 +73,7 @@ different device.
 | `capture [FRAMEBUFFER]` | Read-only | Maps the visible RGB565 framebuffer with read access and emits an 8-bit grayscale PGM to stdout. |
 | `network-probe HOSTNAME_OR_HTTPS_URL [--invalid-hostname]` | Read-only | Resolves the supplied host and performs a bounded HTTPS `GET /health` with rustls certificate and hostname validation. The optional negative test must fail hostname validation. |
 | `wifi-up` | Controls Wi-Fi | Loads the legacy driver, starts the supplicant, waits for WPA `COMPLETED`, starts DHCP, and waits for `dhcp.wlan0.result=BOUND`. |
-| `wifi-down` | Controls Wi-Fi | Stops `dhcpcd`, stops the supplicant, and unloads the Wi-Fi driver in that order. |
+| `wifi-down` | Controls Wi-Fi | Stops `dhcpcd`, waits up to 10 seconds for its service to stop or disappear, then stops the supplicant and unloads the Wi-Fi driver. |
 | `wifi-probe HOSTNAME_OR_HTTPS_URL [--invalid-hostname]` | Controls Wi-Fi and network | Runs `wifi-up`, runs the HTTPS network probe, and always attempts `wifi-down`. |
 | `render-test [FRAMEBUFFER] [SECONDS] [WAVEFORM] [WAIT\|NOWAIT]` | Writes framebuffer | Draws a centered 200x120 RGB565 marker, requests a bounded EPDC update, captures the mapping, waits, and restores the original rectangle. Defaults to 3 seconds, `GC16`, and `WAIT`. |
 | `display-test [FRAMEBUFFER] [SECONDS] [WAVEFORM]` | Writes framebuffer | Draws a full-screen grayscale calibration pattern with fill/text swatches, gradients, a grayscale ramp, and 1-, 2-, 4-, and 8-pixel lines. Defaults to 60 seconds and `GC16`; it leaves the pattern visible and does not restore the previous framebuffer. |
@@ -135,8 +135,9 @@ persist Wi-Fi credentials. They require the separately built
 `BOUND`. During startup it prints each lifecycle stage, the WPA association
 state, the DHCP result, and the explicit 60-second association and 30-second
 DHCP limits. `wifi-down` is explicit and runs the required shutdown sequence:
-stop `dhcpcd`, stop the supplicant, then unload the driver. It attempts all
-three steps even when one step fails.
+stop `dhcpcd`, wait for the service to report `stopped` or disappear, stop the
+supplicant, then unload the driver. The wait is bounded at 10 seconds. The
+command attempts all three cleanup steps even when one step fails.
 
 Use `wifi-probe` for the complete physical sequence. It brings Wi-Fi up,
 performs the existing HTTPS `/health` probe, and shuts Wi-Fi down after both
