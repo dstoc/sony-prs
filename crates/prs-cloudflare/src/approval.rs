@@ -14,7 +14,7 @@ use worker::{Env, Request, Response, Result};
 
 const APPROVAL_BASE_URL_ENV: &str = "PRS_APPROVAL_BASE_URL";
 const CSRF_SECRET_ENV: &str = "PRS_CSRF_SECRET";
-const DEFAULT_APPROVAL_BASE_URL: &str = "https://reader.example.com";
+const DEFAULT_APPROVAL_BASE_URL: &str = "https://prs-reader.dstoc.workers.dev";
 const LOCAL_ENVIRONMENT: &str = "local";
 const CSRF_FIELD: &str = "csrf_token";
 const CSRF_TOKEN_VERSION: &str = "v1";
@@ -595,14 +595,14 @@ mod tests {
     #[test]
     fn approval_routes_accept_only_the_configured_human_host() {
         assert!(approval_host_matches(
-            "https://reader.example.com",
-            Some("reader.example.com"),
+            "https://prs-reader.dstoc.workers.dev",
+            Some("prs-reader.dstoc.workers.dev"),
             "production",
         )
         .unwrap());
         assert!(!approval_host_matches(
-            "https://reader.example.com",
-            Some("prs-reader.example.workers.dev"),
+            "https://prs-reader.dstoc.workers.dev",
+            Some("reader.example.com"),
             "production",
         )
         .unwrap());

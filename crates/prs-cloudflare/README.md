@@ -23,6 +23,11 @@ The production D1 ID and bucket name are fixed in the checked-in
 configuration. The Worker deploy configuration references these resources; it
 does not create them.
 
+The production Worker uses `https://prs-reader.dstoc.workers.dev` for both its
+public protocol endpoint and `PRS_APPROVAL_BASE_URL`. Cloudflare Access must
+protect only the `/a/*` approval routes on that hostname. Keep `/health`,
+`/ready`, and `/api/v1/*` outside interactive Access.
+
 ## Local development
 
 Install the pinned `wrangler` and `worker-build` versions in the development
@@ -133,14 +138,16 @@ binding-authority checks, is in
 [`docs/prs-cloudflare-restricted-publishing.md`](../../docs/prs-cloudflare-restricted-publishing.md).
 
 Before the production Worker can serve approval requests, configure
-`PRS_APPROVAL_BASE_URL` with the HTTPS base URL for the human approval
-application. Protect that hostname with a Cloudflare Access application whose
-policy allows only the human owner. The Worker checks `ctx.access` and accepts
-approval requests only when the request hostname matches the hostname in
-`PRS_APPROVAL_BASE_URL`. Configure a secret named `PRS_CSRF_SECRET` with at
-least 32 bytes. For example, run `wrangler secret put PRS_CSRF_SECRET
---env production`. Keep the public protocol routes on their public hostname;
-those routes use PRSync bearer capabilities and do not require an interactive
+`PRS_APPROVAL_BASE_URL` as `https://prs-reader.dstoc.workers.dev`. The
+production configuration must not use an example or placeholder hostname.
+Protect only the `/a/*` routes on this hostname with a Cloudflare Access
+application whose policy allows the human owner. The Worker checks `ctx.access`
+and accepts approval requests only when the request hostname matches the
+hostname in `PRS_APPROVAL_BASE_URL`. Configure a secret named
+`PRS_CSRF_SECRET` with at least 32 bytes. For example, run
+`wrangler secret put PRS_CSRF_SECRET --env production`. Keep `/health`,
+`/ready`, and `/api/v1/*` outside interactive Access. Those routes use PRSync
+bearer capabilities or readiness checks and do not require an interactive
 Access login.
 
 ## Schema

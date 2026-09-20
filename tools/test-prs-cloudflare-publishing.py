@@ -238,6 +238,12 @@ def assert_production_topology() -> None:
     production = config["env"]["production"]
     assert production["name"] == "prs-reader"
     assert production["workers_dev"] is True
+    production_vars = production["vars"]
+    assert production_vars["PRS_ENVIRONMENT"] == "production"
+    assert production_vars["PRS_APPROVAL_BASE_URL"] == (
+        "https://prs-reader.dstoc.workers.dev"
+    )
+    assert "reader.example.com" not in production_vars["PRS_APPROVAL_BASE_URL"]
     for routing_key in ("route", "routes", "custom_domains"):
         assert routing_key not in production, (
             f"production topology must not configure {routing_key}"
@@ -260,7 +266,7 @@ def assert_fake_wrangler_boundaries() -> None:
             fake_bin,
             log_path,
             extra_environment={
-                "PRS_READER_URL": "https://reader.example.com",
+                "PRS_READER_URL": "https://prs-reader.dstoc.workers.dev",
                 "CLOUDFLARE_API_TOKEN": "test-only-placeholder",
             },
         )
@@ -298,7 +304,7 @@ def assert_fake_wrangler_boundaries() -> None:
             log_path,
             extra_environment={
                 "FAIL_FIRST_PROMOTION": "1",
-                "PRS_READER_URL": "https://reader.example.com",
+                "PRS_READER_URL": "https://prs-reader.dstoc.workers.dev",
                 "WRANGLER_STATE": str(retry_state),
             },
         )
@@ -334,7 +340,7 @@ def assert_fake_wrangler_boundaries() -> None:
             log_path,
             extra_environment={
                 "FAIL_FIRST_PROMOTION": "1",
-                "PRS_READER_URL": "https://reader.example.com",
+                "PRS_READER_URL": "https://prs-reader.dstoc.workers.dev",
                 "WRANGLER_STATE": str(retry_state),
             },
         )
@@ -380,7 +386,7 @@ def assert_fake_wrangler_boundaries() -> None:
             log_path,
             extra_environment={
                 "FAKE_WRANGLER_VERSION": "4.134.0",
-                "PRS_READER_URL": "https://reader.example.com",
+                "PRS_READER_URL": "https://prs-reader.dstoc.workers.dev",
             },
         )
         assert wrong_wrangler.returncode != 0

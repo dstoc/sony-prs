@@ -5,9 +5,11 @@ versioned Worker publish succeeds with a deployment token that has no D1 or R2
 management permissions. It does not create resources and it does not apply
 migrations.
 
-The production machine endpoint is
-`https://prs-reader.dstoc.workers.dev`. The human approval hostname configured
-by `PRS_APPROVAL_BASE_URL` is a separate concern.
+The production Worker uses one hostname:
+`https://prs-reader.dstoc.workers.dev`. The production value of
+`PRS_APPROVAL_BASE_URL` is this same URL. Cloudflare Access protects only the
+`/a/*` approval routes on this hostname. `/health`, `/ready`, and `/api/v1/*`
+remain outside interactive Access.
 
 ## Cloudflare guidance and production topology
 
@@ -25,6 +27,7 @@ The production environment in
 
 - Worker name: `prs-reader`.
 - Endpoint: `https://prs-reader.dstoc.workers.dev`.
+- Approval base URL: `https://prs-reader.dstoc.workers.dev`.
 - `workers_dev = true`.
 - No `route`, `routes`, or Custom Domain configuration.
 - Existing hourly Cron Trigger: `0 * * * *`.

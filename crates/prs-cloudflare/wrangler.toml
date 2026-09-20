@@ -41,7 +41,7 @@ workers_dev = true
 
 [env.production.vars]
 PRS_ENVIRONMENT = "production"
-PRS_APPROVAL_BASE_URL = "https://reader.example.com"
+PRS_APPROVAL_BASE_URL = "https://prs-reader.dstoc.workers.dev"
 
 [[env.production.d1_databases]]
 binding = "DB"

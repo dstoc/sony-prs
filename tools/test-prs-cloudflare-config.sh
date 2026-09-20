@@ -49,6 +49,15 @@ if production.get("name") != "prs-reader":
     raise SystemExit("production must deploy the existing prs-reader Worker")
 if production.get("workers_dev") is not True:
     raise SystemExit("production must keep the prs-reader workers.dev endpoint enabled")
+production_vars = production.get("vars", {})
+if production_vars.get("PRS_ENVIRONMENT") != "production":
+    raise SystemExit("production must set PRS_ENVIRONMENT to production")
+if production_vars.get("PRS_APPROVAL_BASE_URL") != "https://prs-reader.dstoc.workers.dev":
+    raise SystemExit(
+        "production approval URLs must use https://prs-reader.dstoc.workers.dev"
+    )
+if "reader.example.com" in production_vars.get("PRS_APPROVAL_BASE_URL", ""):
+    raise SystemExit("production approval URLs must not use the example hostname")
 for routing_key in ("route", "routes", "custom_domains"):
     if routing_key in production:
         raise SystemExit(f"production must not configure {routing_key}")

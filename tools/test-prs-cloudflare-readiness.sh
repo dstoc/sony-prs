@@ -46,7 +46,7 @@ ready_response=$(cat <<'JSON'
 JSON
 )
 if ! PATH="$test_dir/bin:$PATH" FAKE_READINESS_BODY="$ready_response" \
-    "$readiness" https://reader.example.com >"$test_dir/ready.out"; then
+    "$readiness" https://prs-reader.dstoc.workers.dev >"$test_dir/ready.out"; then
     echo "the readiness probe rejected the current release requirement" >&2
     exit 1
 fi
@@ -56,7 +56,7 @@ old_response=$(cat <<'JSON'
 JSON
 )
 if PATH="$test_dir/bin:$PATH" FAKE_READINESS_BODY="$old_response" \
-    "$readiness" https://reader.example.com >"$test_dir/old.out" 2>"$test_dir/old.err"; then
+    "$readiness" https://prs-reader.dstoc.workers.dev >"$test_dir/old.out" 2>"$test_dir/old.err"; then
     echo "the readiness probe accepted an older Worker response" >&2
     exit 1
 fi

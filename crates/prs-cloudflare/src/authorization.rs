@@ -46,7 +46,7 @@ pub struct AuthorizationConfig {
 impl Default for AuthorizationConfig {
     fn default() -> Self {
         Self {
-            approval_base_url: "https://reader.example.com".to_owned(),
+            approval_base_url: "https://prs-reader.dstoc.workers.dev".to_owned(),
             request_ttl_seconds: DEFAULT_REQUEST_TTL_SECONDS,
             reader_session_ttl_seconds: DEFAULT_READER_SESSION_TTL_SECONDS,
             retry_after_seconds: DEFAULT_RETRY_AFTER_SECONDS,
@@ -1267,7 +1267,7 @@ mod tests {
     fn approval_url_contains_only_the_public_request_identifier() {
         let config = AuthorizationConfig::default();
         let url = config.approval_url(&request_id());
-        assert_eq!(url, "https://reader.example.com/a/auth-test");
+        assert_eq!(url, "https://prs-reader.dstoc.workers.dev/a/auth-test");
         assert!(!url.contains("polling"));
         assert!(!url.contains("secret"));
     }

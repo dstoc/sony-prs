@@ -81,6 +81,9 @@ The job uses the protected `production` environment and its two Cloudflare
 secrets. Configure `PRS_READER_URL` as a non-secret variable in that
 environment. Set it to `https://prs-reader.dstoc.workers.dev`, the
 `workers.dev` endpoint configured for the production `prs-reader` Worker.
+The checked-in production Worker configuration uses this same URL for
+`PRS_APPROVAL_BASE_URL`. Access protects only the `/a/*` approval routes;
+`/health`, `/ready`, and `/api/v1/*` remain outside interactive Access.
 
 The job installs the pinned `worker-build` and Wrangler versions, builds the
 Worker, and runs:
