@@ -1,0 +1,12 @@
+name: Pull request target deployment workflow
+
+on:
+  pull_request_target:
+
+jobs:
+  deploy:
+    environment: production
+    env:
+      ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+    runs-on: ubuntu-24.04
