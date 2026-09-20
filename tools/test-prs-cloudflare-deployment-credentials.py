@@ -156,6 +156,18 @@ def workflow_has_pull_request_trigger(source: str) -> bool:
     return False
 
 
+def workflow_has_main_deployment_trigger(source: str) -> bool:
+    """Return whether deployment can start from a protected main revision."""
+
+    if re.search(r"^  push:\s*$", source, re.MULTILINE) and re.search(
+        r"^      - main\s*$", source, re.MULTILINE
+    ):
+        return True
+    return re.search(r"^  workflow_run:\s*$", source, re.MULTILINE) is not None and re.search(
+        r"^      - main\s*$", source, re.MULTILINE
+    ) is not None
+
+
 def job_for_line(
     job_spans: dict[str, tuple[int, int]], line_number: int
 ) -> str | None:
@@ -214,13 +226,10 @@ def assert_workflow_boundary(
             f"{workflow_path}:{protected_job}"
         )
 
-    if not re.search(r"^\s{2}push:\s*$", source, re.MULTILINE):
+    if not workflow_has_main_deployment_trigger(source):
         raise AssertionError(
-            f"production Cloudflare secret workflow must run from a push: {workflow_path}"
-        )
-    if not re.search(r"^\s{6}- main\s*$", source, re.MULTILINE):
-        raise AssertionError(
-            f"production Cloudflare secret workflow must be limited to main: {workflow_path}"
+            "production Cloudflare secret workflow must run from a push to main "
+            f"or a completed workflow run on main: {workflow_path}"
         )
 
     referenced_secrets = {name for _, name, _ in secret_references}

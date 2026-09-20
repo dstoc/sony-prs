@@ -1,0 +1,86 @@
+name: PRSync Cloudflare production deployment
+
+on:
+  workflow_run:
+    workflows:
+      - CI
+    types:
+      - completed
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: prs-cloudflare-production
+  cancel-in-progress: false
+
+env:
+  WORKER_BUILD_VERSION: "0.8.6"
+  WRANGLER_VERSION: "4.131.1"
+
+jobs:
+  deploy:
+    name: Build and deploy production Worker
+    if: >-
+      ${{ github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository }}
+    runs-on: ubuntu-24.04
+    environment:
+      name: production
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      PRS_READER_URL: ${{ vars.PRS_READER_URL }}
+    steps:
+      - name: Check out the tested main commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Read production build pins
+        id: build-pins
+        shell: bash
+        run: tools/prs-t1-agent-build.sh print-github-actions >> "$GITHUB_OUTPUT"
+
+      - name: Install the pinned Rust toolchain
+        run: |
+          rustup toolchain install "${{ steps.build-pins.outputs.rust_toolchain }}" \
+            --profile minimal \
+            --target wasm32-unknown-unknown \
+            --no-self-update
+          rustup run "${{ steps.build-pins.outputs.rust_toolchain }}" rustc --version
+          rustup run "${{ steps.build-pins.outputs.rust_toolchain }}" cargo --version
+
+      - name: Cache Worker Rust dependencies
+        uses: Swatinem/rust-cache@63fed3e2fecf6f7b51dc6f043341b79ef82a9ae7 # v2.9.2
+        with:
+          shared-key: prs-cloudflare-production
+          add-job-id-key: false
+          key: >-
+            cloudflare-rust-${{ steps.build-pins.outputs.rust_toolchain }}-
+            manifests-${{ hashFiles('**/Cargo.toml', '**/Cargo.lock') }}
+          cache-targets: true
+          cache-all-crates: true
+          cache-bin: true
+
+      - name: Install pinned worker-build
+        run: cargo +"${{ steps.build-pins.outputs.rust_toolchain }}" install worker-build --version "$WORKER_BUILD_VERSION" --locked
+
+      - name: Install pinned Wrangler
+        run: npm install --global "wrangler@$WRANGLER_VERSION"
+
+      - name: Build the production Worker
+        working-directory: crates/prs-cloudflare
+        run: worker-build --release
+
+      - name: Deploy existing production bindings and verify schema readiness
+        run: tools/prs-cloudflare-deploy.sh --production
+
+      - name: Verify deployed Worker health
+        run: |
+          curl --fail-with-body --silent --show-error --max-time 10 \
+            "${PRS_READER_URL%/}/health"

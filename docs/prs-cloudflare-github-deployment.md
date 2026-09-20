@@ -70,6 +70,34 @@ in a shell command, repository file, issue comment, or build artifact. Use the
 restricted publishing runbook for direct D1/R2 management-denial checks and
 binding-authority verification.
 
-The first protected deployment and the live token rotation test require the
-production workflow and operator access. The deployment workflow is tracked
-separately in `sony-prs/94`.
+## Production deployment workflow
+
+The production workflow is `.github/workflows/prs-cloudflare-deploy.yml`.
+It listens for a completed `CI` workflow run on `main`. The deployment job
+starts only when that run succeeds, represents a push to `main`, and belongs to
+this repository. It checks out the exact commit tested by that run.
+
+The job uses the protected `production` environment and its two Cloudflare
+secrets. Configure `PRS_READER_URL` as a non-secret variable in that
+environment. The URL must point to the deployed Worker.
+
+The job installs the pinned `worker-build` and Wrangler versions, builds the
+Worker, and runs:
+
+```sh
+tools/prs-cloudflare-deploy.sh --production
+```
+
+That command publishes the Worker with the existing D1 and R2 bindings. It
+passes `--no-x-provision` to Wrangler and does not run D1 migrations. The
+command also checks the read-only release-aware `/ready` endpoint. The
+workflow then checks `/health`. A failed build, publish, readiness check, or
+health check fails the deployment job.
+
+Apply schema migrations separately with the operator procedure before the
+protected deployment. Ordinary publishing must not list, query, or mutate D1
+through Wrangler, and it must not create or replace production resources.
+
+The first protected deployment and the live token rotation test require
+operator access. Do not record token values in workflow logs, artifacts,
+summaries, comments, or repository files.

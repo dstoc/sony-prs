@@ -17,6 +17,9 @@ TOOLS = REPO_ROOT / "tools"
 WORKER_SOURCE = REPO_ROOT / "crates" / "prs-cloudflare" / "src" / "api.rs"
 SCHEMA_SOURCE = REPO_ROOT / "crates" / "prs-cloudflare" / "src" / "schema.rs"
 RUNBOOK = REPO_ROOT / "docs" / "prs-cloudflare-restricted-publishing.md"
+DEPLOYMENT_WORKFLOW = (
+    REPO_ROOT / ".github" / "workflows" / "prs-cloudflare-deploy.yml"
+)
 
 
 FAKE_WRANGLER = r'''#!/usr/bin/env python3
@@ -325,12 +328,45 @@ def assert_ci_invokes_contract_test() -> None:
     assert "python3 tools/test-prs-cloudflare-publishing.py" in workflow
 
 
+def assert_deployment_workflow_contract() -> None:
+    workflow = DEPLOYMENT_WORKFLOW.read_text(encoding="utf-8")
+    required_phrases = (
+        "workflow_run:",
+        "- CI",
+        "- completed",
+        "github.event.workflow_run.conclusion == 'success'",
+        "github.event.workflow_run.event == 'push'",
+        "github.event.workflow_run.head_branch == 'main'",
+        "github.event.workflow_run.head_repository.full_name == github.repository",
+        "ref: ${{ github.event.workflow_run.head_sha }}",
+        "environment:",
+        "name: production",
+        "CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}",
+        "CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}",
+        "PRS_READER_URL: ${{ vars.PRS_READER_URL }}",
+        "cargo +\"${{ steps.build-pins.outputs.rust_toolchain }}\" install worker-build --version \"$WORKER_BUILD_VERSION\" --locked",
+        'npm install --global "wrangler@$WRANGLER_VERSION"',
+        "worker-build --release",
+        "tools/prs-cloudflare-deploy.sh --production",
+        '"${PRS_READER_URL%/}/health"',
+    )
+    for required in required_phrases:
+        assert required in workflow, f"deployment workflow is missing: {required}"
+
+    assert "pull_request" not in workflow
+    assert "wrangler d1" not in workflow
+    assert "wrangler r2" not in workflow
+    assert "migrations apply" not in workflow
+    assert "--x-provision" not in workflow
+
+
 def main() -> None:
     assert_command_contracts()
     assert_fake_wrangler_boundaries()
     assert_request_paths_are_migration_free()
     assert_runbook_is_reproducible()
     assert_ci_invokes_contract_test()
+    assert_deployment_workflow_contract()
     print("prs-cloudflare publishing contract checks passed")
 
 
