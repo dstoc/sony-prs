@@ -72,13 +72,16 @@ different device.
 | `events [EVENT_DEVICE] [SECONDS]` | Read-only | Logs a finite raw evdev stream. It defaults to `/dev/input/event1` for 10 seconds and never calls `EVIOCGRAB`. |
 | `capture [FRAMEBUFFER]` | Read-only | Maps the visible RGB565 framebuffer with read access and emits an 8-bit grayscale PGM to stdout. |
 | `network-probe HOSTNAME_OR_HTTPS_URL [--invalid-hostname]` | Read-only | Resolves the supplied host and performs a bounded HTTPS `GET /health` with rustls certificate and hostname validation. The optional negative test must fail hostname validation. |
+| `wifi-up` | Controls Wi-Fi | Loads the legacy driver, starts the supplicant, waits for WPA `COMPLETED`, starts DHCP, and waits for `dhcp.wlan0.result=BOUND`. |
+| `wifi-down` | Controls Wi-Fi | Stops `dhcpcd`, stops the supplicant, and unloads the Wi-Fi driver in that order. |
+| `wifi-probe HOSTNAME_OR_HTTPS_URL [--invalid-hostname]` | Controls Wi-Fi and network | Runs `wifi-up`, runs the HTTPS network probe, and always attempts `wifi-down`. |
 | `render-test [FRAMEBUFFER] [SECONDS] [WAVEFORM] [WAIT\|NOWAIT]` | Writes framebuffer | Draws a centered 200x120 RGB565 marker, requests a bounded EPDC update, captures the mapping, waits, and restores the original rectangle. Defaults to 3 seconds, `GC16`, and `WAIT`. |
 | `display-test [FRAMEBUFFER] [SECONDS] [WAVEFORM]` | Writes framebuffer | Draws a full-screen grayscale calibration pattern with fill/text swatches, gradients, a grayscale ramp, and 1-, 2-, 4-, and 8-pixel lines. Defaults to 60 seconds and `GC16`; it leaves the pattern visible and does not restore the previous framebuffer. |
 | `standalone-test [FRAMEBUFFER] [standby\|mem]` | Owns framebuffer/input | Runs the long-lived native shell after `zygote` and `system_server` have stopped. The default suspend mode is T1 EINK `standby`. |
 | `launch-standalone [FRAMEBUFFER] [standby\|mem]` | Stops Android framework | Root `su` entry point. It detaches into a new session, stops zygote, waits for the framework to exit, and enters `standalone-test`. |
 
-Only `render-test`, `display-test`, `standalone-test`, and `launch-standalone`
-mutate device state. `render-test` is bounded and restores the bytes it changes,
+Only `render-test`, `display-test`, `standalone-test`, `launch-standalone`,
+`wifi-up`, `wifi-down`, and `wifi-probe` mutate device state. `render-test` is bounded and restores the bytes it changes,
 but it still requires a reader-side recovery route and physical observation of
 the panel. `display-test` is bounded but leaves its full-screen pattern visible
 when it exits. Use `capture` during its wait to record the framebuffer and use a
@@ -119,6 +122,36 @@ it as shown above.
 `network-probe` is the read-only artifact for physical validation before the
 full PRSync client exists. It does not enable Wi-Fi, read Wi-Fi credentials,
 send authorization data, or persist any data.
+
+### Wi-Fi lifecycle probe
+
+The lifecycle commands use the T1's existing
+`/data/misc/wifi/wpa_supplicant.conf`. They do not create, read, print, or
+persist Wi-Fi credentials. They require the separately built
+`/data/local/tmp/prs-t1-wifi-helper` Bionic shim described in
+[`build.md`](build.md).
+
+`wifi-up` prints structured snapshots before startup and after DHCP reaches
+`BOUND`. During startup it prints each lifecycle stage, the WPA association
+state, the DHCP result, and the explicit 60-second association and 30-second
+DHCP limits. `wifi-down` is explicit and runs the required shutdown sequence:
+stop `dhcpcd`, stop the supplicant, then unload the driver. It attempts all
+three steps even when one step fails.
+
+Use `wifi-probe` for the complete physical sequence. It brings Wi-Fi up,
+performs the existing HTTPS `/health` probe, and shuts Wi-Fi down after both
+successful and failed bring-up or network operations:
+
+```sh
+PROBE_HOST='your-production-host.example'
+adb shell /data/local/tmp/prs-t1-agent wifi-probe "$PROBE_HOST"
+adb shell /data/local/tmp/prs-t1-agent status
+```
+
+The command reports `wifi.snapshot=before`, `wifi.snapshot=ready`, and
+`wifi.snapshot=after` fields for the interface, carrier, WPA association, and
+DHCP state. It is an explicit command. Waking the reader does not start
+Wi-Fi.
 
 The probe resolves the supplied hostname, pins the request to the resolved
 addresses, and performs one HTTPS `GET /health`. It uses reqwest's async

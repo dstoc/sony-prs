@@ -198,3 +198,31 @@ only for an intentional native-mode test. The supported return path is:
 The helper also accepts `PRS_T1_AGENT_BINARY` when the binary is stored at a
 different host path. See [README.md](README.md) for the available runtime
 commands, screenshot workflow, refresh tests, and recovery details.
+
+## Wi-Fi lifecycle helper
+
+The Wi-Fi lifecycle uses a separate dynamically linked ARM/Bionic shim. The
+static musl agent does not link against Android Bionic or call
+`libhardware_legacy.so` directly. The shim resolves these four functions at
+runtime from `/system/lib/libhardware_legacy.so`:
+
+- `wifi_load_driver()`
+- `wifi_unload_driver()`
+- `wifi_start_supplicant()`
+- `wifi_stop_supplicant()`
+
+Pull the device's matching Android `libdl.so`, build the old-style ET_EXEC
+helper, and stage it next to the agent:
+
+```sh
+adb pull /system/lib/libdl.so /tmp/prs-t1-libdl.so
+./crates/prs-t1-agent/tools/build-wifi-helper.sh \
+  /tmp/prs-t1-libdl.so target/prs-t1-wifi-helper
+adb push target/prs-t1-wifi-helper /data/local/tmp/prs-t1-wifi-helper
+adb shell chmod 755 /data/local/tmp/prs-t1-wifi-helper
+```
+
+The helper accepts only `load-driver`, `unload-driver`, `start-supplicant`,
+and `stop-supplicant`. It does not receive a configuration path or any Wi-Fi
+credential. `wifi-up` polls the supplicant control socket for `wpa_state` and
+reads only the `dhcp.wlan0.result` property after starting `dhcpcd`.

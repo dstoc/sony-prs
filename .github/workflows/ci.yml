@@ -70,6 +70,9 @@ jobs:
       - name: Check CI workflow regression contract
         run: tools/test-ci-workflow.sh
 
+      - name: Check PRS-T1 Wi-Fi lifecycle contract
+        run: tools/test-prs-t1-wifi.sh
+
       - name: Record tested PRSync versions
         run: |
           mkdir -p ci-artifacts
