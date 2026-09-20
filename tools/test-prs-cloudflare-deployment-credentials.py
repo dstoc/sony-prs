@@ -165,7 +165,9 @@ def job_for_line(
     return None
 
 
-def assert_workflow_boundary(workflow_path: Path, source: str) -> None:
+def assert_workflow_boundary(
+    workflow_path: Path, source: str
+) -> set[tuple[Path, str]]:
     jobs = workflow_jobs(source)
     job_spans = workflow_job_spans(source)
     secret_references = [
@@ -185,7 +187,7 @@ def assert_workflow_boundary(workflow_path: Path, source: str) -> None:
             )
 
     if not secret_references:
-        return
+        return set()
 
     outside_job = [
         (line_number, name)
@@ -199,13 +201,13 @@ def assert_workflow_boundary(workflow_path: Path, source: str) -> None:
             f"{workflow_path}:{line_number + 1}"
         )
 
-    secret_jobs = {job_name for _, _, job_name in secret_references}
-    if len(secret_jobs) != 1:
+    secret_job_names = {job_name for _, _, job_name in secret_references}
+    if len(secret_job_names) != 1:
         raise AssertionError(
             "CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN must be referenced by one protected job"
         )
 
-    protected_job = next(iter(secret_jobs))
+    protected_job = next(iter(secret_job_names))
     if not has_production_environment(jobs[protected_job]):
         raise AssertionError(
             f"Cloudflare secret job lacks environment: production: "
@@ -230,6 +232,28 @@ def assert_workflow_boundary(workflow_path: Path, source: str) -> None:
             "the protected deployment job must reference both required Cloudflare secrets"
         )
 
+    return {(workflow_path, protected_job)}
+
+
+def assert_repository_secret_boundary(
+    workflow_sources: list[tuple[Path, str]],
+) -> None:
+    """Require one protected Cloudflare secret job in the repository."""
+
+    secret_jobs: set[tuple[Path, str]] = set()
+    for workflow_path, source in workflow_sources:
+        secret_jobs.update(assert_workflow_boundary(workflow_path, source))
+
+    if len(secret_jobs) > 1:
+        locations = ", ".join(
+            f"{workflow_path}:{job_name}"
+            for workflow_path, job_name in sorted(secret_jobs, key=str)
+        )
+        raise AssertionError(
+            "CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN must be referenced "
+            f"by one protected deployment job in the repository; found: {locations}"
+        )
+
 
 def assert_workflow_boundaries() -> None:
     workflow_files = sorted(WORKFLOW_DIRECTORY.glob("*.yml")) + sorted(
@@ -238,34 +262,69 @@ def assert_workflow_boundaries() -> None:
     if not workflow_files:
         raise AssertionError("no GitHub Actions workflow files found")
 
-    for workflow_path in workflow_files:
-        source = workflow_path.read_text(encoding="utf-8")
-        assert_workflow_boundary(workflow_path, source)
+    workflow_sources = [
+        (workflow_path, workflow_path.read_text(encoding="utf-8"))
+        for workflow_path in workflow_files
+    ]
+    assert_repository_secret_boundary(workflow_sources)
 
 
 def assert_regression_fixtures() -> None:
-    expected_failures = {
+    per_workflow_failures = {
         "workflow-level-secret-env.yml",
         "workflow-level-secret-env-after-jobs.yml",
         "pull-request-target.yml",
         "pull-request-inline-empty.yml",
     }
+    repository_only_failures = {
+        "multiple-secret-bearing-workflows-first.yml",
+        "multiple-secret-bearing-workflows-second.yml",
+    }
+    expected_fixture_names = (
+        per_workflow_failures
+        | repository_only_failures
+        | {"bracket-secrets.yml"}
+    )
     fixture_paths = sorted(REGRESSION_FIXTURE_DIRECTORY.glob("*.yml"))
-    if {path.name for path in fixture_paths} != expected_failures | {"bracket-secrets.yml"}:
+    if {path.name for path in fixture_paths} != expected_fixture_names:
         raise AssertionError("deployment credential regression fixtures are incomplete")
 
-    for fixture_path in fixture_paths:
-        source = fixture_path.read_text(encoding="utf-8")
+    fixture_sources = {
+        fixture_path: fixture_path.read_text(encoding="utf-8")
+        for fixture_path in fixture_paths
+    }
+    for fixture_path, source in fixture_sources.items():
+        if fixture_path.name in repository_only_failures:
+            if not assert_workflow_boundary(fixture_path, source):
+                raise AssertionError(
+                    "repository regression fixture has no secret-bearing job: "
+                    f"{fixture_path.name}"
+                )
+            continue
         try:
             assert_workflow_boundary(fixture_path, source)
         except AssertionError:
-            if fixture_path.name not in expected_failures:
+            if fixture_path.name not in per_workflow_failures:
                 raise
         else:
-            if fixture_path.name in expected_failures:
+            if fixture_path.name in per_workflow_failures:
                 raise AssertionError(
                     f"regression fixture unexpectedly passed: {fixture_path.name}"
                 )
+
+    repository_fixture_sources = [
+        (path, source)
+        for path, source in fixture_sources.items()
+        if path.name in repository_only_failures
+    ]
+    try:
+        assert_repository_secret_boundary(repository_fixture_sources)
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError(
+            "multiple secret-bearing workflow fixtures unexpectedly passed"
+        )
 
 
 def assert_pull_request_ci_defaults() -> None:
