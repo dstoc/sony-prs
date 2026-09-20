@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.1](https://github.com/dstoc/sony-prs/compare/prs-t1-agent-v0.10.0...prs-t1-agent-v0.10.1) (2026-09-20)
+
+
+### Bug Fixes
+
+* **prs-t1-agent:** initialize secure TLS entropy ([191d06d](https://github.com/dstoc/sony-prs/commit/191d06d8cfd2ca2e451b14c71315d9c547b787ae))
+
 ## [0.10.0](https://github.com/dstoc/sony-prs/compare/prs-t1-agent-v0.9.0...prs-t1-agent-v0.10.0) (2026-09-19)
 
 
