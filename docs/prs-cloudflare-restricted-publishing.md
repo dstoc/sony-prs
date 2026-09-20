@@ -27,11 +27,11 @@ Use a disposable or production-equivalent account and pre-existing resources:
 Install and verify the pinned Wrangler version:
 
 ```sh
-npm install --global wrangler@4.131.1
+npm install --global wrangler@4.135.0
 wrangler --version
 ```
 
-Expected result: the version output contains `4.131.1`. Stop if Wrangler is
+Expected result: the version output contains `4.135.0`. Stop if Wrangler is
 missing or has another version.
 
 The deployment token must have the Worker publish permission required by the

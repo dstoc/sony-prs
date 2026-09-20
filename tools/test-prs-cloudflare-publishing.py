@@ -30,7 +30,7 @@ import sys
 
 args = sys.argv[1:]
 if args == ["--version"]:
-    print("wrangler " + os.environ.get("FAKE_WRANGLER_VERSION", "4.131.1"))
+    print("wrangler " + os.environ.get("FAKE_WRANGLER_VERSION", "4.135.0"))
     raise SystemExit(0)
 
 log_path = Path(os.environ["WRANGLER_LOG"])
@@ -232,13 +232,13 @@ def assert_fake_wrangler_boundaries() -> None:
             fake_bin,
             log_path,
             extra_environment={
-                "FAKE_WRANGLER_VERSION": "4.131.0",
+                "FAKE_WRANGLER_VERSION": "4.134.0",
                 "PRS_READER_URL": "https://reader.example.com",
             },
         )
         assert wrong_wrangler.returncode != 0
         assert logged_commands(log_path) == []
-        assert "Wrangler 4.131.1 is required" in wrong_wrangler.stderr
+        assert "Wrangler 4.135.0 is required" in wrong_wrangler.stderr
 
         migrate_result = run_script(
             TOOLS / "prs-cloudflare-migrate.sh",
@@ -303,7 +303,7 @@ def assert_runbook_is_reproducible() -> None:
     text = RUNBOOK.read_text(encoding="utf-8")
     for required in (
         "sony-prs/114",
-        "wrangler@4.131.1",
+        "wrangler@4.135.0",
         "CLOUDFLARE_API_TOKEN",
         "wrangler d1 migrations apply prs-reader-db --remote --env production --no-x-provision",
         "export PRS_READER_URL='https://reader.example.com'",
@@ -370,6 +370,7 @@ def assert_deployment_workflow_contract() -> None:
         "CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}",
         "CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}",
         "PRS_READER_URL: ${{ vars.PRS_READER_URL }}",
+        'WRANGLER_VERSION: "4.135.0"',
         "cargo +\"${{ steps.build-pins.outputs.rust_toolchain }}\" install worker-build --version \"$WORKER_BUILD_VERSION\" --locked",
         'npm install --global "wrangler@$WRANGLER_VERSION"',
         "worker-build --release",

@@ -56,7 +56,7 @@ the two local development tools:
 
 ```sh
 cargo install worker-build --version 0.8.6 --locked
-npm install --global wrangler@4.131.1
+npm install --global wrangler@4.135.0
 python3 tools/test-prs-cloudflare-local.py
 ```
 
@@ -73,7 +73,7 @@ headers compile only with `local-test` and remain disabled unless
 
 ## Production bootstrap and deployment
 
-Use Wrangler `4.131.1` for each production operation. Bootstrap and migration
+Use Wrangler `4.135.0` for each production operation. Bootstrap and migration
 use operator credentials. Publishing uses a separate token with Worker publish
 permission only. The publishing token must not have D1 or R2 management
 permission.

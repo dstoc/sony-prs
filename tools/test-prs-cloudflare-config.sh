@@ -218,7 +218,7 @@ for script in "$bootstrap" "$migrate" "$deploy"; do
         exit 1
     fi
 done
-if ! grep -Fq 'PRS_WRANGLER_VERSION="4.131.1"' \
+if ! grep -Fq 'PRS_WRANGLER_VERSION="4.135.0"' \
     "$repo_root/tools/prs-cloudflare-wrangler-version.sh"; then
     echo "missing pinned Wrangler version" >&2
     exit 1
@@ -273,7 +273,7 @@ if "../../tools/prs-cloudflare-deploy.sh --production" in lines:
 PY
 
 for expected in \
-    'npm install --global wrangler@4.131.1' \
+    'npm install --global wrangler@4.135.0' \
     'operator credentials' \
     'separate token with Worker publish' \
     'must not have D1 or R2 management'; do
@@ -283,7 +283,7 @@ for expected in \
     fi
 done
 for expected in \
-    'pins Wrangler `4.131.1`' \
+    'pins Wrangler `4.135.0`' \
     'separate credential with Worker publish' \
     'must not have D1 or R2 management' \
     '--no-x-provision'; do

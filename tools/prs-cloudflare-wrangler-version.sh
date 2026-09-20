@@ -2,7 +2,7 @@
 
 # Keep the resource-management and Worker-publishing commands on the Wrangler
 # version whose --no-x-provision behavior is covered by CI.
-PRS_WRANGLER_VERSION="4.131.1"
+PRS_WRANGLER_VERSION="4.135.0"
 
 require_prs_wrangler() {
     if ! command -v wrangler >/dev/null 2>&1; then

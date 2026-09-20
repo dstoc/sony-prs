@@ -32,7 +32,7 @@ jobs:
       CLOUDFLARE_API_TOKEN: ""
       CLOUDFLARE_ACCOUNT_ID: ""
       WORKER_BUILD_VERSION: "0.8.6"
-      WRANGLER_VERSION: "4.131.1"
+      WRANGLER_VERSION: "4.135.0"
     steps:
       - name: Check out source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
