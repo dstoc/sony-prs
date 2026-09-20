@@ -328,6 +328,32 @@ def assert_ci_invokes_contract_test() -> None:
     assert "python3 tools/test-prs-cloudflare-publishing.py" in workflow
 
 
+def workflow_step(source: str, name: str) -> str:
+    match = re.search(
+        rf"(?ms)^      - name: {re.escape(name)}\n(.*?)(?=^      - name:|\Z)",
+        source,
+    )
+    if match is None:
+        raise AssertionError(f"deployment workflow is missing step: {name}")
+    return match.group(0)
+
+
+def assert_deployment_debug_contract() -> None:
+    workflow = DEPLOYMENT_WORKFLOW.read_text(encoding="utf-8")
+    debug_step = workflow_step(workflow, "Enable sanitized Wrangler debug logging")
+    deploy_step = workflow_step(
+        workflow, "Deploy existing production bindings and verify schema readiness"
+    )
+
+    assert "if: ${{ runner.debug == '1' }}" in debug_step
+    assert "echo 'WRANGLER_LOG=debug' >> \"$GITHUB_ENV\"" in debug_step
+    assert "WRANGLER_LOG_SANITIZE: \"true\"" in deploy_step
+    assert "WRANGLER_LOG_SANITIZE=false" not in workflow
+    assert workflow.count("WRANGLER_LOG=debug") == 1
+    assert "WRANGLER_LOG: debug" not in workflow
+    assert workflow.index(debug_step) < workflow.index(deploy_step)
+
+
 def assert_deployment_workflow_contract() -> None:
     workflow = DEPLOYMENT_WORKFLOW.read_text(encoding="utf-8")
     required_phrases = (
@@ -366,6 +392,7 @@ def main() -> None:
     assert_request_paths_are_migration_free()
     assert_runbook_is_reproducible()
     assert_ci_invokes_contract_test()
+    assert_deployment_debug_contract()
     assert_deployment_workflow_contract()
     print("prs-cloudflare publishing contract checks passed")
 

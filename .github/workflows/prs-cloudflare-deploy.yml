@@ -77,7 +77,14 @@ jobs:
         working-directory: crates/prs-cloudflare
         run: worker-build --release
 
+      - name: Enable sanitized Wrangler debug logging
+        if: ${{ runner.debug == '1' }}
+        shell: bash
+        run: echo 'WRANGLER_LOG=debug' >> "$GITHUB_ENV"
+
       - name: Deploy existing production bindings and verify schema readiness
+        env:
+          WRANGLER_LOG_SANITIZE: "true"
         run: tools/prs-cloudflare-deploy.sh --production
 
       - name: Verify deployed Worker health

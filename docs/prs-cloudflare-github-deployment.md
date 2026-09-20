@@ -94,6 +94,32 @@ command also checks the read-only release-aware `/ready` endpoint. The
 workflow then checks `/health`. A failed build, publish, readiness check, or
 health check fails the deployment job.
 
+## Debug a production deployment
+
+The deployment workflow uses the GitHub Actions `runner.debug` context. A
+normal run does not enable Wrangler debug logging. A run with GitHub Actions
+debug logging enabled sets `WRANGLER_LOG=debug` only for the deployment job.
+The workflow also sets `WRANGLER_LOG_SANITIZE=true` for the deploy command.
+
+To collect sanitized Wrangler details from a failed production deployment:
+
+1. Open the failed run for **PRSync Cloudflare production deployment** in the
+   GitHub Actions tab.
+2. Select **Re-run jobs** and enable **Enable debug logging**. Re-run the
+   deployment job. Enable debug logging on this production workflow run, not
+   only on the upstream `CI` run.
+3. Open the **Deploy existing production bindings and verify schema readiness**
+   step in the new run.
+4. Review the Wrangler `debug` entries for the request endpoint, HTTP status,
+   and sanitized Cloudflare API error. Wrangler omits request headers and
+   other sensitive request data while sanitization is enabled.
+
+Do not set `WRANGLER_LOG_SANITIZE=false`. Do not copy authorization headers,
+API tokens, cookies, or other secret values into an issue, artifact, summary,
+or comment. Record only the sanitized endpoint, status, error code, and
+request reference that identify the failing bindings, routes, or services
+metadata request.
+
 Apply schema migrations separately with the operator procedure before the
 protected deployment. Ordinary publishing must not list, query, or mutate D1
 through Wrangler, and it must not create or replace production resources.
