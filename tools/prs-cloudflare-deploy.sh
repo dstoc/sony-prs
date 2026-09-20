@@ -16,7 +16,7 @@ Usage:
   tools/prs-cloudflare-deploy.sh --production
 
 Required post-publish readiness check:
-  PRS_READER_URL=https://reader.example.com tools/prs-cloudflare-deploy.sh --production
+  PRS_READER_URL=https://prs-reader.dstoc.workers.dev tools/prs-cloudflare-deploy.sh --production
 USAGE
     exit 2
 fi

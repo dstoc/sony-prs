@@ -101,7 +101,7 @@ After migration verification, publish the Worker with the restricted deploy
 credential and the URL for its readiness check:
 
 ```sh
-PRS_READER_URL=https://reader.example.com \
+PRS_READER_URL=https://prs-reader.dstoc.workers.dev \
   ../../tools/prs-cloudflare-deploy.sh --production
 ```
 
@@ -117,7 +117,7 @@ To inspect an already-published Worker without publishing, run the same check
 explicitly:
 
 ```sh
-../../tools/prs-cloudflare-readiness.sh https://reader.example.com
+../../tools/prs-cloudflare-readiness.sh https://prs-reader.dstoc.workers.dev
 ```
 
 The check reads `d1_migrations` through the Worker `DB` binding. It does not

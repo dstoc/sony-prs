@@ -1,8 +1,58 @@
 # Restricted PRSync publishing verification
 
 This runbook is the manual follow-up for `sony-prs/114`. It verifies that a
-versioned Worker publish succeeds with a deployment token that has no D1 API
-permissions. It does not create resources and it does not apply migrations.
+versioned Worker publish succeeds with a deployment token that has no D1 or R2
+management permissions. It does not create resources and it does not apply
+migrations.
+
+The production machine endpoint is
+`https://prs-reader.dstoc.workers.dev`. The human approval hostname configured
+by `PRS_APPROVAL_BASE_URL` is a separate concern.
+
+## Cloudflare guidance and production topology
+
+Cloudflare's current guidance defines this least-privilege boundary:
+
+- An existing Worker can be uploaded and promoted with `Editor` access scoped
+  to that Worker.
+- Worker bindings do not require direct D1 or R2 management permissions.
+- Route and Custom Domain changes require `Workers Routes Write` for each
+  affected zone.
+- A `workers.dev` endpoint requires `workers_dev = true`.
+
+The production environment in
+`crates/prs-cloudflare/wrangler.toml` follows that contract:
+
+- Worker name: `prs-reader`.
+- Endpoint: `https://prs-reader.dstoc.workers.dev`.
+- `workers_dev = true`.
+- No `route`, `routes`, or Custom Domain configuration.
+- Existing hourly Cron Trigger: `0 * * * *`.
+
+The former `workers_dev = false` setting contradicted the intended endpoint.
+It declared that the Worker must not use its `workers.dev` route. The corrected
+`workers_dev = true` setting declares the existing `workers.dev` connection
+instead of a route or Custom Domain connection.
+
+The ordinary publishing script runs only `wrangler versions upload` and
+`wrangler versions deploy`. It does not run `wrangler triggers deploy`, which
+is the explicit Wrangler command for applying route or Cron Trigger changes.
+Therefore, ordinary version publishing does not change the existing Cron Trigger,
+route, or Custom Domain state. A future trigger change requires a
+separate deliberate operation with the authority required by that change.
+
+The platform references used for this topology review are:
+
+- [Docs for agents](https://developers.cloudflare.com/docs-for-agents/).
+- [Workers documentation index for agents](https://developers.cloudflare.com/workers/llms.txt).
+- [Cloudflare Workers skills](https://github.com/cloudflare/skills), including
+  the [Wrangler skill](https://raw.githubusercontent.com/cloudflare/skills/main/skills/wrangler/SKILL.md)
+  and [Workers best-practices skill](https://raw.githubusercontent.com/cloudflare/skills/main/skills/workers-best-practices/SKILL.md).
+- [Workers roles and permissions](https://developers.cloudflare.com/workers/authorization/workers/).
+- [Wrangler configuration](https://developers.cloudflare.com/workers/wrangler/configuration/).
+- [Workers environments](https://developers.cloudflare.com/workers/wrangler/environments/).
+- [Workers.dev routing](https://developers.cloudflare.com/workers/configuration/routing/workers-dev/).
+- [Wrangler worker commands](https://developers.cloudflare.com/workers/wrangler/commands/workers/).
 
 Run the local command-contract test before this procedure:
 
@@ -97,7 +147,7 @@ token in environment variables that are not printed by the shell:
 ```sh
 export CLOUDFLARE_ACCOUNT_ID="$ACCOUNT_ID"
 export CLOUDFLARE_API_TOKEN="$DEPLOY_TOKEN"
-export PRS_READER_URL='https://reader.example.com'
+export PRS_READER_URL='https://prs-reader.dstoc.workers.dev'
 tools/prs-cloudflare-deploy.sh --production
 ```
 
@@ -124,12 +174,28 @@ Expected result:
 The same read-only check can be repeated without publishing:
 
 ```text
-tools/prs-cloudflare-readiness.sh https://reader.example.com
+tools/prs-cloudflare-readiness.sh https://prs-reader.dstoc.workers.dev
 ```
 
 If `PRS_READER_URL` is absent, or if Wrangler is missing or has the wrong
 version, the command must stop before publishing. A code-only release follows
 the same command and expected result.
+
+If a corrected workers.dev-only configuration still fails on a route or Custom
+Domain metadata read, capture a minimal reproduction with:
+
+1. Wrangler version: `4.135.0`.
+2. Command: `wrangler versions upload --env production --tag <commit-sha> --no-x-provision`.
+3. Configuration facts: `name = "prs-reader"`, `workers_dev = true`, no
+   `route`, `routes`, or Custom Domain entries, and the existing hourly Cron
+   Trigger.
+4. Token scope: Individual Worker `Editor` on `prs-reader`; no D1/R2
+   management permission; no `Workers Routes Write` permission.
+5. Sanitized failing endpoint, HTTP status, error code, and request reference.
+
+Do not broaden the token to work around that failure. File the reproduction
+with Cloudflare as a Wrangler authorization defect only after the live rerun
+confirms that the corrected configuration still performs the forbidden read.
 
 ## Prove direct management denial
 

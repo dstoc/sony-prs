@@ -45,6 +45,15 @@ for path in (config_path, local_test_config_path):
 with config_path.open("rb") as config_file:
     config = tomllib.load(config_file)
 production = config["env"]["production"]
+if production.get("name") != "prs-reader":
+    raise SystemExit("production must deploy the existing prs-reader Worker")
+if production.get("workers_dev") is not True:
+    raise SystemExit("production must keep the prs-reader workers.dev endpoint enabled")
+for routing_key in ("route", "routes", "custom_domains"):
+    if routing_key in production:
+        raise SystemExit(f"production must not configure {routing_key}")
+if config.get("triggers", {}).get("crons") != ["0 * * * *"]:
+    raise SystemExit("the production Worker must retain its hourly Cron Trigger")
 d1_databases = production.get("d1_databases", [])
 r2_buckets = production.get("r2_buckets", [])
 if len(d1_databases) != 1 or len(r2_buckets) != 1:
@@ -266,7 +275,7 @@ from pathlib import Path
 import sys
 
 lines = Path(sys.argv[1]).read_text().splitlines()
-expected_url_line = "PRS_READER_URL=https://reader.example.com " + chr(92)
+expected_url_line = "PRS_READER_URL=https://prs-reader.dstoc.workers.dev " + chr(92)
 expected_deploy_line = "  ../../tools/prs-cloudflare-deploy.sh --production"
 if not any(
     line == expected_url_line and next_line == expected_deploy_line

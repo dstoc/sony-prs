@@ -4,6 +4,9 @@ name = "prs-reader"
 main = "build/worker/shim.mjs"
 compatibility_date = "2026-09-18"
 
+# Keep the existing hourly schedule in the Worker configuration. Ordinary
+# version publishing does not run `wrangler triggers deploy`, so it does not
+# add, change, or remove this schedule.
 [triggers]
 crons = ["0 * * * *"]
 
@@ -32,7 +35,9 @@ bucket_name = "prs-reader-local"
 
 [env.production]
 name = "prs-reader"
-workers_dev = false
+# The production endpoint is prs-reader.dstoc.workers.dev. No route or Custom
+# Domain is configured for this Worker.
+workers_dev = true
 
 [env.production.vars]
 PRS_ENVIRONMENT = "production"

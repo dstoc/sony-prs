@@ -79,7 +79,8 @@ this repository. It checks out the exact commit tested by that run.
 
 The job uses the protected `production` environment and its two Cloudflare
 secrets. Configure `PRS_READER_URL` as a non-secret variable in that
-environment. The URL must point to the deployed Worker.
+environment. Set it to `https://prs-reader.dstoc.workers.dev`, the
+`workers.dev` endpoint configured for the production `prs-reader` Worker.
 
 The job installs the pinned `worker-build` and Wrangler versions, builds the
 Worker, and runs:

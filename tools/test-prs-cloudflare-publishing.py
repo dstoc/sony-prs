@@ -10,6 +10,7 @@ import re
 import shlex
 import subprocess
 import tempfile
+import tomllib
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -17,6 +18,7 @@ TOOLS = REPO_ROOT / "tools"
 WORKER_SOURCE = REPO_ROOT / "crates" / "prs-cloudflare" / "src" / "api.rs"
 SCHEMA_SOURCE = REPO_ROOT / "crates" / "prs-cloudflare" / "src" / "schema.rs"
 RUNBOOK = REPO_ROOT / "docs" / "prs-cloudflare-restricted-publishing.md"
+WRANGLER_CONFIG = REPO_ROOT / "crates" / "prs-cloudflare" / "wrangler.toml"
 DEPLOYMENT_WORKFLOW = (
     REPO_ROOT / ".github" / "workflows" / "prs-cloudflare-deploy.yml"
 )
@@ -229,6 +231,20 @@ def assert_command_contracts() -> None:
     assert "prs-cloudflare-deploy.sh --production" not in bootstrap.read_text(encoding="utf-8")
 
 
+def assert_production_topology() -> None:
+    with WRANGLER_CONFIG.open("rb") as config_file:
+        config = tomllib.load(config_file)
+
+    production = config["env"]["production"]
+    assert production["name"] == "prs-reader"
+    assert production["workers_dev"] is True
+    for routing_key in ("route", "routes", "custom_domains"):
+        assert routing_key not in production, (
+            f"production topology must not configure {routing_key}"
+        )
+    assert config["triggers"]["crons"] == ["0 * * * *"]
+
+
 def assert_fake_wrangler_boundaries() -> None:
     with tempfile.TemporaryDirectory(prefix="prs-cloudflare-publishing-") as directory:
         test_dir = Path(directory)
@@ -437,12 +453,17 @@ def assert_runbook_is_reproducible() -> None:
         "wrangler@4.135.0",
         "CLOUDFLARE_API_TOKEN",
         "wrangler d1 migrations apply prs-reader-db --remote --env production --no-x-provision",
-        "export PRS_READER_URL='https://reader.example.com'",
+        "export PRS_READER_URL='https://prs-reader.dstoc.workers.dev'",
         "tools/prs-cloudflare-deploy.sh --production",
-        "tools/prs-cloudflare-readiness.sh https://reader.example.com",
+        "tools/prs-cloudflare-readiness.sh https://prs-reader.dstoc.workers.dev",
         "wrangler versions upload --env production --tag <commit-sha> --no-x-provision",
         "wrangler versions deploy --env production --version-id <version-id> --percentage 100 --yes --no-x-provision",
-        "no D1 API",
+        "https://prs-reader.dstoc.workers.dev",
+        "workers_dev = true",
+        "Workers Routes Write",
+        "wrangler triggers deploy",
+        "does not change the existing Cron Trigger",
+        "no D1 or R2\nmanagement permissions",
         "Workers Scripts",
         "binding",
         "Do not record token values",
@@ -526,6 +547,7 @@ def assert_deployment_workflow_contract() -> None:
 
 def main() -> None:
     assert_command_contracts()
+    assert_production_topology()
     assert_fake_wrangler_boundaries()
     assert_request_paths_are_migration_free()
     assert_runbook_is_reproducible()
