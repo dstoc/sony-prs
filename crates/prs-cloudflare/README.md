@@ -114,9 +114,11 @@ The deploy script does not run D1 management commands. It disables Wrangler's
 automatic resource provisioning with `--no-x-provision`, uploads a version
 tagged with the checked-out commit, reads the returned Worker Version ID, and
 promotes that ID to 100% of traffic. It does not deploy routes, custom domains,
-or triggers. The command fails unless the response is ready and reports this
-checkout's exact release schema requirement. A rerun promotes the ID from its
-new upload, so duplicate commit tags do not make a retry ambiguous.
+or triggers. The command polls the read-only readiness response for up to 120
+seconds with bounded backoff. It succeeds only when the response reports this
+checkout's exact schema requirement and the exact promoted Version ID from
+`CF_VERSION_METADATA`. A rerun promotes the ID from its new upload, so
+duplicate commit tags do not make a retry ambiguous.
 
 To inspect an already-published Worker without publishing, run the same check
 explicitly:
@@ -126,9 +128,9 @@ explicitly:
 ```
 
 The check reads `d1_migrations` through the Worker `DB` binding. It does not
-use D1 API credentials and it never applies a migration. It rejects a ready
-response from an older Worker because that response contains a different
-release schema requirement.
+use D1 API credentials and it never applies a migration. With a Version ID
+argument, it rejects a ready response from an older Worker even when that
+Worker reports a compatible schema requirement.
 
 Keep operator and deployment credentials outside the repository and outside
 pull-request jobs.

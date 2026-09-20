@@ -20,7 +20,9 @@ use prs_sync_protocol::{
     MAX_BUNDLE_SIZE,
 };
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use worker::{Env, Request, Response, ResponseBuilder, Result, RouteContext, Router};
+use worker::{
+    Env, Request, Response, ResponseBuilder, Result, RouteContext, Router, WorkerVersionMetadata,
+};
 
 type ApiResult<T> = std::result::Result<T, ApiFailure>;
 
@@ -136,12 +138,21 @@ struct TestMaintenanceResponse {
 }
 
 #[derive(Debug, Serialize)]
+struct ReleaseMetadata {
+    version_id: String,
+    tag: String,
+    timestamp: String,
+}
+
+#[derive(Debug, Serialize)]
 struct ReadinessResponse {
     service: &'static str,
     status: &'static str,
     reason: Option<&'static str>,
     schema_requirement: SchemaRequirement,
     applied_migration: Option<AppliedMigration>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    release: Option<ReleaseMetadata>,
 }
 
 /// Adds the public health and versioned protocol routes to a Worker router.
@@ -211,12 +222,26 @@ async fn readiness(_request: Request, context: RouteContext<()>) -> Result<Respo
         Err(_) => SchemaReadiness::unavailable(),
     };
     let status = if readiness.is_ready() { 200 } else { 503 };
-    let mut response = json_response(&readiness_response(readiness), status)?;
+    let release = release_metadata(&context.env);
+    let mut response = json_response(&readiness_response(readiness, release), status)?;
     response.headers_mut().set("Cache-Control", "no-store")?;
     Ok(response)
 }
 
-fn readiness_response(readiness: SchemaReadiness) -> ReadinessResponse {
+fn release_metadata(env: &Env) -> Option<ReleaseMetadata> {
+    env.get_binding::<WorkerVersionMetadata>("CF_VERSION_METADATA")
+        .ok()
+        .map(|metadata| ReleaseMetadata {
+            version_id: metadata.id(),
+            tag: metadata.tag(),
+            timestamp: metadata.timestamp(),
+        })
+}
+
+fn readiness_response(
+    readiness: SchemaReadiness,
+    release: Option<ReleaseMetadata>,
+) -> ReadinessResponse {
     ReadinessResponse {
         service: "prs-cloudflare",
         status: if readiness.is_ready() {
@@ -227,6 +252,7 @@ fn readiness_response(readiness: SchemaReadiness) -> ReadinessResponse {
         reason: readiness.failure.map(|failure| failure.as_str()),
         schema_requirement: readiness.requirement,
         applied_migration: readiness.applied_migration,
+        release,
     }
 }
 
@@ -1041,10 +1067,26 @@ mod tests {
 
     #[test]
     fn unavailable_schema_readiness_is_not_ready() {
-        let response = readiness_response(SchemaReadiness::unavailable());
+        let response = readiness_response(SchemaReadiness::unavailable(), None);
         assert_eq!(response.status, "not_ready");
         assert_eq!(response.reason, Some("migration_history_unavailable"));
         assert_eq!(response.schema_requirement.migration_id, 7);
         assert!(response.applied_migration.is_none());
+    }
+
+    #[test]
+    fn readiness_response_can_include_release_metadata() {
+        let response = readiness_response(
+            SchemaReadiness::unavailable(),
+            Some(ReleaseMetadata {
+                version_id: "version-1".to_owned(),
+                tag: "commit-1".to_owned(),
+                timestamp: "2026-09-21T00:00:00Z".to_owned(),
+            }),
+        );
+        assert_eq!(
+            response.release.expect("release metadata").version_id,
+            "version-1"
+        );
     }
 }

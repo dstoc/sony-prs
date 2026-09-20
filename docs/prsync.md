@@ -845,10 +845,11 @@ Deployment should follow this order:
 7. serve traffic only when the new release reports `ready`.
 
 The readiness endpoint is read-only. It must not use D1 API credentials or run
-migrations. `/health` only confirms that the Worker responds. An old Worker
-can report readiness for its own requirement, but that response is not proof
-that a newer release is ready. The operator must inspect `/ready` after the
-new Worker is published.
+migrations. After promotion, the deployment polls `/ready` for a finite
+rollout window. It retries transport failures, invalid JSON, and responses from
+the previous release. When version metadata is available, it requires the
+exact promoted Version ID before it accepts readiness. `/health` only confirms
+that the Worker responds and runs after this release-aware readiness check.
 
 Prefer additive schema changes. Defer destructive cleanup until old Worker
 releases no longer need the affected schema. If publication fails after a

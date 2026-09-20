@@ -72,13 +72,21 @@ raise SystemExit(0)
 '''
 
 FAKE_CURL = r'''#!/usr/bin/env python3
+import json
 import os
 from pathlib import Path
 import sys
 
 args = sys.argv[1:]
 output = args[args.index("--output") + 1]
-Path(output).write_text(os.environ["FAKE_READINESS_BODY"], encoding="utf-8")
+body = json.loads(os.environ["FAKE_READINESS_BODY"])
+state_path = os.environ.get("WRANGLER_STATE") or str(
+    Path(os.environ["WRANGLER_LOG"]).with_suffix(".state")
+)
+if state_path and Path(state_path).exists():
+    state = json.loads(Path(state_path).read_text(encoding="utf-8"))
+    body["release"] = {"version_id": state["last_version_id"]}
+Path(output).write_text(json.dumps(body), encoding="utf-8")
 print("200", end="")
 '''
 
@@ -227,6 +235,10 @@ def assert_command_contracts() -> None:
     assert "--remote" not in deploy_source
     assert "--x-provision" not in deploy_source.replace("--no-x-provision", "")
     assert "operator migration command" in deploy_source
+    assert (
+        '"$repo_root/tools/prs-cloudflare-readiness.sh" '
+        '"$PRS_READER_URL" "$uploaded_version_id"'
+    ) in deploy_source
     assert "prs-cloudflare-deploy.sh --production" not in migrate.read_text(encoding="utf-8")
     assert "prs-cloudflare-deploy.sh --production" not in bootstrap.read_text(encoding="utf-8")
 
@@ -244,6 +256,7 @@ def assert_production_topology() -> None:
         "https://prs-reader.dstoc.workers.dev"
     )
     assert "reader.example.com" not in production_vars["PRS_APPROVAL_BASE_URL"]
+    assert config["version_metadata"]["binding"] == "CF_VERSION_METADATA"
     for routing_key in ("route", "routes", "custom_domains"):
         assert routing_key not in production, (
             f"production topology must not configure {routing_key}"
@@ -505,6 +518,7 @@ def assert_deployment_debug_contract() -> None:
         workflow,
         "Upload and promote production version, then verify schema readiness",
     )
+    health_step = workflow_step(workflow, "Verify deployed Worker health")
 
     assert "if: ${{ runner.debug == '1' }}" in debug_step
     assert "echo 'WRANGLER_LOG=debug' >> \"$GITHUB_ENV\"" in debug_step
@@ -513,6 +527,7 @@ def assert_deployment_debug_contract() -> None:
     assert workflow.count("WRANGLER_LOG=debug") == 1
     assert "WRANGLER_LOG: debug" not in workflow
     assert workflow.index(debug_step) < workflow.index(deploy_step)
+    assert workflow.index(deploy_step) < workflow.index(health_step)
 
 
 def assert_deployment_workflow_contract() -> None:

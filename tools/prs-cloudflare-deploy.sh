@@ -71,4 +71,4 @@ wrangler versions deploy \
     --percentage 100 \
     --yes \
     --no-x-provision
-"$repo_root/tools/prs-cloudflare-readiness.sh" "$PRS_READER_URL"
+"$repo_root/tools/prs-cloudflare-readiness.sh" "$PRS_READER_URL" "$uploaded_version_id"

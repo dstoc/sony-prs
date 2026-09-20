@@ -16,6 +16,7 @@ required_config=(
     'name = "prs-reader"'
     'binding = "DB"'
     'binding = "BUNDLES"'
+    'binding = "CF_VERSION_METADATA"'
     'bucket_name = "prs-reader-local"'
     'bucket_name = "prs-reader-documents"'
     'crons = ["0 * * * *"]'
@@ -260,17 +261,21 @@ done
 
 for expected in \
     '/ready' \
-    'curl --silent --show-error --max-time 10' \
+    'READINESS_TIMEOUT_SECONDS' \
+    'READINESS_MAX_BACKOFF_SECONDS=10' \
+    'curl --silent --show-error --max-time "$READINESS_CURL_TIMEOUT_SECONDS"' \
     'status" != "200"' \
     'RELEASE_SCHEMA_REQUIREMENT' \
     'schema_requirement' \
-    'does not match this release'; do
+    'does not match this release' \
+    'promoted-version-id' \
+    'release identifier'; do
     if ! grep -Fq -- "$expected" "$readiness"; then
         echo "missing read-only readiness check: $expected" >&2
         exit 1
     fi
 done
-if ! grep -Fq 'prs-cloudflare-readiness.sh" "$PRS_READER_URL"' "$deploy"; then
+if ! grep -Fq 'prs-cloudflare-readiness.sh" "$PRS_READER_URL" "$uploaded_version_id"' "$deploy"; then
     echo "production deploy must run the release-aware readiness check" >&2
     exit 1
 fi

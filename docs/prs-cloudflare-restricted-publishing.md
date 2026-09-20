@@ -171,13 +171,26 @@ Expected result:
 - The command does not create a D1 database or R2 bucket.
 - The command does not list or apply D1 migrations.
 - The command does not deploy routes, custom domains, or triggers.
-- The post-publish readiness check returns HTTP 200 with `status` `ready` and
-  the exact schema requirement from this checkout.
+- The post-publish readiness check polls for up to 120 seconds. It uses an
+  initial one-second delay and exponential backoff capped at 10 seconds.
+- Transport errors, non-JSON responses, a `not_ready` response, an older
+  schema requirement, and an older release identifier are retryable during
+  that window.
+- The check requires HTTP 200 with `status` `ready`, this checkout's exact
+  schema requirement, and the promoted Worker's exact Version ID. The
+  `CF_VERSION_METADATA` binding supplies that release identifier.
 
 The same read-only check can be repeated without publishing:
 
 ```text
 tools/prs-cloudflare-readiness.sh https://prs-reader.dstoc.workers.dev
+```
+
+Pass a promoted Version ID to require an exact release match when repeating a
+post-publish check manually:
+
+```text
+tools/prs-cloudflare-readiness.sh https://prs-reader.dstoc.workers.dev <version-id>
 ```
 
 If `PRS_READER_URL` is absent, or if Wrangler is missing or has the wrong
@@ -221,8 +234,8 @@ the token value.
 Set `BASE_URL` to the published Worker URL and run:
 
 ```sh
-curl --fail-with-body --silent --show-error "$BASE_URL/health"
 curl --fail-with-body --silent --show-error "$BASE_URL/ready"
+curl --fail-with-body --silent --show-error "$BASE_URL/health"
 curl --include --silent --show-error "$BASE_URL/api/v1/reader/manifest"
 curl --include --silent --show-error "$BASE_URL/api/v1/reader/bundle"
 curl --include --silent --show-error \
@@ -231,9 +244,10 @@ curl --include --silent --show-error \
 
 Expected result:
 
-- `/health` returns HTTP 200.
 - `/ready` returns HTTP 200, `status` `ready`, and this release's schema
-  requirement.
+- `/ready` returns HTTP 200, `status` `ready`, this release's schema
+  requirement, and the promoted release identifier when one is supplied.
+- `/health` returns HTTP 200 after the release-aware `/ready` check succeeds.
 - The unauthenticated reader and sender paths return HTTP 401. They must not
   run a migration.
 - The readiness response is read-only. It must not apply a migration.
