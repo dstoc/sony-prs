@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.11.0](https://github.com/dstoc/sony-prs/compare/prs-t1-agent-v0.10.1...prs-t1-agent-v0.11.0) (2026-09-20)
+
+
+### Features
+
+* **prs-t1-agent:** add Wi-Fi lifecycle probe ([d02dc48](https://github.com/dstoc/sony-prs/commit/d02dc482d92687605f0a1080ad8b7dd0d3b55628))
+
+
+### Bug Fixes
+
+* **prs-t1-agent:** wait for DHCP shutdown ([206b2ef](https://github.com/dstoc/sony-prs/commit/206b2efc1ffc711f2af6c3f6ba299359bbdca7ab))
+
 ## [0.10.1](https://github.com/dstoc/sony-prs/compare/prs-t1-agent-v0.10.0...prs-t1-agent-v0.10.1) (2026-09-20)
 
 

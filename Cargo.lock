@@ -1393,7 +1393,7 @@ dependencies = [
 
 [[package]]
 name = "prs-t1-agent"
-version = "0.10.1"
+version = "0.11.0"
 dependencies = [
  "embedded-graphics",
  "hickory-resolver",
