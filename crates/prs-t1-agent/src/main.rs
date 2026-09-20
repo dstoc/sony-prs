@@ -10,6 +10,7 @@ mod runtime;
 #[cfg(any(target_arch = "arm", test))]
 mod soft_float;
 mod status;
+mod tls;
 
 use crate::framebuffer::WaveformMode;
 use std::env;

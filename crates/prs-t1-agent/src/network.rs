@@ -125,6 +125,14 @@ impl ProbeFailure {
         }
     }
 
+    fn tls_initialization(error: crate::tls::InitializationError) -> Self {
+        Self {
+            stage: "tls",
+            kind: error.kind(),
+            detail: error.to_string(),
+        }
+    }
+
     fn dns(detail: impl Into<String>) -> Self {
         Self {
             stage: "dns",
@@ -234,6 +242,8 @@ pub fn run(args: Vec<String>) -> io::Result<()> {
 }
 
 async fn probe(config: &ProbeConfig) -> Result<HealthResponse, ProbeFailure> {
+    crate::tls::initialize().map_err(ProbeFailure::tls_initialization)?;
+
     let source_host = config
         .endpoint
         .host_str()
@@ -540,6 +550,16 @@ mod tests {
         let mut over = exact;
         let error = append_bounded_body(&mut over, b"x", 200).unwrap_err();
         assert_eq!(error.stage, "response");
+    }
+
+    #[test]
+    fn entropy_failure_is_reported_as_a_structured_tls_failure() {
+        let error =
+            ProbeFailure::tls_initialization(crate::tls::InitializationError::EntropyUnavailable);
+
+        assert_eq!(error.stage, "tls");
+        assert_eq!(error.kind, "entropy_unavailable");
+        assert!(error.detail.contains("secure OS entropy"));
     }
 
     #[test]

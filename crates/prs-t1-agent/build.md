@@ -152,6 +152,15 @@ probe failures. The probe does not require an authorization request, bearer
 token, Cloudflare secret, or Wi-Fi credential. It does not change the device
 network configuration.
 
+Before rerunning the physical validation, confirm that the rooted device
+exposes readable `/dev/random` and `/dev/urandom` nodes. The probe performs its
+own secure-entropy preflight and waits for the kernel random pool through the
+OS-supported path. If it cannot obtain entropy, it reports
+`failure_stage=tls failure_kind=entropy_unavailable` and exits without DNS or
+HTTPS traffic. Do not add a seed from time, PID, device identity, or fixed
+data. See the [TLS entropy prerequisite](README.md#tls-entropy-prerequisite)
+for the source and failure behavior.
+
 The normal probe performs only `GET /health`. It resolves the hostname before
 the request with Hickory's async resolver on a current-thread Tokio runtime.
 The probe uses reqwest's async client and adds no worker thread to the T1

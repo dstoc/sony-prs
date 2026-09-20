@@ -134,6 +134,24 @@ continue to the HTTPS request.
 The command prints one-line fields such as `dns_addresses`,
 `tls_validation`, `http_status`, and `result`.
 
+### TLS entropy prerequisite
+
+The probe selects rustls' `ring` provider and checks a 32-byte secure entropy
+request before it performs DNS or HTTPS work. The checked-in
+`armv7-unknown-linux-musleabi` build uses ring's operating-system random source.
+On Linux-musl, its `getrandom` implementation uses the `getrandom` system call
+when available. On older kernels, it waits for `/dev/random` to report that the
+kernel pool is initialized, then reads cryptographic bytes from `/dev/urandom`.
+It does not use a fixed, time-based, process-based, or device-identity seed.
+
+The rooted PRS-T1 must expose readable `/dev/random` and `/dev/urandom` nodes.
+Run the probe after normal Android boot has completed. If secure entropy is not
+available, it fails before DNS with
+`failure_stage=tls failure_kind=entropy_unavailable` and a non-zero exit status.
+Do not replace this failure with a deterministic seed or with bytes from a
+predictable device property. Preserve the complete output for the hardware
+record and retry only after the device's kernel random source is ready.
+
 Set the production protocol hostname selected for #99. A hostname is enough;
 the command adds `https://` and requests `/health`.
 
