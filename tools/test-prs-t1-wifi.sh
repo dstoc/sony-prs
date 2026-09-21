@@ -30,6 +30,11 @@ grep -Fq 'wait_for_dhcp_service_stop()' "$wifi_source"
 grep -Fq 'dhcp_service_is_stopped' "$wifi_source"
 grep -Fq 'run_helper("stop-supplicant")' "$wifi_source"
 grep -Fq 'run_helper("unload-driver")' "$wifi_source"
+grep -Fq 'PRS_T1_SLEEP_INACTIVITY_SECONDS' "$runtime_source"
+if grep -Fq 'PRS_T1_IDLE_SYNC_INTERVAL_SECONDS' "$runtime_source" "$agent_readme"; then
+  echo 'retired periodic idle-sync setting remains in the PRS-T1 runtime contract' >&2
+  exit 1
+fi
 grep -Fq 'ASSOCIATION_TIMEOUT: Duration = Duration::from_secs(60)' "$wifi_source"
 grep -Fq 'DHCP_TIMEOUT: Duration = Duration::from_secs(30)' "$wifi_source"
 grep -Fq 'strip_prefix("wpa_state=")' "$wifi_source"
@@ -119,6 +124,12 @@ assert standalone.count("shutdown_after_sync_cancellation_async()") == 2
 assert "shutdown_after_sync_cancellation_async()" in runtime
 assert "sync_task.cancel()" in runtime
 assert "display render failed" in runtime
+assert "should_enter_inactivity_sleep" in runtime
+assert "should_start_idle_sync" not in runtime
+sleep_cycle = runtime[runtime.index("fn sleep_cycle("):runtime.index("fn request_suspend(")]
+assert sleep_cycle.index("state.sync_cancelled()") < sleep_cycle.index("state.enter_sleep(")
+assert sleep_cycle.index("let woke = state.wake()") < sleep_cycle.index("sync_task.start()")
+assert "self.last_activity = Instant::now();" in runtime
 
 expected_tops = {
     "DETAILS_SYNC_TOP": 560,

@@ -37,6 +37,7 @@ const MENU_HOLD_MICROS: u64 = 1_000_000;
 const WAKE_LOCK_NAME: &str = "prs-t1-native-test";
 const POWER_STATE_HELPER: &str = "/data/local/tmp/prs-t1-power-state";
 const FRAMEWORK_STOP_TIMEOUT_SECONDS: u32 = 15;
+const DEFAULT_SLEEP_INACTIVITY_SECONDS: u64 = 5 * 60;
 const O_NONBLOCK: i32 = 0x800;
 const F_GETFL: c_int = 3;
 const F_SETFL: c_int = 4;
@@ -91,6 +92,7 @@ impl SuspendMode {
 }
 
 pub fn run(path: &Path, suspend_mode: SuspendMode) -> io::Result<()> {
+    let sleep_inactivity_timeout = sleep_inactivity_timeout()?;
     let mut display =
         NativeDisplay::open(path).map_err(|error| display_error("open native display", error))?;
     crate::status::ensure_native_ownership()?;
@@ -198,10 +200,6 @@ pub fn run(path: &Path, suspend_mode: SuspendMode) -> io::Result<()> {
                 redraw_area = Some(DirtyArea::Full);
             }
         }
-        if state.should_start_idle_sync(sync_task.idle_sync_interval()) && sync_task.start() {
-            state.sync_started();
-            redraw_area = Some(DirtyArea::Full);
-        }
         while let Some(event) = sync_task.try_event() {
             state.apply_sync_event(event);
             redraw_area = Some(DirtyArea::Full);
@@ -233,6 +231,16 @@ pub fn run(path: &Path, suspend_mode: SuspendMode) -> io::Result<()> {
                     redraw_area = Some(DirtyArea::Full);
                 }
             }
+        }
+
+        if action == PowerAction::None
+            && state.should_enter_inactivity_sleep(sleep_inactivity_timeout)
+        {
+            eprintln!(
+                "standalone-test: inactivity reached {}s; requesting sleep",
+                sleep_inactivity_timeout.as_secs()
+            );
+            action = PowerAction::Sleep;
         }
 
         match action {
@@ -834,6 +842,32 @@ fn date_time() -> String {
         .unwrap_or_else(|| "Unknown".into())
 }
 
+fn sleep_inactivity_timeout() -> io::Result<Duration> {
+    parse_sleep_inactivity_timeout(std::env::var("PRS_T1_SLEEP_INACTIVITY_SECONDS").ok())
+}
+
+fn parse_sleep_inactivity_timeout(value: Option<String>) -> io::Result<Duration> {
+    let seconds = value
+        .as_deref()
+        .map(|value| {
+            value.parse::<u64>().map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "PRS_T1_SLEEP_INACTIVITY_SECONDS must be an unsigned integer",
+                )
+            })
+        })
+        .transpose()?
+        .unwrap_or(DEFAULT_SLEEP_INACTIVITY_SECONDS);
+    if seconds == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "PRS_T1_SLEEP_INACTIVITY_SECONDS must be greater than zero",
+        ));
+    }
+    Ok(Duration::from_secs(seconds))
+}
+
 fn percent_label(value: &str) -> String {
     if value == "UNKNOWN" {
         "Unknown".into()
@@ -866,12 +900,11 @@ fn sleep_cycle(
     refresh_policy: &mut RefreshPolicy,
     sync_task: &mut SyncTask,
 ) -> io::Result<()> {
-    state.mode = "SLEEPING";
-    state.message = match suspend_mode {
-        SuspendMode::EInk => "E-ink standby mode",
-        SuspendMode::Normal => "Normal mem mode",
+    if state.sync_active {
+        sync_task.cancel()?;
+        state.sync_cancelled();
     }
-    .into();
+    state.enter_sleep(suspend_mode);
     eprintln!("standalone-test: drawing pre-suspend screen");
     redraw(
         display,
@@ -934,11 +967,16 @@ fn sleep_cycle(
     acquire_result?;
     resume_result.map_err(|error| display_error("post-resume framebuffer remap", error))?;
 
-    state.mode = "ACTIVE";
+    let woke = state.wake();
+    debug_assert!(woke, "sleep_cycle must wake an active sleep state");
     state.refresh_status();
     state.message = format!("Woke after {suspend_elapsed_ms}ms");
     state.last_power_duration_ms = None;
     state.ignore_power_until = Some(Instant::now() + Duration::from_secs(2));
+    if woke && sync_task.start() {
+        state.sync_started();
+        eprintln!("standalone-test: wake transition started one automatic synchronization");
+    }
     redraw(
         display,
         state,
@@ -1418,10 +1456,6 @@ impl SyncTask {
         self.config.library_root()
     }
 
-    fn idle_sync_interval(&self) -> Duration {
-        self.config.idle_sync_interval()
-    }
-
     fn cancel(&mut self) -> io::Result<()> {
         let active = self.future.take().is_some();
         self.completion = None;
@@ -1483,7 +1517,6 @@ struct UiState {
     library_empty: bool,
     last_sync_failure: Option<String>,
     last_activity: Instant,
-    last_sync_completion: Instant,
 }
 
 impl UiState {
@@ -1519,7 +1552,6 @@ impl UiState {
             library_empty: false,
             last_sync_failure: None,
             last_activity: Instant::now(),
-            last_sync_completion: Instant::now(),
         }
     }
 
@@ -1554,6 +1586,30 @@ impl UiState {
         self.message = "Synchronizing…".into();
     }
 
+    fn sync_cancelled(&mut self) {
+        self.sync_active = false;
+        self.approval_url = None;
+        self.message = "Synchronization canceled".into();
+    }
+
+    fn enter_sleep(&mut self, suspend_mode: SuspendMode) {
+        self.mode = "SLEEPING";
+        self.message = match suspend_mode {
+            SuspendMode::EInk => "E-ink standby mode",
+            SuspendMode::Normal => "Normal mem mode",
+        }
+        .into();
+    }
+
+    fn wake(&mut self) -> bool {
+        if self.mode != "SLEEPING" {
+            return false;
+        }
+        self.mode = "ACTIVE";
+        self.last_activity = Instant::now();
+        true
+    }
+
     fn apply_sync_event(&mut self, event: SyncEvent) {
         match event {
             SyncEvent::ApprovalUrl(url) => {
@@ -1563,7 +1619,6 @@ impl UiState {
             SyncEvent::Finished(Ok(outcome)) => {
                 self.sync_active = false;
                 self.approval_url = None;
-                self.last_sync_completion = Instant::now();
                 self.last_sync_failure = None;
                 match outcome {
                     sync::SyncOutcome::Updated { .. } => {
@@ -1584,7 +1639,6 @@ impl UiState {
             SyncEvent::Finished(Err(error)) => {
                 self.sync_active = false;
                 self.approval_url = None;
-                self.last_sync_completion = Instant::now();
                 self.last_sync_failure = Some(error.clone());
                 self.message = "Synchronization failed".into();
                 eprintln!("standalone-test: synchronization failed: {error}");
@@ -1592,12 +1646,10 @@ impl UiState {
         }
     }
 
-    fn should_start_idle_sync(&self, idle_sync_interval: Duration) -> bool {
-        !self.sync_active
-            && !self.bundle_ready
-            && matches!(self.page, UiPage::Home | UiPage::Details)
-            && self.last_sync_completion.elapsed() >= idle_sync_interval
-            && self.last_activity.elapsed() >= idle_sync_interval
+    fn should_enter_inactivity_sleep(&self, inactivity_timeout: Duration) -> bool {
+        self.mode == "ACTIVE"
+            && !self.sync_active
+            && self.last_activity.elapsed() >= inactivity_timeout
     }
 
     fn is_idle(&self) -> bool {
@@ -2230,41 +2282,86 @@ mod tests {
     }
 
     #[test]
-    fn idle_sync_uses_the_configured_quiet_period() {
-        let mut state = UiState::new();
-        let interval = Duration::from_secs(900);
-        state.last_sync_completion = Instant::now() - interval;
-        state.last_activity = Instant::now() - interval;
-
-        assert!(state.should_start_idle_sync(interval));
-
-        state.page = UiPage::Details;
-        assert!(state.should_start_idle_sync(interval));
+    fn sleep_inactivity_timeout_defaults_to_five_minutes() {
+        assert_eq!(
+            super::parse_sleep_inactivity_timeout(None).unwrap(),
+            Duration::from_secs(5 * 60)
+        );
     }
 
     #[test]
-    fn idle_sync_waits_after_failure_and_skips_display_test() {
+    fn sleep_inactivity_timeout_accepts_a_positive_override() {
+        assert_eq!(
+            super::parse_sleep_inactivity_timeout(Some("37".into())).unwrap(),
+            Duration::from_secs(37)
+        );
+    }
+
+    #[test]
+    fn sleep_inactivity_timeout_rejects_zero_and_non_numeric_values() {
+        assert!(super::parse_sleep_inactivity_timeout(Some("0".into())).is_err());
+        assert!(super::parse_sleep_inactivity_timeout(Some("later".into())).is_err());
+    }
+
+    #[test]
+    fn inactivity_enters_sleep_at_the_configured_quiet_period() {
         let mut state = UiState::new();
-        let interval = Duration::from_secs(900);
+        let timeout = Duration::from_secs(5 * 60);
+        state.last_activity = Instant::now() - timeout - Duration::from_secs(1);
+
+        assert!(state.should_enter_inactivity_sleep(timeout));
+        state.enter_sleep(SuspendMode::EInk);
+        assert!(!state.should_enter_inactivity_sleep(timeout));
+    }
+
+    #[test]
+    fn activity_resets_the_inactivity_sleep_timer() {
+        let mut state = UiState::new();
+        let timeout = Duration::from_secs(5 * 60);
+        state.last_activity = Instant::now() - timeout - Duration::from_secs(1);
+
+        state.observe(InputSourceKind::Keys, event(KEY_RIGHT, 2, 1_000_000));
+
+        assert!(!state.should_enter_inactivity_sleep(timeout));
+    }
+
+    #[test]
+    fn wake_transition_is_one_shot_and_rearms_the_inactivity_timer() {
+        let mut state = UiState::new();
+        state.enter_sleep(SuspendMode::EInk);
+        assert!(state.wake());
+        assert!(!state.wake());
+        assert!(!state.should_enter_inactivity_sleep(Duration::from_secs(5 * 60)));
+    }
+
+    #[test]
+    fn failed_wake_sync_does_not_request_another_sync_while_awake() {
+        let mut state = UiState::new();
+        state.enter_sleep(SuspendMode::EInk);
+        assert!(state.wake());
         state.sync_started();
-        // Model an attempt that started at least one interval ago.
-        state.last_sync_completion = Instant::now() - interval;
-        state.last_activity = Instant::now() - interval;
         state.apply_sync_event(SyncEvent::Finished(Err("network loss".into())));
 
         assert!(!state.sync_active);
         assert!(!state.bundle_ready);
         assert_eq!(state.last_sync_failure.as_deref(), Some("network loss"));
-        assert!(!state.should_start_idle_sync(interval));
-
-        state.last_sync_completion = Instant::now() - interval;
-        state.last_activity = Instant::now() - interval;
-        state.page = UiPage::DisplayTest;
-        assert!(!state.should_start_idle_sync(interval));
+        assert!(!state.should_enter_inactivity_sleep(Duration::from_secs(5 * 60)));
     }
 
     #[test]
-    fn updated_and_cleared_syncs_both_schedule_idle_reader_handoffs() {
+    fn manual_sync_request_remains_available_after_wake_failure() {
+        let mut state = UiState::new();
+        state.enter_sleep(SuspendMode::EInk);
+        assert!(state.wake());
+        state.sync_started();
+        state.apply_sync_event(SyncEvent::Finished(Err("network loss".into())));
+        state.sync_requested = true;
+
+        assert!(state.take_sync_request());
+    }
+
+    #[test]
+    fn updated_and_cleared_syncs_both_schedule_reader_handoffs() {
         let mut state = UiState::new();
         state.sync_started();
         state.apply_sync_event(SyncEvent::Finished(Ok(super::sync::SyncOutcome::Cleared {

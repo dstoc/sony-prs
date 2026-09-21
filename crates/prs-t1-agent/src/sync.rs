@@ -28,7 +28,6 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 pub const DEFAULT_ENDPOINT: &str = "https://prs-reader.dstoc.workers.dev";
 pub const DEFAULT_LIBRARY_ROOT: &str = "/mnt/prs-reader";
 pub const DEFAULT_TMPFS_LIMIT_BYTES: u64 = 48 * 1024 * 1024;
-pub const DEFAULT_IDLE_SYNC_INTERVAL_SECONDS: u64 = 15 * 60;
 pub const MAX_JSON_RESPONSE_BYTES: u64 = 64 * 1024;
 const MAX_POLL_DELAY_SECONDS: u32 = 60;
 const TEMP_NAME_LIMIT: usize = 32;
@@ -40,7 +39,6 @@ pub(crate) struct SyncConfig {
     framebuffer: PathBuf,
     library_root: PathBuf,
     tmpfs_limit_bytes: u64,
-    idle_sync_interval: Duration,
 }
 
 impl SyncConfig {
@@ -77,8 +75,6 @@ impl SyncConfig {
                 "PRS_T1_TMPFS_LIMIT_BYTES must be greater than zero",
             ));
         }
-        let idle_sync_interval =
-            parse_idle_sync_interval(std::env::var("PRS_T1_IDLE_SYNC_INTERVAL_SECONDS").ok())?;
         let library_root = PathBuf::from(library_root);
         if !library_root.is_absolute() {
             return Err(SyncError::configuration(
@@ -90,7 +86,6 @@ impl SyncConfig {
             framebuffer: PathBuf::from(framebuffer),
             library_root,
             tmpfs_limit_bytes,
-            idle_sync_interval,
         })
     }
 
@@ -107,30 +102,6 @@ impl SyncConfig {
     pub(crate) fn framebuffer(&self) -> &Path {
         &self.framebuffer
     }
-
-    pub(crate) fn idle_sync_interval(&self) -> Duration {
-        self.idle_sync_interval
-    }
-}
-
-fn parse_idle_sync_interval(value: Option<String>) -> Result<Duration, SyncError> {
-    let seconds = value
-        .as_deref()
-        .map(|value| {
-            value.parse::<u64>().map_err(|_| {
-                SyncError::configuration(
-                    "PRS_T1_IDLE_SYNC_INTERVAL_SECONDS must be an unsigned integer",
-                )
-            })
-        })
-        .transpose()?
-        .unwrap_or(DEFAULT_IDLE_SYNC_INTERVAL_SECONDS);
-    if seconds == 0 {
-        return Err(SyncError::configuration(
-            "PRS_T1_IDLE_SYNC_INTERVAL_SECONDS must be greater than zero",
-        ));
-    }
-    Ok(Duration::from_secs(seconds))
 }
 
 fn parse_endpoint(value: &str) -> Result<Url, SyncError> {
@@ -1258,28 +1229,6 @@ mod tests {
         assert!(parse_endpoint("http://reader.example.test").is_err());
         assert!(parse_endpoint("https://user:secret@reader.example.test").is_err());
         assert!(parse_endpoint("https://reader.example.test?secret=1").is_err());
-    }
-
-    #[test]
-    fn idle_sync_interval_defaults_to_fifteen_minutes() {
-        assert_eq!(
-            parse_idle_sync_interval(None).unwrap(),
-            Duration::from_secs(DEFAULT_IDLE_SYNC_INTERVAL_SECONDS)
-        );
-    }
-
-    #[test]
-    fn idle_sync_interval_accepts_a_positive_override() {
-        assert_eq!(
-            parse_idle_sync_interval(Some("37".into())).unwrap(),
-            Duration::from_secs(37)
-        );
-    }
-
-    #[test]
-    fn idle_sync_interval_rejects_zero_and_non_numeric_values() {
-        assert!(parse_idle_sync_interval(Some("0".into())).is_err());
-        assert!(parse_idle_sync_interval(Some("later".into())).is_err());
     }
 
     #[test]
