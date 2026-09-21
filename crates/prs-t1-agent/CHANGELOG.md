@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.1](https://github.com/dstoc/sony-prs/compare/prs-t1-agent-v0.11.0...prs-t1-agent-v0.11.1) (2026-09-21)
+
+
+### Bug Fixes
+
+* **prs-t1-agent:** make invalid hostname TLS test deterministic ([262c1ba](https://github.com/dstoc/sony-prs/commit/262c1bac597b574488dd82bd11d5ca70c4702f40))
+
 ## [0.11.0](https://github.com/dstoc/sony-prs/compare/prs-t1-agent-v0.10.1...prs-t1-agent-v0.11.0) (2026-09-20)
 
 
