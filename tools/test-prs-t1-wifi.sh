@@ -121,6 +121,12 @@ standalone = source[source.index("pub(crate) fn run_sync_outcome"):source.index(
 assert standalone.count("drop(future)") == 2
 assert standalone.count("shutdown_after_sync_cancellation_async()") == 2
 
+runtime_run = runtime[runtime.index("pub fn run("):runtime.index("/// Start the native runtime")]
+assert runtime_run.index("NativeDisplay::open(path)") < runtime_run.index(
+    "let sleep_inactivity_timeout = sleep_inactivity_timeout()?;"
+)
+assert "requires the first\n    // writable mapping before this environment/configuration parse" in runtime_run
+
 assert "shutdown_after_sync_cancellation_async()" in runtime
 assert "sync_task.cancel()" in runtime
 assert "display render failed" in runtime

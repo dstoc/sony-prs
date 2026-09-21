@@ -92,9 +92,14 @@ impl SuspendMode {
 }
 
 pub fn run(path: &Path, suspend_mode: SuspendMode) -> io::Result<()> {
-    let sleep_inactivity_timeout = sleep_inactivity_timeout()?;
+    // The T1's old Android/Bionic framebuffer driver requires the first
+    // writable mapping before this environment/configuration parse. Keep the
+    // display open first so a sleep-timeout override cannot make mmap fail.
     let mut display =
         NativeDisplay::open(path).map_err(|error| display_error("open native display", error))?;
+    // Preserve the five-minute default and the test override, but do not move
+    // this parse above NativeDisplay::open() without physical T1 validation.
+    let sleep_inactivity_timeout = sleep_inactivity_timeout()?;
     crate::status::ensure_native_ownership()?;
     let mut wake_lock = WakeLock::open().map_err(|error| display_error("open wake lock", error))?;
     wake_lock
