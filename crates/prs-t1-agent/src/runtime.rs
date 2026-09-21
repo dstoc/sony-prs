@@ -645,6 +645,9 @@ impl DirtyArea {
                 Self::StatusFeedback
             }
             (Self::Status, Self::Feedback) | (Self::Feedback, Self::Status) => Self::StatusFeedback,
+            (Self::SyncStatus, Self::StatusFeedback) | (Self::StatusFeedback, Self::SyncStatus) => {
+                Self::StatusFeedback
+            }
             (Self::PageTurn(tone), Self::Interaction)
             | (Self::Interaction, Self::PageTurn(tone)) => Self::PageTurn(tone),
             (Self::SyncStatus, Self::Feedback) | (Self::Feedback, Self::SyncStatus) => {
@@ -2467,6 +2470,26 @@ mod tests {
                 },
             ))),
             Some(DirtyArea::SyncStatus)
+        );
+    }
+
+    #[test]
+    fn immediate_failed_sync_merges_bounded_status_feedback_damage() {
+        let mut state = UiState::new();
+        let mut redraw_area = None;
+
+        state.request_manual_sync();
+        assert!(super::start_requested_sync(&mut state, || true).is_some());
+        redraw_area = super::merge_optional_dirty(redraw_area, Some(state.sync_status_dirty()));
+        redraw_area = super::merge_optional_dirty(
+            redraw_area,
+            state.apply_sync_event(SyncEvent::Finished(Err("network loss".into()))),
+        );
+
+        assert_eq!(redraw_area, Some(DirtyArea::StatusFeedback));
+        assert_eq!(
+            DirtyArea::StatusFeedback.region(600, 800, UiPage::Home),
+            super::DisplayRegion::new(0, 0, 600, display::CONTENT_TOP as u32)
         );
     }
 
