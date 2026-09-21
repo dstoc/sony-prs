@@ -48,8 +48,10 @@ pub async fn show(
     request_id: Option<String>,
     access: Option<AccessContext>,
 ) -> Result<Response> {
-    if !approval_host_allowed(&request, &env)? {
-        return wrong_approval_host_response();
+    match approval_host_allowed(&request, &env) {
+        Ok(true) => {}
+        Ok(false) => return wrong_approval_host_response(),
+        Err(_) => return approval_unavailable_response(),
     }
     render_route(request, env, request_id, None, access).await
 }
@@ -60,8 +62,10 @@ pub async fn approve(
     request_id: Option<String>,
     access: Option<AccessContext>,
 ) -> Result<Response> {
-    if !approval_host_allowed(&request, &env)? {
-        return wrong_approval_host_response();
+    match approval_host_allowed(&request, &env) {
+        Ok(true) => {}
+        Ok(false) => return wrong_approval_host_response(),
+        Err(_) => return approval_unavailable_response(),
     }
     action_route(request, env, request_id, true, access).await
 }
@@ -72,8 +76,10 @@ pub async fn deny(
     request_id: Option<String>,
     access: Option<AccessContext>,
 ) -> Result<Response> {
-    if !approval_host_allowed(&request, &env)? {
-        return wrong_approval_host_response();
+    match approval_host_allowed(&request, &env) {
+        Ok(true) => {}
+        Ok(false) => return wrong_approval_host_response(),
+        Err(_) => return approval_unavailable_response(),
     }
     action_route(request, env, request_id, false, access).await
 }
@@ -85,7 +91,10 @@ async fn action_route(
     approve: bool,
     access: Option<AccessContext>,
 ) -> Result<Response> {
-    let request_id = parse_request_id(request_id)?;
+    let request_id = match parse_request_id(request_id) {
+        Ok(request_id) => request_id,
+        Err(_) => return invalid_request_response(),
+    };
     let access = match access.as_ref() {
         Some(access) => access,
         None => return forbidden_response(),
@@ -98,16 +107,22 @@ async fn action_route(
         .await
         .ok()
         .and_then(|form| form.get_field(CSRF_FIELD));
-    let valid_token = submitted_token
+    let valid_token = match submitted_token
         .as_deref()
         .map(|token| validate_csrf_token(&env, access, &request_id, token))
-        .transpose()?
-        .unwrap_or(false);
+        .transpose()
+    {
+        Ok(valid_token) => valid_token.unwrap_or(false),
+        Err(_) => return approval_unavailable_response(),
+    };
     if !valid_token {
         return csrf_failure_response();
     }
 
-    let service = authorization_service(&env)?;
+    let service = match authorization_service(&env) {
+        Ok(service) => service,
+        Err(_) => return approval_unavailable_response(),
+    };
     let owner = match approval_capability(Some(access)) {
         Ok(owner) => owner,
         Err(response) => return response,
@@ -151,7 +166,7 @@ async fn action_route(
     } else {
         "The request was denied. The waiting client will not receive a credential."
     };
-    render(&env, access, details, Some(message))
+    render_safely(&env, access, details, Some(message))
 }
 
 async fn render_route(
@@ -161,8 +176,14 @@ async fn render_route(
     message: Option<&'static str>,
     access: Option<AccessContext>,
 ) -> Result<Response> {
-    let request_id = parse_request_id(request_id)?;
-    let service = authorization_service(&env)?;
+    let request_id = match parse_request_id(request_id) {
+        Ok(request_id) => request_id,
+        Err(_) => return invalid_request_response(),
+    };
+    let service = match authorization_service(&env) {
+        Ok(service) => service,
+        Err(_) => return approval_unavailable_response(),
+    };
     let access = match access.as_ref() {
         Some(access) => access,
         None => return forbidden_response(),
@@ -177,7 +198,7 @@ async fn render_route(
         Ok(details) => details,
         Err(error) => return authorization_error_response(error),
     };
-    render(&env, access, details, message)
+    render_safely(&env, access, details, message)
 }
 
 fn approval_capability(
@@ -209,6 +230,17 @@ pub(crate) fn configured_approval_base_url(env: &Env) -> String {
     env.var(APPROVAL_BASE_URL_ENV)
         .map(|value| value.to_string())
         .unwrap_or_else(|_| DEFAULT_APPROVAL_BASE_URL.to_owned())
+}
+
+/// Return whether the production approval page has its CSRF secret binding.
+///
+/// The value is never returned or logged. Readiness uses this check to stop a
+/// release before it can advertise an approval surface that cannot render.
+pub(crate) fn csrf_secret_configured(env: &Env) -> bool {
+    env.var(CSRF_SECRET_ENV)
+        .ok()
+        .map(|value| value.to_string())
+        .is_some_and(|secret| secret.as_bytes().len() >= CSRF_MIN_SECRET_BYTES)
 }
 
 fn approval_host_allowed(request: &Request, env: &Env) -> Result<bool> {
@@ -264,6 +296,18 @@ fn render(
         .with_header("Content-Security-Policy", APPROVAL_CSP)?
         .with_header("X-Frame-Options", "DENY")?
         .from_html(html)
+}
+
+fn render_safely(
+    env: &Env,
+    access: &AccessContext,
+    details: ApprovalRequestDetails,
+    message: Option<&str>,
+) -> Result<Response> {
+    match render(env, access, details, message) {
+        Ok(response) => Ok(response),
+        Err(_) => approval_unavailable_response(),
+    }
 }
 
 fn render_html(
@@ -445,13 +489,22 @@ fn validate_csrf_token(
 }
 
 fn csrf_secret(env: &Env) -> Result<String> {
-    let secret = env.var(CSRF_SECRET_ENV)?.to_string();
+    let secret = env.var(CSRF_SECRET_ENV).ok().map(|value| value.to_string());
+    checked_csrf_secret(secret.as_deref())
+}
+
+fn checked_csrf_secret(secret: Option<&str>) -> Result<String> {
+    let Some(secret) = secret else {
+        return Err(worker::Error::RustError(
+            "approval CSRF configuration is unavailable".to_owned(),
+        ));
+    };
     if secret.as_bytes().len() < CSRF_MIN_SECRET_BYTES {
         return Err(worker::Error::RustError(
-            "PRS_CSRF_SECRET must contain at least 32 bytes".to_owned(),
+            "approval CSRF configuration is unavailable".to_owned(),
         ));
     }
-    Ok(secret)
+    Ok(secret.to_owned())
 }
 
 fn csrf_signature(
@@ -535,6 +588,18 @@ fn wrong_approval_host_response() -> Result<Response> {
     )?)
 }
 
+fn invalid_request_response() -> Result<Response> {
+    secure_approval_response(Response::error("approval request was not found", 404)?)
+}
+
+fn approval_unavailable_response() -> Result<Response> {
+    worker::console_error!("PRSync approval request failed unexpectedly");
+    secure_approval_response(Response::error(
+        "approval service is temporarily unavailable",
+        503,
+    )?)
+}
+
 fn authorization_error_response(error: AuthorizationError) -> Result<Response> {
     if let Some(failure) = error.failure() {
         let status = match failure {
@@ -550,7 +615,7 @@ fn authorization_error_response(error: AuthorizationError) -> Result<Response> {
         };
         return secure_approval_response(Response::error(failure.to_string(), status)?);
     }
-    Err(error.into_worker())
+    approval_unavailable_response()
 }
 
 #[cfg(test)]
@@ -613,6 +678,16 @@ mod tests {
     #[test]
     fn approval_requires_an_authenticated_access_context() {
         assert!(!access_is_authenticated(None));
+    }
+
+    #[test]
+    fn csrf_secret_requires_a_configured_minimum_length() {
+        assert!(checked_csrf_secret(None).is_err());
+        assert!(checked_csrf_secret(Some("too-short")).is_err());
+        assert_eq!(
+            checked_csrf_secret(Some("a sufficiently long test secret for csrf")).unwrap(),
+            "a sufficiently long test secret for csrf"
+        );
     }
 
     #[test]

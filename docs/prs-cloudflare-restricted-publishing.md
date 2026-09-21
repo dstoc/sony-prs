@@ -74,6 +74,7 @@ Use a disposable or production-equivalent account and pre-existing resources:
 - D1 database: `prs-reader-db`, with its checked-in UUID in
   `crates/prs-cloudflare/wrangler.toml`.
 - Private R2 bucket: `prs-reader-documents`.
+- Production Worker secret: `PRS_CSRF_SECRET`, with at least 32 bytes.
 - Two separate tokens: an operator token for D1 migration management and a
   deployment token for Worker publishing.
 
@@ -91,6 +92,19 @@ The deployment token must have the Worker publish permission required by the
 account and no D1 or R2 management permission. Record the permission names
 and the account scope, including any `Workers Scripts` authority, but not the
 token value.
+
+Before the first production publish, use the operator credential to configure
+the approval secret:
+
+```sh
+tools/prs-cloudflare-configure-approval.sh --production
+```
+
+The command generates the secret and sends it directly to Wrangler. It does
+not store or print the value. Do not put the secret in `wrangler.toml`, a
+GitHub repository variable, an issue, or a deployment artifact. The command
+rotates the secret when run again and invalidates existing approval-page
+forms. It does not change polling secrets or bearer credentials.
 
 ## Apply and verify migrations with operator authority
 

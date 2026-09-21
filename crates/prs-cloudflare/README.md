@@ -146,11 +146,20 @@ Protect only the `/a/*` routes on this hostname with a Cloudflare Access
 application whose policy allows the human owner. The Worker checks `ctx.access`
 and accepts approval requests only when the request hostname matches the
 hostname in `PRS_APPROVAL_BASE_URL`. Configure a secret named
-`PRS_CSRF_SECRET` with at least 32 bytes. For example, run
-`wrangler secret put PRS_CSRF_SECRET --env production`. Keep `/health`,
-`/ready`, and `/api/v1/*` outside interactive Access. Those routes use PRSync
-bearer capabilities or readiness checks and do not require an interactive
-Access login.
+`PRS_CSRF_SECRET` with at least 32 bytes. Use the operator-only setup command
+to generate and install it without writing the value to the repository:
+
+```sh
+tools/prs-cloudflare-configure-approval.sh --production
+```
+
+The command runs `wrangler secret put PRS_CSRF_SECRET --env production` with a
+generated value on standard input. Run it with a credential that can write
+Worker secrets, not with the restricted publishing credential. The `/ready`
+route reports `503` until this binding is configured. Keep `/health`, `/ready`,
+and `/api/v1/*` outside interactive Access. Those routes use PRSync bearer
+capabilities or readiness checks and do not require an interactive Access
+login.
 
 ## Schema
 

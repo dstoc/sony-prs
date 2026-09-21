@@ -8,6 +8,7 @@ migrations_directory="$repo_root/crates/prs-cloudflare/migrations"
 bootstrap="$repo_root/tools/prs-cloudflare-bootstrap.sh"
 migrate="$repo_root/tools/prs-cloudflare-migrate.sh"
 deploy="$repo_root/tools/prs-cloudflare-deploy.sh"
+configure_approval="$repo_root/tools/prs-cloudflare-configure-approval.sh"
 readiness="$repo_root/tools/prs-cloudflare-readiness.sh"
 readme="$repo_root/crates/prs-cloudflare/README.md"
 
@@ -59,6 +60,8 @@ if production_vars.get("PRS_APPROVAL_BASE_URL") != "https://prs-reader.dstoc.wor
     )
 if "reader.example.com" in production_vars.get("PRS_APPROVAL_BASE_URL", ""):
     raise SystemExit("production approval URLs must not use the example hostname")
+if "PRS_CSRF_SECRET" in production_vars:
+    raise SystemExit("production CSRF secrets must use Wrangler secret storage")
 for routing_key in ("route", "routes", "custom_domains"):
     if routing_key in production:
         raise SystemExit(f"production must not configure {routing_key}")
@@ -199,6 +202,16 @@ for expected in \
     'D1 or R2 management permission'; do
     if ! grep -Fq -- "$expected" "$deploy"; then
         echo "missing safe deployment guard or command: $expected" >&2
+        exit 1
+    fi
+done
+for expected in \
+    '--production' \
+    'openssl rand -hex 32' \
+    'wrangler secret put PRS_CSRF_SECRET --env production' \
+    'restricted Worker-publishing credential'; do
+    if ! grep -Fq -- "$expected" "$configure_approval"; then
+        echo "missing secure approval secret configuration guard: $expected" >&2
         exit 1
     fi
 done

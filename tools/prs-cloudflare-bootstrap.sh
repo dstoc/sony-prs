@@ -46,6 +46,10 @@ operator migration command:
 
   tools/prs-cloudflare-migrate.sh --production
 
+Configure the approval CSRF secret before the first Worker publish with:
+
+  tools/prs-cloudflare-configure-approval.sh --production
+
 The production R2 bucket remains private because wrangler.toml declares it as
 a Worker binding and does not configure public access.
 NEXT

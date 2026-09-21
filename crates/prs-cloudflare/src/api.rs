@@ -221,9 +221,17 @@ async fn readiness(_request: Request, context: RouteContext<()>) -> Result<Respo
         },
         Err(_) => SchemaReadiness::unavailable(),
     };
-    let status = if readiness.is_ready() { 200 } else { 503 };
+    let approval_configured = crate::approval::csrf_secret_configured(&context.env);
+    let status = if readiness.is_ready() && approval_configured {
+        200
+    } else {
+        503
+    };
     let release = release_metadata(&context.env);
-    let mut response = json_response(&readiness_response(readiness, release), status)?;
+    let mut response = json_response(
+        &readiness_response(readiness, release, approval_configured),
+        status,
+    )?;
     response.headers_mut().set("Cache-Control", "no-store")?;
     Ok(response)
 }
@@ -241,15 +249,19 @@ fn release_metadata(env: &Env) -> Option<ReleaseMetadata> {
 fn readiness_response(
     readiness: SchemaReadiness,
     release: Option<ReleaseMetadata>,
+    approval_configured: bool,
 ) -> ReadinessResponse {
     ReadinessResponse {
         service: "prs-cloudflare",
-        status: if readiness.is_ready() {
+        status: if readiness.is_ready() && approval_configured {
             "ready"
         } else {
             "not_ready"
         },
-        reason: readiness.failure.map(|failure| failure.as_str()),
+        reason: readiness
+            .failure
+            .map(|failure| failure.as_str())
+            .or_else(|| (!approval_configured).then_some("approval_configuration_unavailable")),
         schema_requirement: readiness.requirement,
         applied_migration: readiness.applied_migration,
         release,
@@ -1067,7 +1079,7 @@ mod tests {
 
     #[test]
     fn unavailable_schema_readiness_is_not_ready() {
-        let response = readiness_response(SchemaReadiness::unavailable(), None);
+        let response = readiness_response(SchemaReadiness::unavailable(), None, true);
         assert_eq!(response.status, "not_ready");
         assert_eq!(response.reason, Some("migration_history_unavailable"));
         assert_eq!(response.schema_requirement.migration_id, 7);
@@ -1083,10 +1095,25 @@ mod tests {
                 tag: "commit-1".to_owned(),
                 timestamp: "2026-09-21T00:00:00Z".to_owned(),
             }),
+            true,
         );
         assert_eq!(
             response.release.expect("release metadata").version_id,
             "version-1"
         );
+    }
+
+    #[test]
+    fn readiness_requires_the_approval_secret_when_schema_is_ready() {
+        let readiness = SchemaReadiness::ready(
+            schema::RELEASE_SCHEMA_REQUIREMENT,
+            AppliedMigration {
+                migration_id: 7,
+                migration_name: "0007_remove_owner_identity.sql".to_owned(),
+            },
+        );
+        let response = readiness_response(readiness, None, false);
+        assert_eq!(response.status, "not_ready");
+        assert_eq!(response.reason, Some("approval_configuration_unavailable"));
     }
 }

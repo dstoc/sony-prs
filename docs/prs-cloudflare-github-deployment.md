@@ -84,6 +84,11 @@ environment. Set it to `https://prs-reader.dstoc.workers.dev`, the
 The checked-in production Worker configuration uses this same URL for
 `PRS_APPROVAL_BASE_URL`. Access protects only the `/a/*` approval routes;
 `/health`, `/ready`, and `/api/v1/*` remain outside interactive Access.
+Configure the Worker secret `PRS_CSRF_SECRET` before the first deployment
+with `tools/prs-cloudflare-configure-approval.sh --production`. Keep this
+secret in Cloudflare Worker secret storage. Do not add it to the GitHub
+environment, repository variables, Wrangler configuration, logs, or
+artifacts. The deployment readiness check fails until the binding exists.
 
 The job installs the pinned `worker-build` and Wrangler versions, builds the
 Worker, and runs:
