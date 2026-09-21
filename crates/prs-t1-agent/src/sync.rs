@@ -42,6 +42,10 @@ pub(crate) struct SyncConfig {
 }
 
 impl SyncConfig {
+    pub(crate) fn framebuffer_path(&self) -> &Path {
+        &self.framebuffer
+    }
+
     fn parse(args: &[String]) -> Result<Self, SyncError> {
         if args.len() > 2 {
             return Err(SyncError::configuration(
@@ -1094,9 +1098,7 @@ pub(crate) fn run(args: Vec<String>) -> io::Result<()> {
     crate::wifi::run_sync(config)
 }
 
-pub(crate) fn run_active(config: SyncConfig) -> io::Result<()> {
-    let mut display = NativeDisplay::open(&config.framebuffer)
-        .map_err(|error| io::Error::other(format!("could not open sync display: {error}")))?;
+pub(crate) fn run_active(config: SyncConfig, display: &mut NativeDisplay) -> io::Result<()> {
     crate::status::ensure_native_ownership()?;
     let runtime = RuntimeBuilder::new_current_thread()
         .enable_all()
@@ -1106,7 +1108,7 @@ pub(crate) fn run_active(config: SyncConfig) -> io::Result<()> {
         crate::tls::initialize().map_err(|error| SyncError::network(error.to_string()))?;
         let transport = Transport::connect(&config.endpoint).await?;
         let mut client = SyncClient::new(config);
-        client.synchronize(&transport, &mut display).await
+        client.synchronize(&transport, display).await
     });
     match result {
         Ok(SyncOutcome::Updated {

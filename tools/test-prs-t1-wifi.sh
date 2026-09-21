@@ -90,6 +90,25 @@ candidate_paths = [
     "/data/misc/wifi/wpa_supplicant",
 ]
 assert all(path in source for path in candidate_paths)
+
+run_sync = source[source.index("pub(crate) fn run_sync"):source.index("fn run_up")]
+display_open = run_sync.index("NativeDisplay::open(config.framebuffer_path())")
+bring_up = run_sync.index("if let Err(error) = bring_up()")
+active_sync = run_sync.index("crate::sync::run_active(config, &mut display)")
+shutdown = run_sync.index("let shutdown_result = shutdown()")
+display_drops = [
+    offset for offset in range(len(run_sync)) if run_sync.startswith("drop(display)", offset)
+]
+assert len(display_drops) == 2
+startup_drop, active_drop = display_drops
+assert display_open < bring_up < startup_drop < active_sync < shutdown < active_drop
+assert run_sync.count("NativeDisplay::open(") == 1
+
+sync_source = Path(sys.argv[1].replace("src/wifi.rs", "src/sync.rs")).read_text()
+run_active = sync_source[sync_source.index("pub(crate) fn run_active"):sync_source.index("#[cfg(test)]")]
+assert "display: &mut NativeDisplay" in run_active
+assert "NativeDisplay::open(" not in run_active
+assert "client.synchronize(&transport, display)" in run_active
 PY
 
 python3 - "$main_source" <<'PY'

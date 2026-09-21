@@ -120,6 +120,11 @@ archive. It reports recoverable failures with `sync.failure_kind`, including
 the current library at that synchronization boundary. A failed attempt does
 not replace or clear the current library.
 
+On the PRS-T1, the sync command opens the framebuffer before it starts Wi-Fi
+and keeps that same `NativeDisplay` through synchronization and Wi-Fi shutdown.
+This is a vendor driver/HAL lifecycle constraint. It is not an authorization
+or TLS requirement.
+
 ## Build and deploy
 
 The T1 expects an ARMv7-A/Cortex-A8 soft-float executable. The release build is statically

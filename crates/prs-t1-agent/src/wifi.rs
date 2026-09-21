@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::framebuffer::NativeDisplay;
 use crate::status;
 
 pub const WIFI_HELPER: &str = "/data/local/tmp/prs-t1-wifi-helper";
@@ -149,12 +150,17 @@ pub(crate) fn run_sync(config: crate::sync::SyncConfig) -> io::Result<()> {
     print_snapshot("before");
     print_timeouts();
 
+    let mut display = NativeDisplay::open(config.framebuffer_path())
+        .map_err(|error| io::Error::other(format!("could not open sync display: {error}")))?;
     if let Err(error) = bring_up() {
-        return finish_failed_startup(error);
+        let result = finish_failed_startup(error);
+        drop(display);
+        return result;
     }
     print_snapshot("ready");
-    let sync_result = crate::sync::run_active(config);
+    let sync_result = crate::sync::run_active(config, &mut display);
     let shutdown_result = shutdown();
+    drop(display);
     print_snapshot("after");
 
     match (sync_result, shutdown_result) {
