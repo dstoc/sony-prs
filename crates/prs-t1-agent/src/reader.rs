@@ -121,6 +121,17 @@ impl ReaderConfig {
         config.document = PathBuf::from(manifest.entry_point.as_str());
         Ok(config)
     }
+
+    fn copy_font_paths_from(&mut self, source: &Self) {
+        self.regular_font = source.regular_font.clone();
+        self.bold_font = source.bold_font.clone();
+        self.italic_font = source.italic_font.clone();
+        self.bold_italic_font = source.bold_italic_font.clone();
+        self.monospace_font = source.monospace_font.clone();
+        self.monospace_bold_font = source.monospace_bold_font.clone();
+        self.monospace_italic_font = source.monospace_italic_font.clone();
+        self.monospace_bold_italic_font = source.monospace_bold_italic_font.clone();
+    }
 }
 
 /// The page viewport available below the T1 status bar and its breathing room.
@@ -135,6 +146,7 @@ pub fn viewport_for_display(width: u32, height: u32) -> Viewport {
 pub struct T1Reader {
     reader: Reader<FileSystemResourceProvider, FontdueTextEngine, ComrakParser>,
     renderer: EmbeddedGraphicsRenderer<FontdueTextEngine>,
+    config: ReaderConfig,
     entry_point: PathBuf,
     library_root: PathBuf,
     external_url_notice: Option<String>,
@@ -143,6 +155,17 @@ pub struct T1Reader {
 
 impl T1Reader {
     pub fn open(config: ReaderConfig, viewport: Viewport) -> io::Result<Self> {
+        let library_root = library_root_for_config(&config);
+        Self::open_with_library_root(config, viewport, library_root)
+    }
+
+    /// Open a document while keeping the PRSync publication root separate
+    /// from the document used as the startup placeholder.
+    pub(crate) fn open_with_library_root(
+        config: ReaderConfig,
+        viewport: Viewport,
+        library_root: impl AsRef<Path>,
+    ) -> io::Result<Self> {
         if viewport.width == 0 || viewport.height == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -150,9 +173,9 @@ impl T1Reader {
             ));
         }
 
-        let library_root = library_root_for_config(&config);
         let provider = FileSystemResourceProvider::new(&config.document_root, &config.document)
             .map_err(|error| integration_error("configure Markdown resources", error))?;
+        let reload_config = config.clone();
         let fonts = load_fonts(&config)?;
         let engine = FontdueTextEngine::new(fonts, GLYPH_CACHE_CAPACITY)
             .map_err(|error| integration_error("load T1 Markdown fonts", error))?;
@@ -170,8 +193,9 @@ impl T1Reader {
         Ok(Self {
             reader,
             renderer: EmbeddedGraphicsRenderer::new(engine),
+            config: reload_config,
             entry_point: config.document,
-            library_root,
+            library_root: library_root.as_ref().to_owned(),
             external_url_notice: None,
             library_empty: false,
         })
@@ -184,7 +208,7 @@ impl T1Reader {
     /// method is called at an idle boundary.
     pub fn reload_current_bundle(&mut self) -> io::Result<()> {
         let viewport = self.reader.viewport();
-        let config = match ReaderConfig::from_library_root(&self.library_root) {
+        let mut config = match ReaderConfig::from_library_root(&self.library_root) {
             Ok(config) => config,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 self.library_empty = true;
@@ -193,10 +217,11 @@ impl T1Reader {
             }
             Err(error) => return Err(error),
         };
+        config.copy_font_paths_from(&self.config);
         let previous = (!self.library_empty)
             .then(|| self.reader.current_location().cloned())
             .flatten();
-        let mut replacement = Self::open(config, viewport)?;
+        let mut replacement = Self::open_with_library_root(config, viewport, &self.library_root)?;
         if let Some(location) = previous {
             if replacement
                 .reader
@@ -527,6 +552,33 @@ mod tests {
         root
     }
 
+    fn sync_library_root() -> PathBuf {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("test clock should be after the Unix epoch")
+            .as_nanos();
+        let root = env::temp_dir().join(format!("prs-t1-sync-library-{suffix}"));
+        fs::create_dir_all(&root).expect("create sync library root");
+        root
+    }
+
+    fn publish_test_bundle(root: &Path, generation: &str, entry_point: &str, content: &str) {
+        use std::os::unix::fs::symlink;
+
+        let generation_root = root.join(generation);
+        fs::create_dir_all(&generation_root).expect("create bundle generation");
+        fs::write(generation_root.join(entry_point), content).expect("write bundle entry point");
+        fs::write(
+            generation_root.join("manifest.json"),
+            format!(
+                r#"{{"protocol_version":{{"major":1,"minor":0}},"bundle_format_version":1,"entry_point":"{entry_point}","files":[{{"path":"{entry_point}","size":{}}}]}}"#,
+                content.len()
+            ),
+        )
+        .expect("write bundle manifest");
+        symlink(generation, root.join("current")).expect("publish current bundle");
+    }
+
     fn raster_for_face(engine: &mut FontdueTextEngine, face: FontFace) -> Vec<u8> {
         let layout = engine.layout(&[TextRun::new("Ag", TypographyStyle::new(face, 20))], 100);
         TextEngine::rasterize_glyph(engine, &layout.glyphs[0]).alpha
@@ -729,6 +781,91 @@ mod tests {
             "retired generation stays until cleanup"
         );
         fs::remove_dir_all(root).expect("remove bundle fixture");
+    }
+
+    #[test]
+    fn reload_adopts_sync_bundle_when_startup_uses_a_placeholder() {
+        let placeholder_root = fixture_root("# Placeholder");
+        let library_root = sync_library_root();
+        let mut reader = T1Reader::open_with_library_root(
+            fixture_config(&placeholder_root),
+            Viewport::new(240, 120),
+            &library_root,
+        )
+        .expect("open placeholder reader");
+
+        publish_test_bundle(&library_root, ".generation-one", "chapter.md", "# Chapter");
+        reader
+            .reload_current_bundle()
+            .expect("adopt first published bundle");
+        assert!(!reader.is_library_empty());
+        assert_eq!(reader.entry_point, PathBuf::from("chapter.md"));
+        assert_eq!(
+            reader
+                .reader
+                .current_location()
+                .expect("first document location")
+                .document
+                .as_ref(),
+            "chapter.md"
+        );
+
+        fs::remove_file(library_root.join("current")).expect("remove first current link");
+        publish_test_bundle(
+            &library_root,
+            ".generation-two",
+            "new-entry.md",
+            "# New entry",
+        );
+        reader
+            .reload_current_bundle()
+            .expect("adopt second published bundle");
+        assert_eq!(reader.entry_point, PathBuf::from("new-entry.md"));
+        assert_eq!(
+            reader
+                .reader
+                .current_location()
+                .expect("second document location")
+                .document
+                .as_ref(),
+            "new-entry.md"
+        );
+
+        fs::remove_dir_all(placeholder_root).expect("remove placeholder fixture");
+        fs::remove_dir_all(library_root).expect("remove sync library fixture");
+    }
+
+    #[test]
+    fn failed_bundle_reload_keeps_the_previously_active_document() {
+        let library_root = sync_library_root();
+        publish_test_bundle(&library_root, ".generation-good", "old.md", "# Old");
+        let mut config = fixture_config(&library_root.join("current"));
+        config.document = PathBuf::from("old.md");
+        let mut reader =
+            T1Reader::open_with_library_root(config, Viewport::new(240, 120), &library_root)
+                .expect("open good bundle");
+
+        fs::remove_file(library_root.join("current")).expect("remove good current link");
+        publish_test_bundle(&library_root, ".generation-broken", "new.md", "# New");
+        fs::write(
+            library_root.join(".generation-broken/manifest.json"),
+            b"not a manifest",
+        )
+        .expect("corrupt replacement manifest");
+
+        assert!(reader.reload_current_bundle().is_err());
+        assert_eq!(reader.entry_point, PathBuf::from("old.md"));
+        assert_eq!(
+            reader
+                .reader
+                .current_location()
+                .expect("previous document location")
+                .document
+                .as_ref(),
+            "old.md"
+        );
+
+        fs::remove_dir_all(library_root).expect("remove sync library fixture");
     }
 
     #[test]

@@ -100,19 +100,22 @@ pub fn run(path: &Path, suspend_mode: SuspendMode) -> io::Result<()> {
         .map_err(|error| display_error("acquire wake lock", error))?;
     let mut inputs =
         InputSet::open().map_err(|error| display_error("open input devices", error))?;
-    let mut markdown_reader = reader::T1Reader::open(
-        reader::ReaderConfig::from_current_bundle().unwrap_or_else(|error| {
-            eprintln!(
-                "standalone-test: no current PRSync bundle ({error}); using configured reader"
-            );
-            reader::ReaderConfig::from_environment()
-        }),
+    let mut sync_task =
+        SyncTask::new(path).map_err(|error| display_error("create sync runtime", error))?;
+    let reader_config = reader::ReaderConfig::from_current_bundle().unwrap_or_else(|error| {
+        eprintln!("standalone-test: no current PRSync bundle ({error}); using configured reader");
+        reader::ReaderConfig::from_environment()
+    });
+    // The startup document can be a placeholder outside the PRSync library.
+    // Keep reloads pinned to the same root used for atomic publication by the
+    // long-lived synchronization task.
+    let mut markdown_reader = reader::T1Reader::open_with_library_root(
+        reader_config,
         reader::viewport_for_display(display.width(), display.height()),
+        sync_task.library_root(),
     )
     .map_err(|error| display_error("open development Markdown reader", error))?;
     let mut state = UiState::new();
-    let mut sync_task =
-        SyncTask::new(path).map_err(|error| display_error("create sync runtime", error))?;
     if sync_task.start() {
         state.sync_started();
     }
