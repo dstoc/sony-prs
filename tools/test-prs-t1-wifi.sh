@@ -5,6 +5,8 @@ repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 helper_source="$repo_root/crates/prs-t1-agent/tools/wifi-helper.c"
 helper_build="$repo_root/crates/prs-t1-agent/tools/build-wifi-helper.sh"
 wifi_source="$repo_root/crates/prs-t1-agent/src/wifi.rs"
+network_source="$repo_root/crates/prs-t1-agent/src/network.rs"
+network_readme="$repo_root/crates/prs-t1-agent/README.md"
 
 for symbol in \
   wifi_load_driver \
@@ -35,6 +37,14 @@ grep -Fq '"/data/misc/wifi/sockets/wpa_ctrl_"' "$wifi_source"
 grep -Fq 'wifi.association_source' "$wifi_source"
 grep -Fq 'supplicant_crashed' "$wifi_source"
 grep -Fq 'dhcp_service_is_bound' "$wifi_source"
+grep -Fq '"--inject-network-loss"' "$network_source"
+grep -Fq 'injected_dns_network_loss' "$network_source"
+grep -Fq 'injected_tls_network_loss' "$network_source"
+grep -Fq 'injected_response_network_loss' "$network_source"
+grep -Fq 'injected TLS negotiation network loss' "$network_source"
+grep -Fq 'response body read interrupted by the diagnostic network-loss injection' "$network_source"
+grep -Fq 'run_injected_loss dns' "$repo_root/crates/prs-t1-agent/build.md"
+grep -Fq -- '--inject-network-loss STAGE' "$network_readme"
 
 python3 - "$wifi_source" <<'PY'
 from pathlib import Path

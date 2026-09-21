@@ -20,10 +20,55 @@ const RESPONSE_TIMEOUT: Duration = Duration::from_secs(20);
 const MAX_RESPONSE_BYTES: u64 = 64 * 1024;
 const NEGATIVE_HOSTNAME: &str = "invalid.prs-t1.invalid";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NetworkFault {
+    Dns,
+    Tls,
+    Response,
+}
+
+impl NetworkFault {
+    fn parse(value: &str) -> Result<Self, ProbeFailure> {
+        match value {
+            "dns" => Ok(Self::Dns),
+            "tls" => Ok(Self::Tls),
+            "response" => Ok(Self::Response),
+            _ => Err(ProbeFailure::usage(format!(
+                "unknown network-loss stage {value:?}; expected dns, tls, or response"
+            ))),
+        }
+    }
+
+    const fn stage(self) -> &'static str {
+        match self {
+            Self::Dns => "dns",
+            Self::Tls => "tls",
+            Self::Response => "response",
+        }
+    }
+
+    const fn kind(self) -> &'static str {
+        match self {
+            Self::Dns => "injected_dns_network_loss",
+            Self::Tls => "injected_tls_network_loss",
+            Self::Response => "injected_response_network_loss",
+        }
+    }
+
+    fn failure(self, detail: impl Into<String>) -> ProbeFailure {
+        ProbeFailure {
+            stage: self.stage(),
+            kind: self.kind(),
+            detail: detail.into(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ProbeConfig {
     endpoint: Url,
     invalid_hostname: bool,
+    fault: Option<NetworkFault>,
 }
 
 impl ProbeConfig {
@@ -32,18 +77,33 @@ impl ProbeConfig {
         let endpoint = values
             .next()
             .ok_or_else(|| ProbeFailure::usage("network-probe requires a hostname or HTTPS URL"))?;
-        let invalid_hostname = match values.next().map(String::as_str) {
-            None => false,
-            Some("--invalid-hostname") => true,
-            Some(value) => {
-                return Err(ProbeFailure::usage(format!(
-                    "unknown network-probe option {value:?}; expected --invalid-hostname"
-                )))
+        let mut invalid_hostname = false;
+        let mut fault = None;
+        while let Some(value) = values.next() {
+            match value.as_str() {
+                "--invalid-hostname" => invalid_hostname = true,
+                "--inject-network-loss" => {
+                    let stage = values.next().ok_or_else(|| {
+                        ProbeFailure::usage(
+                            "--inject-network-loss requires dns, tls, or response",
+                        )
+                    })?;
+                    if fault.replace(NetworkFault::parse(stage)?).is_some() {
+                        return Err(ProbeFailure::usage(
+                            "network-probe accepts only one --inject-network-loss stage",
+                        ));
+                    }
+                }
+                value => {
+                    return Err(ProbeFailure::usage(format!(
+                        "unknown network-probe option {value:?}; expected --invalid-hostname or --inject-network-loss STAGE"
+                    )))
+                }
             }
-        };
-        if values.next().is_some() {
+        }
+        if invalid_hostname && fault.is_some() {
             return Err(ProbeFailure::usage(
-                "network-probe accepts HOSTNAME_OR_HTTPS_URL and optional --invalid-hostname",
+                "--invalid-hostname cannot be combined with --inject-network-loss",
             ));
         }
 
@@ -79,6 +139,7 @@ impl ProbeConfig {
         Ok(Self {
             endpoint,
             invalid_hostname,
+            fault,
         })
     }
 
@@ -171,6 +232,14 @@ impl ProbeFailure {
         }
     }
 
+    fn request_for(error: reqwest::Error, fault: Option<NetworkFault>) -> Self {
+        if fault == Some(NetworkFault::Tls) && source_chain_has_tls_error(&error) {
+            return NetworkFault::Tls
+                .failure(format!("injected TLS negotiation failure: {}", error));
+        }
+        Self::request(error)
+    }
+
     fn request_timeout(detail: impl Into<String>) -> Self {
         Self {
             stage: "https",
@@ -220,6 +289,14 @@ pub fn run(args: Vec<String>) -> io::Result<()> {
         }
     };
 
+    if let Some(fault) = config.fault {
+        println!(
+            "fault_injection=network_loss failure_stage={} failure_kind={}",
+            fault.stage(),
+            fault.kind()
+        );
+    }
+
     let runtime = RuntimeBuilder::new_current_thread()
         .enable_all()
         .build()
@@ -246,6 +323,10 @@ pub fn run(args: Vec<String>) -> io::Result<()> {
 }
 
 async fn probe(config: &ProbeConfig) -> Result<HealthResponse, ProbeFailure> {
+    if config.fault == Some(NetworkFault::Dns) {
+        return Err(NetworkFault::Dns
+            .failure("DNS resolution interrupted by the diagnostic network-loss injection"));
+    }
     crate::tls::initialize().map_err(ProbeFailure::tls_initialization)?;
 
     let source_host = config
@@ -265,6 +346,10 @@ async fn probe(config: &ProbeConfig) -> Result<HealthResponse, ProbeFailure> {
         Client::builder()
             .tls_backend_rustls()
             .tls_backend_preconfigured(invalid_hostname_tls_config()?)
+    } else if config.fault == Some(NetworkFault::Tls) {
+        Client::builder()
+            .tls_backend_rustls()
+            .tls_backend_preconfigured(injected_tls_config()?)
     } else {
         Client::builder()
             .tls_backend_rustls()
@@ -284,8 +369,8 @@ async fn probe(config: &ProbeConfig) -> Result<HealthResponse, ProbeFailure> {
     let response = timeout(REQUEST_TIMEOUT, client.get(url).send())
         .await
         .map_err(|_| ProbeFailure::request_timeout("HTTPS request exceeded 20 seconds"))?
-        .map_err(ProbeFailure::request)?;
-    let response = read_response(response).await?;
+        .map_err(|error| ProbeFailure::request_for(error, config.fault))?;
+    let response = read_response(response, config.fault).await?;
     Ok(HealthResponse {
         addresses,
         ..response
@@ -349,6 +434,24 @@ fn is_expected_hostname_validation_failure(error: &reqwest::Error) -> bool {
     error
         .source()
         .is_some_and(source_chain_has_hostname_mismatch)
+}
+
+fn source_chain_has_tls_error(error: &(dyn StdError + 'static)) -> bool {
+    let mut current = Some(error);
+    while let Some(error) = current {
+        if error.downcast_ref::<rustls::Error>().is_some() {
+            return true;
+        }
+        if let Some(io_error) = error.downcast_ref::<io::Error>() {
+            if let Some(inner) = io_error.get_ref() {
+                if source_chain_has_tls_error(inner) {
+                    return true;
+                }
+            }
+        }
+        current = error.source();
+    }
+    false
 }
 
 fn source_chain_has_hostname_mismatch(error: &(dyn StdError + 'static)) -> bool {
@@ -469,6 +572,79 @@ fn invalid_hostname_tls_config() -> Result<rustls::ClientConfig, ProbeFailure> {
         .with_no_client_auth())
 }
 
+#[derive(Debug)]
+struct InjectedTlsFailureVerifier {
+    inner: Arc<rustls::client::WebPkiServerVerifier>,
+}
+
+impl rustls::client::danger::ServerCertVerifier for InjectedTlsFailureVerifier {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &rustls::pki_types::CertificateDer<'_>,
+        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
+        _server_name: &rustls::pki_types::ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        Err(rustls::Error::General(
+            "injected TLS negotiation network loss".into(),
+        ))
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        self.inner.verify_tls12_signature(message, cert, dss)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        self.inner.verify_tls13_signature(message, cert, dss)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        self.inner.supported_verify_schemes()
+    }
+}
+
+fn injected_tls_config() -> Result<rustls::ClientConfig, ProbeFailure> {
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let mut roots = rustls::RootCertStore::empty();
+    for certificate in webpki_root_certs::TLS_SERVER_ROOT_CERTS {
+        roots.add(certificate.clone()).map_err(|error| {
+            ProbeFailure::tls_configuration(format!("invalid bundled root certificate: {error}"))
+        })?;
+    }
+    let verifier = rustls::client::WebPkiServerVerifier::builder_with_provider(
+        Arc::new(roots),
+        provider.clone(),
+    )
+    .build()
+    .map_err(|error| {
+        ProbeFailure::tls_configuration(format!("could not build certificate verifier: {error}"))
+    })?;
+
+    // The wrapper deliberately fails during the real server-certificate step.
+    // It does not disable verification or accept a certificate.
+    Ok(rustls::ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .map_err(|error| {
+            ProbeFailure::tls_configuration(format!(
+                "could not configure TLS protocol versions: {error}"
+            ))
+        })?
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(InjectedTlsFailureVerifier { inner: verifier }))
+        .with_no_client_auth())
+}
+
 fn trusted_certificates() -> Result<Vec<reqwest::Certificate>, ProbeFailure> {
     webpki_root_certs::TLS_SERVER_ROOT_CERTS
         .iter()
@@ -480,7 +656,10 @@ fn trusted_certificates() -> Result<Vec<reqwest::Certificate>, ProbeFailure> {
         .collect()
 }
 
-async fn read_response(response: Response) -> Result<HealthResponse, ProbeFailure> {
+async fn read_response(
+    response: Response,
+    fault: Option<NetworkFault>,
+) -> Result<HealthResponse, ProbeFailure> {
     let status = response.status().as_u16();
     let content_length = response.content_length();
     if content_length.is_some_and(|length| length > MAX_RESPONSE_BYTES) {
@@ -489,7 +668,7 @@ async fn read_response(response: Response) -> Result<HealthResponse, ProbeFailur
         )));
     }
 
-    let body = timeout(RESPONSE_TIMEOUT, read_bounded_body(response, status))
+    let body = timeout(RESPONSE_TIMEOUT, read_bounded_body(response, status, fault))
         .await
         .map_err(|_| ProbeFailure::response_timeout("HTTP response exceeded 20 seconds"))??;
     if !(200..300).contains(&status) {
@@ -505,7 +684,15 @@ async fn read_response(response: Response) -> Result<HealthResponse, ProbeFailur
     })
 }
 
-async fn read_bounded_body(mut response: Response, status: u16) -> Result<Vec<u8>, ProbeFailure> {
+async fn read_bounded_body(
+    mut response: Response,
+    status: u16,
+    fault: Option<NetworkFault>,
+) -> Result<Vec<u8>, ProbeFailure> {
+    if fault == Some(NetworkFault::Response) {
+        return Err(NetworkFault::Response
+            .failure("response body read interrupted by the diagnostic network-loss injection"));
+    }
     let mut body = Vec::new();
     while let Some(chunk) = response.chunk().await.map_err(|error| {
         ProbeFailure::response(format!("could not read HTTP {status} body: {error}"))
@@ -625,6 +812,63 @@ mod tests {
     }
 
     #[test]
+    fn parses_one_explicit_network_loss_stage() {
+        for (stage, expected) in [
+            ("dns", NetworkFault::Dns),
+            ("tls", NetworkFault::Tls),
+            ("response", NetworkFault::Response),
+        ] {
+            let config = ProbeConfig::parse(&[
+                "reader.example.test".into(),
+                "--inject-network-loss".into(),
+                stage.into(),
+            ])
+            .unwrap();
+
+            assert_eq!(config.fault, Some(expected));
+            assert!(!config.invalid_hostname);
+        }
+    }
+
+    #[test]
+    fn rejects_ambiguous_or_unknown_network_loss_options() {
+        let unknown = ProbeConfig::parse(&[
+            "reader.example.test".into(),
+            "--inject-network-loss".into(),
+            "connect".into(),
+        ])
+        .unwrap_err();
+        assert_eq!(unknown.kind, "usage");
+
+        let combined = ProbeConfig::parse(&[
+            "reader.example.test".into(),
+            "--invalid-hostname".into(),
+            "--inject-network-loss".into(),
+            "tls".into(),
+        ])
+        .unwrap_err();
+        assert_eq!(combined.kind, "usage");
+    }
+
+    #[test]
+    fn network_loss_stages_have_distinct_structured_results() {
+        let results = [
+            (NetworkFault::Dns, "dns", "injected_dns_network_loss"),
+            (NetworkFault::Tls, "tls", "injected_tls_network_loss"),
+            (
+                NetworkFault::Response,
+                "response",
+                "injected_response_network_loss",
+            ),
+        ];
+
+        for (fault, stage, kind) in results {
+            let error = fault.failure("test injection");
+            assert_eq!((error.stage, error.kind), (stage, kind));
+        }
+    }
+
+    #[test]
     fn rejects_non_https_and_credentials() {
         let http = ProbeConfig::parse(&["http://reader.example.test".into()]).unwrap_err();
         assert_eq!(http.kind, "invalid_input");
@@ -651,6 +895,11 @@ mod tests {
     #[test]
     fn negative_tls_config_builds_from_bundled_roots() {
         let _config = invalid_hostname_tls_config().unwrap();
+    }
+
+    #[test]
+    fn injected_tls_config_keeps_a_real_verifier_boundary() {
+        let _config = injected_tls_config().unwrap();
     }
 
     #[test]

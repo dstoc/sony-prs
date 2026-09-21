@@ -71,10 +71,10 @@ different device.
 | `input` | Read-only | Queries evdev capabilities without opening an event stream, grabbing a device, or injecting events. |
 | `events [EVENT_DEVICE] [SECONDS]` | Read-only | Logs a finite raw evdev stream. It defaults to `/dev/input/event1` for 10 seconds and never calls `EVIOCGRAB`. |
 | `capture [FRAMEBUFFER]` | Read-only | Maps the visible RGB565 framebuffer with read access and emits an 8-bit grayscale PGM to stdout. |
-| `network-probe HOSTNAME_OR_HTTPS_URL [--invalid-hostname]` | Read-only | Resolves the supplied host and performs a bounded HTTPS `GET /health` with rustls certificate and hostname validation. The optional negative test must fail hostname validation. |
+| `network-probe HOSTNAME_OR_HTTPS_URL [--invalid-hostname] [--inject-network-loss STAGE]` | Read-only | Resolves the supplied host and performs a bounded HTTPS `GET /health` with rustls certificate and hostname validation. The optional negative test must fail hostname validation. The diagnostic-only fault stage is `dns`, `tls`, or `response`. |
 | `wifi-up` | Controls Wi-Fi | Loads the legacy driver, starts the supplicant, waits for WPA `COMPLETED`, starts DHCP, and waits for `dhcp.wlan0.result=BOUND`. |
 | `wifi-down` | Controls Wi-Fi | Stops `dhcpcd`, waits up to 10 seconds for its service to stop or disappear, then stops the supplicant and unloads the Wi-Fi driver. |
-| `wifi-probe HOSTNAME_OR_HTTPS_URL [--invalid-hostname]` | Controls Wi-Fi and network | Runs `wifi-up`, runs the HTTPS network probe, and always attempts `wifi-down`. |
+| `wifi-probe HOSTNAME_OR_HTTPS_URL [--invalid-hostname] [--inject-network-loss STAGE]` | Controls Wi-Fi and network | Runs `wifi-up`, runs the HTTPS network probe, and always attempts `wifi-down`. The diagnostic-only fault stage is `dns`, `tls`, or `response`. |
 | `render-test [FRAMEBUFFER] [SECONDS] [WAVEFORM] [WAIT\|NOWAIT]` | Writes framebuffer | Draws a centered 200x120 RGB565 marker, requests a bounded EPDC update, captures the mapping, waits, and restores the original rectangle. Defaults to 3 seconds, `GC16`, and `WAIT`. |
 | `display-test [FRAMEBUFFER] [SECONDS] [WAVEFORM]` | Writes framebuffer | Draws a full-screen grayscale calibration pattern with fill/text swatches, gradients, a grayscale ramp, and 1-, 2-, 4-, and 8-pixel lines. Defaults to 60 seconds and `GC16`; it leaves the pattern visible and does not restore the previous framebuffer. |
 | `standalone-test [FRAMEBUFFER] [standby\|mem]` | Owns framebuffer/input | Runs the long-lived native shell after `zygote` and `system_server` have stopped. The default suspend mode is T1 EINK `standby`. |
@@ -179,6 +179,53 @@ The command reports `wifi.snapshot=before`, `wifi.snapshot=ready`, and
 `wifi.snapshot=after` fields for the interface, carrier, WPA association, and
 DHCP state. It is an explicit command. Waking the reader does not start
 Wi-Fi.
+
+### Deterministic network-loss validation
+
+The explicit `--inject-network-loss STAGE` option is a diagnostic-only test
+seam. It accepts `dns`, `tls`, or `response` and is available on both
+`network-probe` and `wifi-probe`.
+
+- `dns` returns `failure_stage=dns failure_kind=injected_dns_network_loss`
+  before the resolver can return an address.
+- `tls` resolves the production host and reaches the real TLS server, then
+  fails the server-certificate step with
+  `failure_stage=tls failure_kind=injected_tls_network_loss`.
+- `response` completes DNS, TCP, and TLS, receives HTTPS response headers, and
+  interrupts body handling with
+  `failure_stage=response failure_kind=injected_response_network_loss`.
+
+The normal DNS, connect, request, response, and 64 KiB body limits remain in
+place. The TLS injection uses a verifier that fails closed; it does not accept
+a certificate or weaken normal certificate validation. The response injection
+drops the response when the body-read seam returns, so it does not retain a
+connection or write output.
+
+For physical recovery validation, replace the placeholder with the production
+host used by the ordinary probe. Save each failed command's complete output
+and exit status. `wifi-probe` must print the requested `failure_stage` and
+`failure_kind`, complete its shutdown steps, and return a non-zero status.
+Run an ordinary probe after each injected failure and require
+`wifi.stage=off`, `wifi.snapshot=after`, and `result=success`:
+
+```sh
+PROBE_HOST='your-production-host.example'
+
+run_injected_loss() {
+  stage="$1"
+  set +e
+  adb shell /data/local/tmp/prs-t1-agent wifi-probe "$PROBE_HOST" \
+    --inject-network-loss "$stage" > "prs-t1-loss-$stage.txt" 2>&1
+  status=$?
+  set -e
+  test "$status" -ne 0
+  adb shell /data/local/tmp/prs-t1-agent wifi-probe "$PROBE_HOST"
+}
+
+run_injected_loss dns
+run_injected_loss tls
+run_injected_loss response
+```
 
 The probe resolves the supplied hostname, pins the request to the resolved
 addresses, and performs one HTTPS `GET /health`. It uses reqwest's async

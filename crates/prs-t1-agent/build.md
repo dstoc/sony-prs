@@ -177,6 +177,38 @@ most 64 KiB of response data. A DNS timeout is reported as
 `failure_stage=dns failure_kind=resolution_timeout`. Capture stdout and the
 exit status for the #99 hardware record.
 
+For deterministic network-loss recovery validation, use the diagnostic-only
+`--inject-network-loss` seam. It accepts `dns`, `tls`, or `response`. Each
+injected `wifi-probe` must return a non-zero status with the matching structured
+failure, then complete Wi-Fi shutdown. Run an ordinary `wifi-probe` after each
+failure and require `wifi.stage=off`, `wifi.snapshot=after`, and
+`result=success`:
+
+```sh
+PROBE_HOST='your-production-host.example'
+
+run_injected_loss() {
+  stage="$1"
+  set +e
+  adb shell /data/local/tmp/prs-t1-agent wifi-probe "$PROBE_HOST" \
+    --inject-network-loss "$stage" > "prs-t1-loss-$stage.txt" 2>&1
+  status=$?
+  set -e
+  test "$status" -ne 0
+  adb shell /data/local/tmp/prs-t1-agent wifi-probe "$PROBE_HOST"
+}
+
+run_injected_loss dns
+run_injected_loss tls
+run_injected_loss response
+```
+
+The `dns` fault returns before DNS completion. The `tls` fault reaches the
+real server and fails the certificate step. The `response` fault receives
+HTTPS headers and interrupts body handling. The normal timeout and 64 KiB
+limits remain active. The TLS fault fails closed and does not weaken ordinary
+certificate verification.
+
 The agent's read-only commands can then be exercised while Android is still
 running:
 
