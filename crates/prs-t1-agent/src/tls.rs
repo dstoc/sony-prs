@@ -1,8 +1,11 @@
 //! Process-wide TLS provider and secure-entropy initialization.
 
 use rustls::crypto::{GetRandomFailed, SecureRandom};
+use std::sync::OnceLock;
 
 const ENTROPY_PROBE_BYTES: usize = 32;
+
+static INITIALIZATION: OnceLock<Result<(), InitializationError>> = OnceLock::new();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum InitializationError {
@@ -35,12 +38,18 @@ impl std::fmt::Display for InitializationError {
 impl std::error::Error for InitializationError {}
 
 /// Select ring for this legacy ARM target and prove its OS entropy source works.
+///
+/// Rustls installs its provider for the lifetime of the process. Keep the
+/// result so probe and synchronization attempts can share that provider
+/// without trying to install it again.
 pub(crate) fn initialize() -> Result<(), InitializationError> {
-    let provider = rustls::crypto::ring::default_provider();
-    verify_entropy(provider.secure_random)?;
-    provider
-        .install_default()
-        .map_err(|_| InitializationError::ProviderAlreadyInstalled)
+    *INITIALIZATION.get_or_init(|| {
+        let provider = rustls::crypto::ring::default_provider();
+        verify_entropy(provider.secure_random)?;
+        provider
+            .install_default()
+            .map_err(|_| InitializationError::ProviderAlreadyInstalled)
+    })
 }
 
 fn verify_entropy(source: &dyn SecureRandom) -> Result<(), InitializationError> {
@@ -96,5 +105,16 @@ mod tests {
             Err(InitializationError::EntropyUnavailable)
         );
         assert_eq!(source.calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn mixed_probe_and_sync_attempts_reuse_one_process_provider() {
+        // The integrated sync path and the standalone network probe both call
+        // initialize(). Exercise their mixed ordering and a repeated sync
+        // attempt in the same process.
+        for path in ["sync", "probe", "sync"] {
+            assert_eq!(initialize(), Ok(()), "TLS initialization failed for {path}");
+        }
+        assert!(rustls::crypto::CryptoProvider::get_default().is_some());
     }
 }
