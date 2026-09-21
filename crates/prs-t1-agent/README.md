@@ -471,10 +471,14 @@ live snapshot under:
 - **Synchronization** — the current sync state and the latest failure summary.
 - **System** — uptime, framebuffer state/rotation, Android process state, and wake lock.
 - **Storage** — available space on `/data` and `/mnt/sdcard`.
-- **Input** — the latest touch, key, and power events and their coordinates/counts.
+- **Diagnostics** — compact system and input counters/state kept separate from the user-facing status.
 
 The page also provides full-width **Reboot**, **Power off**, and **Back to
-reading** targets. Touch release is accepted from the event shapes observed on
+reading** targets, plus **Sync now**, **Return to entry point**, and **Display
+test**. User-facing status is separated from compact **Diagnostics** telemetry;
+the action pane has its own spaced region below the status content. Every action
+inverts while its touch is held and restores on release using a bounded partial
+refresh. Touch release is accepted from the event shapes observed on
 the T1: `BTN_TOUCH=0`, `ABS_MT_TRACKING_ID=-1`, or
 `ABS_MT_TOUCH_MAJOR=0`, committed by `SYN_REPORT`. The legacy `ABS_X/Y` path is
 normalized from the panel's advertised 800x600 axes before hit testing.

@@ -135,15 +135,14 @@ assert "start_requested_sync(&mut state, || sync_task.start())" in runtime
 assert "self.last_activity = Instant::now();" in runtime
 
 expected_tops = {
-    "DETAILS_SYNC_TOP": 560,
-    "DETAILS_RETURN_ENTRY_TOP": 600,
-    "DETAILS_DISPLAY_TEST_TOP": 640,
-    "DETAILS_REBOOT_TOP": 680,
-    "DETAILS_POWER_OFF_TOP": 720,
-    "DETAILS_BACK_TOP": 760,
+    "DETAILS_ACTION_TOP": 548,
 }
 for name, value in expected_tops.items():
     assert f"pub const {name}: usize = {value};" in display
+assert "pub const DETAILS_ACTION_HEIGHT: usize = 36;" in display
+assert "pub const DETAILS_ACTION_GAP: usize = 4;" in display
+assert "pub const DETAILS_SYNC_TOP: usize = DETAILS_ACTION_TOP;" in display
+assert "DETAILS_SYNC_TOP + DETAILS_ACTION_HEIGHT + DETAILS_ACTION_GAP" in display
 assert "details_action_tap_boundaries_are_disjoint" in runtime
 PY
 

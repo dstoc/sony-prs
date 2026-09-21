@@ -35,15 +35,22 @@ pub const DETAILS_LINE_STEP: usize = 21;
 pub const DETAILS_ACTION_MARGIN: usize = 24;
 pub const DETAILS_DEBUG_TOP: usize = 106;
 pub const DETAILS_DEBUG_HEIGHT: usize = 32;
-pub const DETAILS_SYNC_TOP: usize = 560;
-pub const DETAILS_RETURN_ENTRY_TOP: usize = 600;
-pub const DETAILS_DISPLAY_TEST_TOP: usize = 640;
-pub const DETAILS_REBOOT_TOP: usize = 680;
-pub const DETAILS_POWER_OFF_TOP: usize = 720;
-pub const DETAILS_BACK_TOP: usize = 760;
-pub const DETAILS_ACTION_HEIGHT: usize = 40;
+pub const DETAILS_ACTION_HEADER_TOP: usize = 520;
+pub const DETAILS_ACTION_TOP: usize = 548;
+pub const DETAILS_ACTION_HEIGHT: usize = 36;
+pub const DETAILS_ACTION_GAP: usize = 4;
+pub const DETAILS_SYNC_TOP: usize = DETAILS_ACTION_TOP;
+pub const DETAILS_RETURN_ENTRY_TOP: usize =
+    DETAILS_SYNC_TOP + DETAILS_ACTION_HEIGHT + DETAILS_ACTION_GAP;
+pub const DETAILS_DISPLAY_TEST_TOP: usize =
+    DETAILS_RETURN_ENTRY_TOP + DETAILS_ACTION_HEIGHT + DETAILS_ACTION_GAP;
+pub const DETAILS_REBOOT_TOP: usize =
+    DETAILS_DISPLAY_TEST_TOP + DETAILS_ACTION_HEIGHT + DETAILS_ACTION_GAP;
+pub const DETAILS_POWER_OFF_TOP: usize =
+    DETAILS_REBOOT_TOP + DETAILS_ACTION_HEIGHT + DETAILS_ACTION_GAP;
+pub const DETAILS_BACK_TOP: usize =
+    DETAILS_POWER_OFF_TOP + DETAILS_ACTION_HEIGHT + DETAILS_ACTION_GAP;
 pub const SCREEN_WIDTH: usize = 600;
-#[cfg(test)]
 pub const SCREEN_HEIGHT: usize = 800;
 
 const STATUS_BAR_SIDE_MARGIN: usize = 16;
@@ -97,6 +104,81 @@ pub enum DetailsRow {
     Section(String),
     Value(String),
     Toggle { label: String, enabled: bool },
+}
+
+/// An actionable control on the native Details / Settings page.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DetailsAction {
+    SyncNow,
+    ReturnToEntryPoint,
+    DisplayTest,
+    Reboot,
+    PowerOff,
+    BackToReading,
+}
+
+impl DetailsAction {
+    pub const ALL: [Self; 6] = [
+        Self::SyncNow,
+        Self::ReturnToEntryPoint,
+        Self::DisplayTest,
+        Self::Reboot,
+        Self::PowerOff,
+        Self::BackToReading,
+    ];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::SyncNow => "Sync now",
+            Self::ReturnToEntryPoint => "Return to entry point",
+            Self::DisplayTest => "Display test",
+            Self::Reboot => "Reboot",
+            Self::PowerOff => "Power off",
+            Self::BackToReading => "Back to reading",
+        }
+    }
+
+    pub const fn top(self) -> usize {
+        match self {
+            Self::SyncNow => DETAILS_SYNC_TOP,
+            Self::ReturnToEntryPoint => DETAILS_RETURN_ENTRY_TOP,
+            Self::DisplayTest => DETAILS_DISPLAY_TEST_TOP,
+            Self::Reboot => DETAILS_REBOOT_TOP,
+            Self::PowerOff => DETAILS_POWER_OFF_TOP,
+            Self::BackToReading => DETAILS_BACK_TOP,
+        }
+    }
+
+    const fn is_destructive(self) -> bool {
+        matches!(self, Self::Reboot | Self::PowerOff)
+    }
+}
+
+/// Return the exact action rectangle used by both rendering and hit testing.
+pub fn details_action_region(action: DetailsAction, width: usize, height: usize) -> DisplayRegion {
+    let margin = DETAILS_ACTION_MARGIN.min(width / 2);
+    DisplayRegion::new(
+        margin as u32,
+        action.top().min(height) as u32,
+        width.saturating_sub(margin.saturating_mul(2)) as u32,
+        DETAILS_ACTION_HEIGHT.min(height.saturating_sub(action.top())) as u32,
+    )
+}
+
+/// Hit-test a Details / Settings action against the same geometry drawn on screen.
+pub fn details_action_at(x: i32, y: i32, width: usize, height: usize) -> Option<DetailsAction> {
+    if x < 0 || y < 0 {
+        return None;
+    }
+    let x = x as usize;
+    let y = y as usize;
+    DetailsAction::ALL.into_iter().find(|action| {
+        let region = details_action_region(*action, width, height);
+        x >= region.left as usize
+            && x < region.right() as usize
+            && y >= region.top as usize
+            && y < region.bottom() as usize
+    })
 }
 
 /// The native Details / Settings data after status collection and formatting.
@@ -189,6 +271,7 @@ pub fn draw_screen_with_feedback(
             &details,
             display.width() as usize,
             display.height() as usize,
+            None,
         )
     } else {
         render_screen_with_feedback(
@@ -216,11 +299,32 @@ pub fn draw_screen_view(
     wait_for_completion: bool,
     force_refresh: bool,
 ) -> std::io::Result<()> {
+    draw_screen_view_with_pressed_action(
+        display,
+        view,
+        refresh_region,
+        waveform,
+        wait_for_completion,
+        force_refresh,
+        None,
+    )
+}
+
+pub fn draw_screen_view_with_pressed_action(
+    display: &mut NativeDisplay,
+    view: &UiViewModel,
+    refresh_region: DisplayRegion,
+    waveform: WaveformMode,
+    wait_for_completion: bool,
+    force_refresh: bool,
+    pressed_action: Option<DetailsAction>,
+) -> std::io::Result<()> {
     let frame = render_details_settings(
         &view.status_bar,
         &view.details,
         display.width() as usize,
         display.height() as usize,
+        pressed_action,
     );
     display.draw_frame_with_waveform(
         &frame,
@@ -250,7 +354,28 @@ pub fn render_status_bar_host(status: &StatusBarViewModel) -> Vec<u8> {
 /// Render the complete 600x800 Details / Settings host frame.
 #[cfg(test)]
 pub fn render_details_settings_host(view: &UiViewModel) -> Vec<u8> {
-    render_details_settings(&view.status_bar, &view.details, SCREEN_WIDTH, SCREEN_HEIGHT)
+    render_details_settings(
+        &view.status_bar,
+        &view.details,
+        SCREEN_WIDTH,
+        SCREEN_HEIGHT,
+        None,
+    )
+}
+
+/// Render a host Details / Settings frame with one action visibly pressed.
+#[cfg(test)]
+pub fn render_details_settings_host_pressed(
+    view: &UiViewModel,
+    pressed_action: DetailsAction,
+) -> Vec<u8> {
+    render_details_settings(
+        &view.status_bar,
+        &view.details,
+        SCREEN_WIDTH,
+        SCREEN_HEIGHT,
+        Some(pressed_action),
+    )
 }
 
 pub(crate) fn render_details_settings_frame(
@@ -258,7 +383,7 @@ pub(crate) fn render_details_settings_frame(
     width: usize,
     height: usize,
 ) -> Vec<u8> {
-    render_details_settings(&view.status_bar, &view.details, width, height)
+    render_details_settings(&view.status_bar, &view.details, width, height, None)
 }
 
 fn render_details_settings(
@@ -266,11 +391,12 @@ fn render_details_settings(
     details: &DetailsViewModel,
     width: usize,
     height: usize,
+    pressed_action: Option<DetailsAction>,
 ) -> Vec<u8> {
     let mut frame = white_frame(width, height);
     let mut canvas = DisplayCanvas::new(&mut frame, width, height, width.saturating_mul(2), 0, 0);
     draw_status_bar_model(&mut canvas, status);
-    draw_details_model(&mut canvas, details);
+    draw_details_model(&mut canvas, details, pressed_action);
     frame
 }
 
@@ -844,41 +970,31 @@ fn draw_screen_contents_with_feedback(
         draw_reader_feedback(canvas, feedback);
     }
 
-    let details = lines
+    let is_details = lines
         .get(1)
         .is_some_and(|line| line == "Details / Settings");
-    let line_step = if details {
-        DETAILS_LINE_STEP
-    } else {
-        CONTENT_LINE_STEP
-    };
-    for (index, line) in lines.iter().skip(1).enumerate() {
-        let y = CONTENT_TOP.saturating_add(index.saturating_mul(line_step));
-        if details {
-            if index == 0 {
-                draw_text_font(canvas, 24, y, line, &FONT_10X20, Rgb565::BLACK);
-            } else if let Some(enabled) = debug_toggle_state(line) {
-                draw_debug_toggle(canvas, y, "Debug messages", enabled);
-            } else if is_section_heading(line) {
-                draw_section_heading(canvas, y, line);
-            } else {
-                draw_text(canvas, 24, y, line);
-            }
-        } else {
-            if index == 0 {
-                draw_text_centered_font(canvas, y, line, &FONT_10X20, Rgb565::BLACK);
-            } else {
-                draw_text_centered(canvas, y, line, Rgb565::BLACK);
-            }
-        }
+    if is_details {
+        let details = DetailsViewModel::from_lines(&lines[1..]);
+        draw_details_model(canvas, &details, None);
+        return;
     }
 
-    if details {
-        draw_details_actions(canvas);
+    let line_step = CONTENT_LINE_STEP;
+    for (index, line) in lines.iter().skip(1).enumerate() {
+        let y = CONTENT_TOP.saturating_add(index.saturating_mul(line_step));
+        if index == 0 {
+            draw_text_centered_font(canvas, y, line, &FONT_10X20, Rgb565::BLACK);
+        } else {
+            draw_text_centered(canvas, y, line, Rgb565::BLACK);
+        }
     }
 }
 
-fn draw_details_model(canvas: &mut DisplayCanvas<'_>, details: &DetailsViewModel) {
+fn draw_details_model(
+    canvas: &mut DisplayCanvas<'_>,
+    details: &DetailsViewModel,
+    pressed_action: Option<DetailsAction>,
+) {
     draw_text_font(
         canvas,
         24,
@@ -889,13 +1005,31 @@ fn draw_details_model(canvas: &mut DisplayCanvas<'_>, details: &DetailsViewModel
     );
     for (index, row) in details.rows.iter().enumerate() {
         let y = CONTENT_TOP.saturating_add((index + 1).saturating_mul(DETAILS_LINE_STEP));
+        if y.saturating_add(16) > DETAILS_ACTION_HEADER_TOP.saturating_sub(4) {
+            break;
+        }
         match row {
             DetailsRow::Section(text) => draw_section_heading(canvas, y, text),
             DetailsRow::Value(text) => draw_text(canvas, 24, y, text),
             DetailsRow::Toggle { label, enabled } => draw_debug_toggle(canvas, y, label, *enabled),
         }
     }
-    draw_details_actions(canvas);
+    draw_text_font(
+        canvas,
+        24,
+        DETAILS_ACTION_HEADER_TOP,
+        "Actions",
+        &FONT_8X13_BOLD,
+        Rgb565::BLACK,
+    );
+    canvas.fill_rect(
+        24,
+        DETAILS_ACTION_HEADER_TOP.saturating_add(16),
+        canvas.width().saturating_sub(48),
+        1,
+        BLACK,
+    );
+    draw_details_actions(canvas, pressed_action);
 }
 
 /// Render a logical screen into the format expected by the EPDC standby
@@ -1034,7 +1168,14 @@ fn status_icon_is_on(value: &str) -> bool {
 fn is_section_heading(line: &str) -> bool {
     matches!(
         line,
-        "Settings" | "Synchronization" | "Power" | "Connectivity" | "System" | "Storage" | "Input"
+        "Settings"
+            | "Power"
+            | "Connectivity"
+            | "Synchronization"
+            | "System"
+            | "Storage"
+            | "Input"
+            | "Diagnostics"
     )
 }
 
@@ -1075,27 +1216,45 @@ fn draw_section_heading(canvas: &mut DisplayCanvas<'_>, y: usize, text: &str) {
     );
 }
 
-fn draw_details_actions(canvas: &mut DisplayCanvas<'_>) {
-    let margin = DETAILS_ACTION_MARGIN;
+fn draw_details_actions(canvas: &mut DisplayCanvas<'_>, pressed_action: Option<DetailsAction>) {
     let width = canvas.width();
-    let button_width = width.saturating_sub(margin * 2);
-    for (top, label) in [
-        (DETAILS_SYNC_TOP, "Sync now"),
-        (DETAILS_RETURN_ENTRY_TOP, "Return to entry point"),
-        (DETAILS_DISPLAY_TEST_TOP, "Display test"),
-        (DETAILS_REBOOT_TOP, "Reboot"),
-        (DETAILS_POWER_OFF_TOP, "Power off"),
-        (DETAILS_BACK_TOP, "Back to reading"),
-    ] {
-        canvas.stroke_rect(margin, top, button_width, DETAILS_ACTION_HEIGHT, BLACK);
+    let height = canvas.height();
+    for action in DetailsAction::ALL {
+        let region = details_action_region(action, width, height);
+        let margin = region.left as usize;
+        let top = region.top as usize;
+        let button_width = region.width as usize;
+        let button_height = region.height as usize;
+        if button_width == 0 || button_height == 0 {
+            continue;
+        }
+        let pressed = pressed_action == Some(action);
+        if pressed {
+            canvas.fill_rect(margin, top, button_width, button_height, BLACK);
+        } else {
+            canvas.stroke_rect(margin, top, button_width, button_height, BLACK);
+            if action.is_destructive() && button_width > 6 && button_height > 6 {
+                canvas.stroke_rect(
+                    margin.saturating_add(3),
+                    top.saturating_add(3),
+                    button_width.saturating_sub(6),
+                    button_height.saturating_sub(6),
+                    BLACK,
+                );
+            }
+        }
         draw_text_centered_in_rect(
             canvas,
             margin,
             top,
             button_width,
-            DETAILS_ACTION_HEIGHT,
-            label,
-            Rgb565::BLACK,
+            button_height,
+            action.label(),
+            if pressed {
+                Rgb565::WHITE
+            } else {
+                Rgb565::BLACK
+            },
         );
     }
 }
@@ -1207,9 +1366,12 @@ impl DrawTarget for DisplayCanvas<'_> {
 #[cfg(test)]
 mod tests {
     use super::{
-        gray565, render_authorization_qr, render_details_settings_host, render_display_test,
-        render_status_bar_host, rgb565_to_png, standby_screen, DetailsRow, DetailsViewModel,
-        StatusBarViewModel, UiViewModel, SCREEN_HEIGHT, SCREEN_WIDTH,
+        details_action_at, details_action_region, gray565, render_authorization_qr,
+        render_details_settings_host, render_details_settings_host_pressed, render_display_test,
+        render_status_bar_host, rgb565_to_png, standby_screen, DetailsAction, DetailsRow,
+        DetailsViewModel, StatusBarViewModel, UiViewModel, BLACK, DETAILS_ACTION_HEADER_TOP,
+        DETAILS_ACTION_HEIGHT, DETAILS_ACTION_TOP, DETAILS_LINE_STEP, SCREEN_HEIGHT, SCREEN_WIDTH,
+        WHITE,
     };
     use std::env;
     use std::fs;
@@ -1243,14 +1405,12 @@ mod tests {
             DetailsRow::Section("Connectivity".into()),
             DetailsRow::Value("WiFi wlan0 Up  Supplicant Completed".into()),
             DetailsRow::Value("USB On  Gadget Configured  ADB On".into()),
-            DetailsRow::Section("System".into()),
-            DetailsRow::Value("Framebuffer Active  Rotate 0  Android Run / Stop".into()),
-            DetailsRow::Value("Wake lock Yes  Date 21 Sep 2026 12:34".into()),
             DetailsRow::Section("Storage".into()),
             DetailsRow::Value("Data 123456 KiB  SD card 654321 KiB  USB functions Adb".into()),
-            DetailsRow::Section("Input".into()),
-            DetailsRow::Value("Touch: X --- Y ---  Touch: none".into()),
-            DetailsRow::Value("Key: none  Events 0  Power last none".into()),
+            DetailsRow::Section("Diagnostics".into()),
+            DetailsRow::Value("System: FB ACTIVE  Rotate 0  zygote STOP  dispd STOP".into()),
+            DetailsRow::Value("Runtime: Wake yes  Date 21 Sep 2026 12:34".into()),
+            DetailsRow::Value("Input: 0 touch  0 key  Power none".into()),
         ];
         UiViewModel::new(
             status_bar,
@@ -1327,6 +1487,83 @@ mod tests {
         let png =
             rgb565_to_png(&frame, SCREEN_WIDTH, SCREEN_HEIGHT).expect("encode debug settings PNG");
         assert_png_golden("details-settings-debug", &png);
+    #[test]
+    fn pressed_action_renderer_changes_only_the_action_visual_state() {
+        let view = screenshot_view();
+        let normal = render_details_settings_host(&view);
+        let pressed = render_details_settings_host_pressed(&view, DetailsAction::SyncNow);
+
+        assert_ne!(normal, pressed);
+        let pressed_png = rgb565_to_png(&pressed, SCREEN_WIDTH, SCREEN_HEIGHT)
+            .expect("encode pressed details PNG");
+        assert_png_golden("details-settings-pressed", &pressed_png);
+        assert_eq!(
+            pixel(&normal, SCREEN_WIDTH, 30, DETAILS_ACTION_TOP + 10),
+            WHITE
+        );
+        assert_eq!(
+            pixel(&pressed, SCREEN_WIDTH, 30, DETAILS_ACTION_TOP + 10),
+            BLACK
+        );
+        assert_eq!(
+            pixel(
+                &normal,
+                SCREEN_WIDTH,
+                30,
+                DETAILS_ACTION_TOP + DETAILS_ACTION_HEIGHT + 2
+            ),
+            WHITE
+        );
+        assert_eq!(
+            pixel(
+                &pressed,
+                SCREEN_WIDTH,
+                30,
+                DETAILS_ACTION_TOP + DETAILS_ACTION_HEIGHT + 2
+            ),
+            WHITE
+        );
+    }
+
+    #[test]
+    fn details_content_fits_before_the_dedicated_action_pane() {
+        let view = screenshot_view();
+        for (index, _) in view.details.rows.iter().enumerate() {
+            let top = super::CONTENT_TOP + (index + 1) * DETAILS_LINE_STEP;
+            assert!(
+                top + 16 <= DETAILS_ACTION_HEADER_TOP - 4,
+                "row {index} at y={top} intersects the action pane"
+            );
+        }
+        let actions = DetailsAction::ALL.map(|action| details_action_region(action, 600, 800));
+        for pair in actions.windows(2) {
+            assert!(pair[0].bottom() <= pair[1].top);
+        }
+    }
+
+    #[test]
+    fn action_hit_testing_matches_rendered_rectangles() {
+        for action in DetailsAction::ALL {
+            let region = details_action_region(action, SCREEN_WIDTH, SCREEN_HEIGHT);
+            assert_eq!(
+                details_action_at(
+                    region.left as i32 + 1,
+                    region.top as i32 + 1,
+                    SCREEN_WIDTH,
+                    SCREEN_HEIGHT
+                ),
+                Some(action)
+            );
+            assert_eq!(
+                details_action_at(
+                    region.right() as i32,
+                    region.top as i32 + 1,
+                    SCREEN_WIDTH,
+                    SCREEN_HEIGHT
+                ),
+                None
+            );
+        }
     }
 
     #[test]

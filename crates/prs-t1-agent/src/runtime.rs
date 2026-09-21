@@ -1,7 +1,7 @@
 use crate::framebuffer::{DisplayRegion, NativeDisplay, WaveformMode};
 use crate::input::{EventReader, RawEvent};
 use crate::refresh::{PageTone, RefreshPolicy, RefreshReason};
-use crate::{display, input, reader, sync};
+use crate::{display, reader, sync};
 use embedded_graphics::geometry::Point;
 use prs_markdown::reader::{ReaderError, ReaderEvent};
 use std::fs::OpenOptions;
@@ -153,17 +153,21 @@ pub fn run(path: &Path, suspend_mode: SuspendMode) -> io::Result<()> {
             });
         }
         let mut action = PowerAction::None;
-        for source in &mut inputs.sources {
+        'input: for source in &mut inputs.sources {
             loop {
                 let Some(event) = source.reader.read_one()? else {
                     break;
                 };
                 let (dirty, event_action) = state.observe(source.kind, event);
+                let immediate_feedback = matches!(dirty, Some(DirtyArea::Action(_)));
                 if let Some(dirty) = dirty {
                     redraw_area = Some(match redraw_area {
                         Some(existing) => existing.merge(dirty),
                         None => dirty,
                     });
+                }
+                if immediate_feedback {
+                    break 'input;
                 }
                 if event_action != PowerAction::None {
                     action = event_action;
@@ -443,14 +447,25 @@ fn redraw(
         }
         return finish_redraw(result, state, sync_task);
     }
-    let result = display::draw_screen_view(
-        display,
-        &view,
-        area.region(display.width(), display.height(), state.page),
-        plan.waveform(),
-        plan.wait_for_completion(),
-        plan.force_refresh(),
-    );
+    let result = match state.pressed_action {
+        Some(pressed_action) => display::draw_screen_view_with_pressed_action(
+            display,
+            &view,
+            area.region(display.width(), display.height(), state.page),
+            plan.waveform(),
+            plan.wait_for_completion(),
+            plan.force_refresh(),
+            Some(pressed_action),
+        ),
+        None => display::draw_screen_view(
+            display,
+            &view,
+            area.region(display.width(), display.height(), state.page),
+            plan.waveform(),
+            plan.wait_for_completion(),
+            plan.force_refresh(),
+        ),
+    };
     if result.is_ok() {
         refresh_policy.record_success(reason, plan);
     }
@@ -580,6 +595,7 @@ enum DirtyArea {
     Status,
     PageTurn(PageTone),
     Interaction,
+    Action(display::DetailsAction),
     Touch,
     Key,
     Power,
@@ -596,6 +612,7 @@ impl DirtyArea {
             (Self::PageTurn(_), Self::Status) | (Self::Status, Self::PageTurn(_)) => Self::Full,
             (Self::PageTurn(tone), Self::Interaction)
             | (Self::Interaction, Self::PageTurn(tone)) => Self::PageTurn(tone),
+            (Self::Action(left), Self::Action(right)) if left == right => Self::Action(left),
             (Self::Key, Self::Power) | (Self::Power, Self::Key) => Self::Power,
             (left, right) if left == right => left,
             _ => Self::Full,
@@ -607,9 +624,12 @@ impl DirtyArea {
             Self::Full => RefreshReason::FullRedraw,
             Self::PageTurn(tone) => RefreshReason::PageTurn(tone),
             Self::Status if page == UiPage::Home => RefreshReason::StatusBar,
-            Self::Status | Self::Interaction | Self::Touch | Self::Key | Self::Power => {
-                RefreshReason::Transient
-            }
+            Self::Status
+            | Self::Interaction
+            | Self::Action(_)
+            | Self::Touch
+            | Self::Key
+            | Self::Power => RefreshReason::Transient,
         }
     }
 
@@ -648,6 +668,11 @@ impl DirtyArea {
             // Key and power diagnostics share one region so a power press can
             // update the key row, power row, and status message together.
             Self::Key | Self::Power => DisplayRegion::new(20, 535, 560, 105),
+            Self::Action(action) => display::details_action_region(
+                action,
+                width as usize,
+                height as usize,
+            ),
         };
         region.bounded(width, height)
     }
@@ -655,34 +680,6 @@ impl DirtyArea {
 
 fn screen_view_model(state: &UiState, wake_lock_held: bool) -> display::UiViewModel {
     let status = &state.status;
-    let touch = state
-        .last_touch
-        .map(|event| {
-            format!(
-                "Touch: {} C{} V{}",
-                pretty_event_name(input::event_code_name(event.event_type, event.code)),
-                event.code,
-                event.value
-            )
-        })
-        .unwrap_or_else(|| "Touch: none".into());
-    let coordinates = if state.touch_seen {
-        format!("Touch: X {}  Y {}", state.touch_x, state.touch_y)
-    } else {
-        "Touch: X ---  Y ---".into()
-    };
-    let key = state
-        .last_key
-        .map(|(source, event)| {
-            format!(
-                "Key: {} {} C{} V{}",
-                source.label(),
-                pretty_event_name(input::event_code_name(event.event_type, event.code)),
-                event.code,
-                event.value
-            )
-        })
-        .unwrap_or_else(|| "Key: none".into());
     let battery_level = number_or_unknown(status.battery.capacity_percent);
     let battery_state = uppercase_or_unknown(status.battery.status.as_deref());
     let temperature = number_or_unknown(status.battery.temperature);
@@ -767,38 +764,38 @@ fn screen_view_model(state: &UiState, wake_lock_held: bool) -> display::UiViewMo
             pretty_value(&supplicant)
         )),
         display::DetailsRow::Value(format!(
-            "USB {}  Gadget {}  ADB {}",
+            "USB {}  Gadget {}  ADB {}  Functions {}",
             pretty_value(usb_connected),
             pretty_value(&uppercase_or_unknown(status.usb.gadget_state.as_deref())),
-            pretty_value(adb)
-        )),
-        display::DetailsRow::Section("System".into()),
-        display::DetailsRow::Value(format!(
-            "Framebuffer {}  Rotate {}  Android {} / {}",
-            pretty_value(framebuffer),
-            number_or_unknown(status.screen.rotate),
-            pretty_value(zygote),
-            pretty_value(dispd)
-        )),
-        display::DetailsRow::Value(format!(
-            "Wake lock {}  Date {}",
-            pretty_value(if wake_lock_held { "yes" } else { "no" }),
-            date_time()
-        )),
-        display::DetailsRow::Section("Storage".into()),
-        display::DetailsRow::Value(format!(
-            "Data {} KiB  SD card {} KiB  USB functions {}",
-            number_or_unknown(status.storage.data.available_kib),
-            number_or_unknown(status.storage.sdcard.available_kib),
+            pretty_value(adb),
             pretty_value(&uppercase_or_unknown(
                 status.usb.gadget_functions.as_deref()
             ))
         )),
-        display::DetailsRow::Section("Input".into()),
-        display::DetailsRow::Value(format!("{}  {}", coordinates, touch)),
+        display::DetailsRow::Section("Storage".into()),
         display::DetailsRow::Value(format!(
-            "{}  Events {}  Power last {}",
-            key,
+            "Data {} KiB  SD card {} KiB",
+            number_or_unknown(status.storage.data.available_kib),
+            number_or_unknown(status.storage.sdcard.available_kib)
+        )),
+        // System and input telemetry is intentionally grouped into a compact
+        // Diagnostics section. It keeps the user-facing settings and status
+        // above a dedicated action pane without losing the live counters.
+        display::DetailsRow::Section("Diagnostics".into()),
+        display::DetailsRow::Value(format!(
+            "System: FB {}  zygote {}  dispd {}",
+            pretty_value(framebuffer),
+            pretty_value(zygote),
+            pretty_value(dispd)
+        )),
+        display::DetailsRow::Value(format!(
+            "Runtime: Wake {}  Date {}",
+            pretty_value(if wake_lock_held { "yes" } else { "no" }),
+            date_time()
+        )),
+        display::DetailsRow::Value(format!(
+            "Input: {} touch  {} key  Power {}",
+            state.touch_events,
             state.key_events,
             state
                 .last_power_duration_ms
@@ -1219,14 +1216,6 @@ fn pretty_value(value: &str) -> String {
         .collect()
 }
 
-fn pretty_event_name(value: &str) -> String {
-    value
-        .split('_')
-        .map(pretty_value)
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
 fn run_power_state_helper(state: &str) -> io::Result<()> {
     let status = Command::new(POWER_STATE_HELPER).arg(state).status()?;
     if status.success() {
@@ -1541,6 +1530,9 @@ struct UiState {
     touch_x: i32,
     touch_y: i32,
     touch_down: bool,
+    touch_action: Option<display::DetailsAction>,
+    pressed_action: Option<display::DetailsAction>,
+    touch_action_initialized: bool,
     touch_release_pending: bool,
     last_touch: Option<RawEvent>,
     last_key: Option<(InputSourceKind, RawEvent)>,
@@ -1578,6 +1570,9 @@ impl UiState {
             touch_x: 0,
             touch_y: 0,
             touch_down: false,
+            touch_action: None,
+            pressed_action: None,
+            touch_action_initialized: false,
             touch_release_pending: false,
             last_touch: None,
             last_key: None,
@@ -1771,9 +1766,27 @@ impl UiState {
                     _ => {}
                 }
             }
+            if self.touch_down {
+                if let Some(action) = self.touch_action {
+                    let next_pressed = (display::details_action_at(
+                        self.touch_x,
+                        self.touch_y,
+                        display::SCREEN_WIDTH,
+                        display::SCREEN_HEIGHT,
+                    ) == Some(action))
+                    .then_some(action);
+                    if next_pressed != self.pressed_action {
+                        self.pressed_action = next_pressed;
+                        return (Some(DirtyArea::Action(action)), PowerAction::None);
+                    }
+                }
+            }
             if event.event_type == EVENT_KEY && event.code == BTN_TOUCH {
                 if event.value != 0 {
-                    self.touch_down = true;
+                    if !self.touch_down {
+                        self.touch_down = true;
+                        return (self.begin_touch_action(), PowerAction::None);
+                    }
                 } else if self.touch_down {
                     self.touch_down = false;
                     let action = self.activate_tap();
@@ -1786,7 +1799,10 @@ impl UiState {
             }
             if event.event_type == EVENT_ABS && event.code == ABS_MT_TOUCH_MAJOR {
                 if event.value > 0 {
-                    self.touch_down = true;
+                    if !self.touch_down {
+                        self.touch_down = true;
+                        return (self.begin_touch_action(), PowerAction::None);
+                    }
                     self.touch_release_pending = false;
                 } else if self.touch_down {
                     self.touch_release_pending = true;
@@ -1794,7 +1810,10 @@ impl UiState {
             }
             if event.event_type == EVENT_ABS && event.code == ABS_MT_TRACKING_ID {
                 if event.value >= 0 {
-                    self.touch_down = true;
+                    if !self.touch_down {
+                        self.touch_down = true;
+                        return (self.begin_touch_action(), PowerAction::None);
+                    }
                     self.touch_release_pending = false;
                 } else if self.touch_down {
                     self.touch_release_pending = true;
@@ -1860,6 +1879,22 @@ impl UiState {
         }
 
         (None, PowerAction::None)
+    }
+
+    fn begin_touch_action(&mut self) -> Option<DirtyArea> {
+        self.touch_action_initialized = true;
+        self.touch_action = if self.page == UiPage::Details {
+            display::details_action_at(
+                self.touch_x,
+                self.touch_y,
+                display::SCREEN_WIDTH,
+                display::SCREEN_HEIGHT,
+            )
+        } else {
+            None
+        };
+        self.pressed_action = self.touch_action;
+        self.touch_action.map(DirtyArea::Action)
     }
 
     fn touch_release_dirty(&self) -> DirtyArea {
@@ -1957,11 +1992,25 @@ impl UiState {
     }
 
     fn activate_tap(&mut self) -> PowerAction {
+        let touch_action = self.touch_action.take().or_else(|| {
+            if !self.touch_action_initialized && self.page == UiPage::Details {
+                display::details_action_at(
+                    self.touch_x,
+                    self.touch_y,
+                    display::SCREEN_WIDTH,
+                    display::SCREEN_HEIGHT,
+                )
+            } else {
+                None
+            }
+        });
+        self.touch_action_initialized = false;
+        let pressed_action = self.pressed_action.take();
+        let pressed_action = pressed_action.or(touch_action);
         if self.page == UiPage::DisplayTest {
             return PowerAction::None;
         }
-        let y = self.touch_y;
-        if y < display::STATUS_BAR_HEIGHT as i32 {
+        if self.touch_y < display::STATUS_BAR_HEIGHT as i32 {
             self.page = match self.page {
                 UiPage::Home => UiPage::Details,
                 UiPage::Details => UiPage::Home,
@@ -1982,64 +2031,59 @@ impl UiState {
             self.reader_tap = Some(Point::new(self.touch_x, self.touch_y));
             return PowerAction::None;
         }
-        let within_action_x = self.touch_x >= display::DETAILS_ACTION_MARGIN as i32
-            && self.touch_x
-                < (display::SCREEN_WIDTH.saturating_sub(display::DETAILS_ACTION_MARGIN)) as i32;
-        if !within_action_x {
-            return PowerAction::None;
-        }
-
+        // An action is committed only if release remains inside the exact
+        // control that was pressed. A drag across another control therefore
+        // restores the original button without activating either control.
+        let y = self.touch_y;
         let within_debug_row = y >= display::DETAILS_DEBUG_TOP as i32
             && y < (display::DETAILS_DEBUG_TOP + display::DETAILS_DEBUG_HEIGHT) as i32;
-        if within_debug_row {
+        if within_debug_row && touch_action.is_none() && pressed_action.is_none() {
             self.debug_messages = !self.debug_messages;
             return PowerAction::None;
         }
-
-        let within_sync_row = y >= display::DETAILS_SYNC_TOP as i32
-            && y < (display::DETAILS_SYNC_TOP + display::DETAILS_ACTION_HEIGHT) as i32;
-        if within_sync_row {
-            self.request_manual_sync();
+        let Some(touch_action) = touch_action else {
+            return PowerAction::None;
+        };
+        if pressed_action != Some(touch_action)
+            || display::details_action_at(
+                self.touch_x,
+                self.touch_y,
+                display::SCREEN_WIDTH,
+                display::SCREEN_HEIGHT,
+            ) != Some(touch_action)
+        {
             return PowerAction::None;
         }
 
-        let within_entry_point_row = y >= display::DETAILS_RETURN_ENTRY_TOP as i32
-            && y < (display::DETAILS_RETURN_ENTRY_TOP + display::DETAILS_ACTION_HEIGHT) as i32;
-        if within_entry_point_row {
-            self.reader_operation = Some(ReaderOperation::ReturnToEntryPoint);
-            self.set_debug_feedback("Returning to entry point");
-            return PowerAction::None;
+        match touch_action {
+            display::DetailsAction::SyncNow => {
+                self.request_manual_sync();
+                PowerAction::None
+            }
+            display::DetailsAction::ReturnToEntryPoint => {
+                self.reader_operation = Some(ReaderOperation::ReturnToEntryPoint);
+                self.set_debug_feedback("Returning to entry point");
+                PowerAction::None
+            }
+            display::DetailsAction::DisplayTest => {
+                self.page = UiPage::DisplayTest;
+                self.set_debug_feedback("Display test open");
+                PowerAction::None
+            }
+            display::DetailsAction::Reboot => {
+                self.set_debug_feedback("Reboot requested");
+                PowerAction::Reboot
+            }
+            display::DetailsAction::PowerOff => {
+                self.set_debug_feedback("Power off requested");
+                PowerAction::PowerOff
+            }
+            display::DetailsAction::BackToReading => {
+                self.page = UiPage::Home;
+                self.set_debug_feedback("Returned to reading");
+                PowerAction::None
+            }
         }
-
-        let within_display_test_row = y >= display::DETAILS_DISPLAY_TEST_TOP as i32
-            && y < (display::DETAILS_DISPLAY_TEST_TOP + display::DETAILS_ACTION_HEIGHT) as i32;
-        if within_display_test_row {
-            self.page = UiPage::DisplayTest;
-            self.set_debug_feedback("Display test open");
-            return PowerAction::None;
-        }
-
-        let within_reboot_row = y >= display::DETAILS_REBOOT_TOP as i32
-            && y < (display::DETAILS_REBOOT_TOP + display::DETAILS_ACTION_HEIGHT) as i32;
-        if within_reboot_row {
-            self.set_debug_feedback("Reboot requested");
-            return PowerAction::Reboot;
-        }
-
-        let within_power_off_row = y >= display::DETAILS_POWER_OFF_TOP as i32
-            && y < (display::DETAILS_POWER_OFF_TOP + display::DETAILS_ACTION_HEIGHT) as i32;
-        if within_power_off_row {
-            self.set_debug_feedback("Power off requested");
-            return PowerAction::PowerOff;
-        }
-
-        let within_back_row = y >= display::DETAILS_BACK_TOP as i32
-            && y < (display::DETAILS_BACK_TOP + display::DETAILS_ACTION_HEIGHT) as i32;
-        if within_back_row {
-            self.page = UiPage::Home;
-            self.set_debug_feedback("Returned to reading");
-        }
-        PowerAction::None
     }
 
     fn observe_power(
@@ -2104,8 +2148,9 @@ mod tests {
     use super::{
         display, record_reader_event_feedback, BundleHandoff, DirtyArea, Feedback, InputSourceKind,
         PageTone, Point, ReaderOperation, RefreshReason, SuspendMode, SyncEvent, UiPage, UiState,
-        ABS_MT_POSITION_X, ABS_MT_POSITION_Y, ABS_MT_TOUCH_MAJOR, ABS_MT_TRACKING_ID, ABS_X, ABS_Y,
-        BTN_TOUCH, EVENT_ABS, EVENT_KEY, EVENT_SYN, KEY_LEFT, KEY_MENU, KEY_RIGHT, SYN_REPORT,
+        PowerAction, ABS_MT_POSITION_X, ABS_MT_POSITION_Y, ABS_MT_TOUCH_MAJOR,
+        ABS_MT_TRACKING_ID, ABS_X, ABS_Y, BTN_TOUCH, EVENT_ABS, EVENT_KEY, EVENT_SYN, KEY_LEFT,
+        KEY_MENU, KEY_RIGHT, SYN_REPORT,
     };
     use crate::input::RawEvent;
     use prs_markdown::reader::ReaderEvent;
@@ -2400,6 +2445,60 @@ mod tests {
         let (_, action) = state.observe(InputSourceKind::Touch, event(BTN_TOUCH, 0, 4_000_000));
         assert_eq!(action, super::PowerAction::None);
         assert_eq!(state.page, UiPage::Details);
+    }
+
+    #[test]
+    fn details_action_press_is_visible_before_release_activation() {
+        let mut state = UiState::new();
+        state.page = UiPage::Details;
+        state.touch_x = 100;
+        state.touch_y = display::DETAILS_SYNC_TOP as i32 + 10;
+
+        let (dirty, action) = state.observe(InputSourceKind::Touch, event(BTN_TOUCH, 1, 1_000_000));
+
+        assert_eq!(
+            dirty,
+            Some(DirtyArea::Action(display::DetailsAction::SyncNow))
+        );
+        assert_eq!(action, PowerAction::None);
+        assert_eq!(state.pressed_action, Some(display::DetailsAction::SyncNow));
+        assert!(!state.sync_requested);
+
+        let (dirty, action) = state.observe(InputSourceKind::Touch, event(BTN_TOUCH, 0, 1_100_000));
+
+        assert_eq!(dirty, Some(DirtyArea::Full));
+        assert_eq!(action, PowerAction::None);
+        assert_eq!(state.pressed_action, None);
+        assert!(state.take_sync_request());
+    }
+
+    #[test]
+    fn details_action_drag_outside_cancels_without_cross_button_activation() {
+        let mut state = UiState::new();
+        state.page = UiPage::Details;
+        state.touch_x = 100;
+        state.touch_y = display::DETAILS_SYNC_TOP as i32 + 10;
+        state.observe(InputSourceKind::Touch, event(BTN_TOUCH, 1, 1_000_000));
+
+        let mut moved = event(
+            ABS_MT_POSITION_Y,
+            display::DETAILS_POWER_OFF_TOP as i32 + 10,
+            1_000_001,
+        );
+        moved.event_type = EVENT_ABS;
+        let (dirty, action) = state.observe(InputSourceKind::Touch, moved);
+        assert_eq!(
+            dirty,
+            Some(DirtyArea::Action(display::DetailsAction::SyncNow))
+        );
+        assert_eq!(action, PowerAction::None);
+        assert_eq!(state.pressed_action, None);
+
+        let (dirty, action) = state.observe(InputSourceKind::Touch, event(BTN_TOUCH, 0, 1_100_000));
+        assert_eq!(dirty, Some(DirtyArea::Full));
+        assert_eq!(action, PowerAction::None);
+        assert_eq!(state.page, UiPage::Details);
+        assert!(!state.take_sync_request());
     }
 
     #[test]
