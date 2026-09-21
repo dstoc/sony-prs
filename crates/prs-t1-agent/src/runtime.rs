@@ -668,11 +668,9 @@ impl DirtyArea {
             // Key and power diagnostics share one region so a power press can
             // update the key row, power row, and status message together.
             Self::Key | Self::Power => DisplayRegion::new(20, 535, 560, 105),
-            Self::Action(action) => display::details_action_region(
-                action,
-                width as usize,
-                height as usize,
-            ),
+            Self::Action(action) => {
+                display::details_action_region(action, width as usize, height as usize)
+            }
         };
         region.bounded(width, height)
     }
@@ -775,8 +773,11 @@ fn screen_view_model(state: &UiState, wake_lock_held: bool) -> display::UiViewMo
         )),
         display::DetailsRow::Section("Storage".into()),
         display::DetailsRow::Value(format!(
-            "Data {} KiB  SD card {} KiB",
-            number_or_unknown(status.storage.data.available_kib),
+            "Data {} KiB",
+            number_or_unknown(status.storage.data.available_kib)
+        )),
+        display::DetailsRow::Value(format!(
+            "SD card {} KiB",
             number_or_unknown(status.storage.sdcard.available_kib)
         )),
         // System and input telemetry is intentionally grouped into a compact
@@ -2149,8 +2150,8 @@ impl UiState {
 mod tests {
     use super::{
         display, record_reader_event_feedback, BundleHandoff, DirtyArea, Feedback, InputSourceKind,
-        PageTone, Point, ReaderOperation, RefreshReason, SuspendMode, SyncEvent, UiPage, UiState,
-        PowerAction, ABS_MT_POSITION_X, ABS_MT_POSITION_Y, ABS_MT_TOUCH_MAJOR,
+        PageTone, Point, PowerAction, ReaderOperation, RefreshReason, SuspendMode, SyncEvent,
+        UiPage, UiState, ABS_MT_POSITION_X, ABS_MT_POSITION_Y, ABS_MT_TOUCH_MAJOR,
         ABS_MT_TRACKING_ID, ABS_X, ABS_Y, BTN_TOUCH, EVENT_ABS, EVENT_KEY, EVENT_SYN, KEY_LEFT,
         KEY_MENU, KEY_RIGHT, SYN_REPORT,
     };
@@ -2471,7 +2472,7 @@ mod tests {
         assert_eq!(dirty, Some(DirtyArea::Full));
         assert_eq!(action, PowerAction::None);
         assert_eq!(state.pressed_action, None);
-        assert!(state.take_sync_request());
+        assert_eq!(state.take_sync_trigger(), Some(super::SyncTrigger::Manual));
     }
 
     #[test]
@@ -2500,7 +2501,7 @@ mod tests {
         assert_eq!(dirty, Some(DirtyArea::Full));
         assert_eq!(action, PowerAction::None);
         assert_eq!(state.page, UiPage::Details);
-        assert!(!state.take_sync_request());
+        assert_eq!(state.take_sync_trigger(), None);
     }
 
     #[test]

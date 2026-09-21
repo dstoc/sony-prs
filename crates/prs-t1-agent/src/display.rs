@@ -1404,9 +1404,10 @@ mod tests {
             DetailsRow::Value("Health Good  Voltage 4.20 V  AC On USB On".into()),
             DetailsRow::Section("Connectivity".into()),
             DetailsRow::Value("WiFi wlan0 Up  Supplicant Completed".into()),
-            DetailsRow::Value("USB On  Gadget Configured  ADB On".into()),
+            DetailsRow::Value("USB On  Gadget Configured  ADB On  Functions Adb".into()),
             DetailsRow::Section("Storage".into()),
-            DetailsRow::Value("Data 123456 KiB  SD card 654321 KiB  USB functions Adb".into()),
+            DetailsRow::Value("Data 123456 KiB".into()),
+            DetailsRow::Value("SD card 654321 KiB".into()),
             DetailsRow::Section("Diagnostics".into()),
             DetailsRow::Value("System: FB ACTIVE  Rotate 0  zygote STOP  dispd STOP".into()),
             DetailsRow::Value("Runtime: Wake yes  Date 21 Sep 2026 12:34".into()),
@@ -1491,7 +1492,7 @@ mod tests {
 
     #[test]
     fn pressed_action_renderer_changes_only_the_action_visual_state() {
-        let view = screenshot_view();
+        let view = screenshot_view(false);
         let normal = render_details_settings_host(&view);
         let pressed = render_details_settings_host_pressed(&view, DetailsAction::SyncNow);
 
@@ -1529,7 +1530,7 @@ mod tests {
 
     #[test]
     fn details_content_fits_before_the_dedicated_action_pane() {
-        let view = screenshot_view();
+        let view = screenshot_view(false);
         for (index, _) in view.details.rows.iter().enumerate() {
             let top = super::CONTENT_TOP + (index + 1) * DETAILS_LINE_STEP;
             assert!(
