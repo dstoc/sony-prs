@@ -7,6 +7,7 @@ helper_build="$repo_root/crates/prs-t1-agent/tools/build-wifi-helper.sh"
 wifi_source="$repo_root/crates/prs-t1-agent/src/wifi.rs"
 network_source="$repo_root/crates/prs-t1-agent/src/network.rs"
 network_readme="$repo_root/crates/prs-t1-agent/README.md"
+main_source="$repo_root/crates/prs-t1-agent/src/main.rs"
 
 for symbol in \
   wifi_load_driver \
@@ -45,6 +46,18 @@ grep -Fq 'injected TLS negotiation network loss' "$network_source"
 grep -Fq 'response body read interrupted by the diagnostic network-loss injection' "$network_source"
 grep -Fq 'run_injected_loss dns' "$repo_root/crates/prs-t1-agent/build.md"
 grep -Fq -- '--inject-network-loss STAGE' "$network_readme"
+
+python3 - "$main_source" <<'PY'
+from pathlib import Path
+import sys
+
+source = Path(sys.argv[1]).read_text()
+usage = source[source.index('Usage:\\n'):source.index("\\n\\n`probe`")]
+assert (
+    '  prs-t1-agent wifi-probe HOSTNAME_OR_HTTPS_URL '
+    '[--invalid-hostname] [--inject-network-loss STAGE]'
+) in usage
+PY
 
 python3 - "$wifi_source" <<'PY'
 from pathlib import Path
