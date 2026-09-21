@@ -106,8 +106,8 @@ The command starts Wi-Fi, creates a reader authorization request, and shows
 the public approval URL as a QR code. The polling secret and read-only session
 token remain in process memory. After approval, the client fetches the
 manifest, streams the uncompressed tar into the configured tmpfs, validates
-the archive with `prs-sync-bundle`, enforces the fixed 16 MiB encoded archive
-limit, and atomically updates the `current` symlink. It attempts to disable
+the archive with `prs-sync-bundle`, enforces the fixed 16 MiB encoded archive limit,
+and atomically updates the `current` symlink. It attempts to disable
 Wi-Fi after success and after every failure.
 
 The `sync` command does not persist authorization secrets or the downloaded
