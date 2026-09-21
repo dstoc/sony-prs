@@ -195,28 +195,21 @@ pub fn run(path: &Path, suspend_mode: SuspendMode) -> io::Result<()> {
                         }
                     };
                     let dirty = apply_reader_result(&mut state, &mut markdown_reader, result);
-                    redraw_area = Some(match redraw_area {
-                        Some(existing) => existing.merge(dirty),
-                        None => dirty,
-                    });
+                    redraw_area = merge_optional_dirty(redraw_area, dirty);
                 }
                 if let Some(point) = state.take_reader_tap() {
                     let result = markdown_reader.tap(point);
                     let dirty = apply_reader_result(&mut state, &mut markdown_reader, result);
-                    redraw_area = Some(match redraw_area {
-                        Some(existing) => existing.merge(dirty),
-                        None => dirty,
-                    });
+                    redraw_area = merge_optional_dirty(redraw_area, dirty);
                 }
             }
         }
 
         if start_requested_sync(&mut state, || sync_task.start()).is_some() {
-            redraw_area = Some(DirtyArea::Full);
+            redraw_area = merge_optional_dirty(redraw_area, Some(state.sync_status_dirty()));
         }
         while let Some(event) = sync_task.try_event() {
-            state.apply_sync_event(event);
-            redraw_area = Some(DirtyArea::Full);
+            redraw_area = merge_optional_dirty(redraw_area, state.apply_sync_event(event));
         }
         if state.bundle_ready && state.is_idle() {
             match markdown_reader.reload_current_bundle() {
@@ -242,7 +235,7 @@ pub fn run(path: &Path, suspend_mode: SuspendMode) -> io::Result<()> {
                     state.last_sync_failure = Some(format!("reload current bundle: {error}"));
                     state.set_error_feedback("Bundle handoff failed");
                     eprintln!("standalone-test: current bundle handoff failed: {error}");
-                    redraw_area = Some(DirtyArea::Full);
+                    redraw_area = merge_optional_dirty(redraw_area, Some(DirtyArea::Feedback));
                 }
             }
         }
@@ -421,10 +414,14 @@ fn redraw(
     if state.sync_active {
         if let Some(approval_url) = state.approval_url.as_deref() {
             return finish_redraw(
-                display::draw_authorization_qr(
+                display::draw_authorization_qr_with_plan(
                     display,
                     approval_url,
                     &view.status_bar.to_wire_line(),
+                    area.region(display.width(), display.height(), state.page),
+                    plan.waveform(),
+                    plan.wait_for_completion(),
+                    plan.force_refresh(),
                 ),
                 state,
                 sync_task,
@@ -520,7 +517,8 @@ fn reader_event_dirty_area(event: &ReaderEvent, tone: PageTone) -> Option<DirtyA
         | ReaderEvent::Back { .. }
         | ReaderEvent::Forward { .. } => Some(DirtyArea::PageTurn(tone)),
         ReaderEvent::ExternalUrl(_) => Some(DirtyArea::ExternalLinkOverlay),
-        ReaderEvent::Asset(_) | ReaderEvent::NoAction => Some(DirtyArea::Interaction),
+        ReaderEvent::Asset(_) => Some(DirtyArea::Interaction),
+        ReaderEvent::NoAction => None,
         ReaderEvent::Opened { .. } => None,
     }
 }
@@ -576,17 +574,24 @@ fn apply_reader_result(
     state: &mut UiState,
     markdown_reader: &mut reader::T1Reader,
     result: Result<ReaderEvent, ReaderError>,
-) -> DirtyArea {
+) -> Option<DirtyArea> {
     match result {
         Ok(event) => {
+            let previous_feedback = state.feedback_is_visible().map(str::to_owned);
             record_reader_event_feedback(state, &event);
-            let dirty = reader_event_dirty_area(&event, markdown_reader.current_page_tone())
-                .unwrap_or(DirtyArea::Full);
+            let dirty = if matches!(&event, ReaderEvent::NoAction) {
+                (state.feedback_is_visible().map(str::to_owned) != previous_feedback)
+                    .then_some(DirtyArea::Feedback)
+            } else {
+                reader_event_dirty_area(&event, markdown_reader.current_page_tone()).or_else(|| {
+                    matches!(&event, ReaderEvent::Opened { .. }).then_some(DirtyArea::Full)
+                })
+            };
             match event {
                 ReaderEvent::ExternalUrl(url) => {
                     if let Err(error) = markdown_reader.set_external_link_overlay(url) {
                         state.set_error_feedback(format!("External link QR unavailable: {error}"));
-                        return DirtyArea::Full;
+                        return Some(DirtyArea::Full);
                     }
                 }
                 ReaderEvent::NoAction => {}
@@ -605,7 +610,7 @@ fn apply_reader_result(
             state.set_error_feedback(format!("Reader error: {error}"));
             markdown_reader.clear_external_link_overlay();
             eprintln!("standalone-test: Markdown operation failed: {error}");
-            DirtyArea::Full
+            Some(DirtyArea::Full)
         }
     }
 }
@@ -614,6 +619,9 @@ fn apply_reader_result(
 enum DirtyArea {
     Full,
     Status,
+    SyncStatus,
+    StatusFeedback,
+    Feedback,
     PageTurn(PageTone),
     Interaction,
     ExternalLinkOverlay,
@@ -632,8 +640,29 @@ impl DirtyArea {
                 (PageTone::Monochrome, PageTone::Monochrome) => PageTone::Monochrome,
             }),
             (Self::PageTurn(_), Self::Status) | (Self::Status, Self::PageTurn(_)) => Self::Full,
+            (Self::Status, Self::SyncStatus) | (Self::SyncStatus, Self::Status) => Self::SyncStatus,
+            (Self::Status, Self::StatusFeedback) | (Self::StatusFeedback, Self::Status) => {
+                Self::StatusFeedback
+            }
+            (Self::Status, Self::Feedback) | (Self::Feedback, Self::Status) => Self::StatusFeedback,
             (Self::PageTurn(tone), Self::Interaction)
             | (Self::Interaction, Self::PageTurn(tone)) => Self::PageTurn(tone),
+            (Self::SyncStatus, Self::Feedback) | (Self::Feedback, Self::SyncStatus) => {
+                Self::StatusFeedback
+            }
+            (Self::SyncStatus, Self::Action(_)) | (Self::Action(_), Self::SyncStatus) => {
+                Self::SyncStatus
+            }
+            (Self::Feedback, Self::Action(_)) | (Self::Action(_), Self::Feedback) => {
+                Self::Interaction
+            }
+            (Self::Feedback, Self::Interaction) | (Self::Interaction, Self::Feedback) => {
+                Self::Interaction
+            }
+            (Self::ExternalLinkOverlay, Self::Feedback)
+            | (Self::Feedback, Self::ExternalLinkOverlay)
+            | (Self::ExternalLinkOverlay, Self::Interaction)
+            | (Self::Interaction, Self::ExternalLinkOverlay) => Self::Interaction,
             (Self::ExternalLinkOverlay, Self::ExternalLinkOverlay) => Self::ExternalLinkOverlay,
             (Self::Action(left), Self::Action(right)) if left == right => Self::Action(left),
             (Self::Key, Self::Power) | (Self::Power, Self::Key) => Self::Power,
@@ -647,8 +676,11 @@ impl DirtyArea {
             Self::Full => RefreshReason::FullRedraw,
             Self::PageTurn(tone) => RefreshReason::PageTurn(tone),
             Self::Status if page == UiPage::Home => RefreshReason::StatusBar,
+            Self::SyncStatus => RefreshReason::StatusBar,
             Self::Status
+            | Self::StatusFeedback
             | Self::Interaction
+            | Self::Feedback
             | Self::ExternalLinkOverlay
             | Self::Action(_)
             | Self::Touch
@@ -682,6 +714,26 @@ impl DirtyArea {
                 DisplayRegion::new(0, 0, width, display::STATUS_BAR_HEIGHT as u32)
             }
             Self::Status => DisplayRegion::new(0, 0, width, 640),
+            Self::SyncStatus if page == UiPage::Home => {
+                DisplayRegion::new(0, 0, width, display::STATUS_BAR_HEIGHT as u32)
+            }
+            Self::SyncStatus => DisplayRegion::new(
+                0,
+                0,
+                width,
+                (display::DETAILS_SYNC_TOP + display::DETAILS_ACTION_HEIGHT) as u32,
+            ),
+            Self::StatusFeedback => DisplayRegion::new(
+                0,
+                0,
+                width,
+                if page == UiPage::Home {
+                    display::CONTENT_TOP as u32
+                } else {
+                    (display::DETAILS_SYNC_TOP + display::DETAILS_ACTION_HEIGHT) as u32
+                },
+            ),
+            Self::Feedback => feedback_region(),
             // Home feedback is cleared before every touch/key event. Repaint
             // that band for the diagnostic-only damage hints as well, or the
             // old message can remain visible until a later content redraw.
@@ -698,6 +750,13 @@ impl DirtyArea {
             }
         };
         region.bounded(width, height)
+    }
+}
+
+fn merge_optional_dirty(left: Option<DirtyArea>, right: Option<DirtyArea>) -> Option<DirtyArea> {
+    match (left, right) {
+        (None, value) | (value, None) => value,
+        (Some(left), Some(right)) => Some(left.merge(right)),
     }
 }
 
@@ -1670,6 +1729,14 @@ impl UiState {
         }
     }
 
+    fn feedback_is_visible(&self) -> Option<&str> {
+        if self.page == UiPage::Home && !(self.sync_active && self.approval_url.is_some()) {
+            self.visible_feedback()
+        } else {
+            None
+        }
+    }
+
     fn set_error_feedback(&mut self, text: impl Into<String>) {
         self.feedback = Some(Feedback::Error(text.into()));
     }
@@ -1686,6 +1753,14 @@ impl UiState {
         self.sync_active = true;
         self.approval_url = None;
         self.set_debug_feedback("Synchronizing…");
+    }
+
+    fn sync_status_dirty(&self) -> DirtyArea {
+        if self.debug_messages {
+            DirtyArea::StatusFeedback
+        } else {
+            DirtyArea::SyncStatus
+        }
     }
 
     fn sync_cancelled(&mut self) {
@@ -1713,13 +1788,18 @@ impl UiState {
         true
     }
 
-    fn apply_sync_event(&mut self, event: SyncEvent) {
+    fn apply_sync_event(&mut self, event: SyncEvent) -> Option<DirtyArea> {
         match event {
             SyncEvent::ApprovalUrl(url) => {
+                if self.approval_url.as_deref() == Some(url.as_str()) {
+                    return None;
+                }
                 self.approval_url = Some(url);
                 self.set_debug_feedback("Scan to authorize synchronization");
+                Some(DirtyArea::Full)
             }
             SyncEvent::Finished(Ok(outcome)) => {
+                let had_approval_qr = self.approval_url.is_some();
                 self.sync_active = false;
                 self.approval_url = None;
                 self.last_sync_failure = None;
@@ -1728,23 +1808,36 @@ impl UiState {
                         self.bundle_ready = true;
                         self.pending_handoff = Some(BundleHandoff::Updated);
                         self.set_debug_feedback("Synchronization complete");
+                        Some(DirtyArea::Full)
                     }
                     sync::SyncOutcome::Cleared { .. } => {
                         self.bundle_ready = true;
                         self.pending_handoff = Some(BundleHandoff::Cleared);
                         self.set_debug_feedback("Library cleared");
+                        Some(DirtyArea::Full)
                     }
                     sync::SyncOutcome::Unchanged { .. } => {
                         self.set_debug_feedback("Already current");
+                        Some(if had_approval_qr {
+                            DirtyArea::Full
+                        } else {
+                            self.sync_status_dirty()
+                        })
                     }
                 }
             }
             SyncEvent::Finished(Err(error)) => {
+                let had_approval_qr = self.approval_url.is_some();
                 self.sync_active = false;
                 self.approval_url = None;
                 self.last_sync_failure = Some(error.clone());
                 self.set_error_feedback("Synchronization failed");
                 eprintln!("standalone-test: synchronization failed: {error}");
+                Some(if had_approval_qr {
+                    DirtyArea::Full
+                } else {
+                    DirtyArea::StatusFeedback
+                })
             }
         }
     }
@@ -1765,9 +1858,16 @@ impl UiState {
         event: RawEvent,
     ) -> (Option<DirtyArea>, PowerAction) {
         self.last_activity = Instant::now();
-        if source == InputSourceKind::Touch || event.event_type == EVENT_KEY {
+        let feedback_damage = if source == InputSourceKind::Touch || event.event_type == EVENT_KEY {
+            let was_visible = self.feedback_is_visible().is_some();
             self.clear_feedback();
-        }
+            was_visible.then_some(DirtyArea::Feedback)
+        } else {
+            None
+        };
+        let finish = |dirty: Option<DirtyArea>, action: PowerAction| {
+            (merge_optional_dirty(feedback_damage, dirty), action)
+        };
         if source == InputSourceKind::Touch {
             self.last_touch = Some(event);
             if event.event_type == EVENT_ABS {
@@ -1805,7 +1905,7 @@ impl UiState {
                     .then_some(action);
                     if next_pressed != self.pressed_action {
                         self.pressed_action = next_pressed;
-                        return (Some(DirtyArea::Action(action)), PowerAction::None);
+                        return finish(Some(DirtyArea::Action(action)), PowerAction::None);
                     }
                 }
             }
@@ -1813,23 +1913,23 @@ impl UiState {
                 if event.value != 0 {
                     if !self.touch_down {
                         self.touch_down = true;
-                        return (self.begin_touch_action(), PowerAction::None);
+                        return finish(self.begin_touch_action(), PowerAction::None);
                     }
                 } else if self.touch_down {
                     self.touch_down = false;
-                    let action = self.activate_tap();
+                    let (action, dirty) = self.activate_tap();
                     eprintln!(
                         "standalone-test: touch tap x={} y={} page={:?} action={action:?}",
                         self.touch_x, self.touch_y, self.page
                     );
-                    return (Some(self.touch_release_dirty()), action);
+                    return finish(dirty, action);
                 }
             }
             if event.event_type == EVENT_ABS && event.code == ABS_MT_TOUCH_MAJOR {
                 if event.value > 0 {
                     if !self.touch_down {
                         self.touch_down = true;
-                        return (self.begin_touch_action(), PowerAction::None);
+                        return finish(self.begin_touch_action(), PowerAction::None);
                     }
                     self.touch_release_pending = false;
                 } else if self.touch_down {
@@ -1840,7 +1940,7 @@ impl UiState {
                 if event.value >= 0 {
                     if !self.touch_down {
                         self.touch_down = true;
-                        return (self.begin_touch_action(), PowerAction::None);
+                        return finish(self.begin_touch_action(), PowerAction::None);
                     }
                     self.touch_release_pending = false;
                 } else if self.touch_down {
@@ -1852,23 +1952,25 @@ impl UiState {
                 if self.touch_release_pending {
                     self.touch_down = false;
                     self.touch_release_pending = false;
-                    let action = self.activate_tap();
+                    let (action, dirty) = self.activate_tap();
                     eprintln!(
                         "standalone-test: touch tap x={} y={} page={:?} action={action:?}",
                         self.touch_x, self.touch_y, self.page
                     );
-                    return (Some(self.touch_release_dirty()), action);
+                    return finish(dirty, action);
                 }
-                return (Some(DirtyArea::Touch), PowerAction::None);
+                let dirty = (self.page == UiPage::Details).then_some(DirtyArea::Touch);
+                return finish(dirty, PowerAction::None);
             }
-            return (None, PowerAction::None);
+            return finish(None, PowerAction::None);
         }
 
         if event.event_type == EVENT_KEY {
             self.last_key = Some((source, event));
             self.key_events += 1;
             if source == InputSourceKind::Keys && event.code == KEY_MENU {
-                return self.observe_menu(event);
+                let (dirty, action) = self.observe_menu(event);
+                return finish(dirty, action);
             }
             if source == InputSourceKind::Keys && self.page == UiPage::Home && event.value == 1 {
                 let operation = match event.code {
@@ -1885,7 +1987,7 @@ impl UiState {
                             unreachable!()
                         }
                     });
-                    return (Some(DirtyArea::Full), PowerAction::None);
+                    return finish(Some(DirtyArea::Full), PowerAction::None);
                 }
             }
             if source.is_power() && event.code == KEY_POWER {
@@ -1896,17 +1998,21 @@ impl UiState {
                     event.timestamp_micros(),
                     self.mode,
                 );
-                return self.observe_power(source, event);
+                let (dirty, action) = self.observe_power(source, event);
+                return finish(dirty, action);
             }
             let area = if source.is_power() {
                 DirtyArea::Power
             } else {
                 DirtyArea::Key
             };
-            return (Some(area), PowerAction::None);
+            return finish(
+                (self.page == UiPage::Details).then_some(area),
+                PowerAction::None,
+            );
         }
 
-        (None, PowerAction::None)
+        finish(None, PowerAction::None)
     }
 
     fn begin_touch_action(&mut self) -> Option<DirtyArea> {
@@ -1923,22 +2029,6 @@ impl UiState {
         };
         self.pressed_action = self.touch_action;
         self.touch_action.map(DirtyArea::Action)
-    }
-
-    fn touch_release_dirty(&self) -> DirtyArea {
-        if self.page == UiPage::DisplayTest {
-            return DirtyArea::Full;
-        }
-        if self.page == UiPage::Home && self.touch_y >= display::STATUS_BAR_HEIGHT as i32 {
-            // The reader will refine this into a page-turn tone or a retained
-            // interaction message. Keep the status bar out of the initial
-            // semantic hint so a normal page turn can use DU.
-            DirtyArea::Interaction
-        } else {
-            // Status-bar/details actions change application chrome and need a
-            // complete quality redraw.
-            DirtyArea::Full
-        }
     }
 
     fn poll_menu_hold(&mut self) -> Option<DirtyArea> {
@@ -1961,7 +2051,7 @@ impl UiState {
                     self.menu_hold_triggered = false;
                     self.set_debug_feedback("Menu held");
                 }
-                (Some(DirtyArea::Key), PowerAction::None)
+                (self.diagnostics_dirty(DirtyArea::Key), PowerAction::None)
             }
             2 => {
                 let due = !self.menu_hold_triggered
@@ -1975,7 +2065,7 @@ impl UiState {
                     (Some(self.trigger_menu_redraw()), PowerAction::None)
                 } else {
                     self.set_debug_feedback("Menu repeat");
-                    (Some(DirtyArea::Key), PowerAction::None)
+                    (self.diagnostics_dirty(DirtyArea::Key), PowerAction::None)
                 }
             }
             0 => {
@@ -1983,7 +2073,7 @@ impl UiState {
                     self.menu_pressed_at = None;
                     self.menu_hold_triggered = false;
                     self.set_debug_feedback("Menu released");
-                    return (Some(DirtyArea::Key), PowerAction::None);
+                    return (self.diagnostics_dirty(DirtyArea::Key), PowerAction::None);
                 };
                 let duration = event.timestamp_micros().saturating_sub(start);
                 self.menu_pressed_at = None;
@@ -2001,11 +2091,15 @@ impl UiState {
                     (Some(DirtyArea::Full), PowerAction::None)
                 } else {
                     self.set_debug_feedback("Menu released");
-                    (Some(DirtyArea::Key), PowerAction::None)
+                    (self.diagnostics_dirty(DirtyArea::Key), PowerAction::None)
                 }
             }
-            _ => (Some(DirtyArea::Key), PowerAction::None),
+            _ => (self.diagnostics_dirty(DirtyArea::Key), PowerAction::None),
         }
+    }
+
+    fn diagnostics_dirty(&self, area: DirtyArea) -> Option<DirtyArea> {
+        (self.page == UiPage::Details).then_some(area)
     }
 
     fn trigger_menu_redraw(&mut self) -> DirtyArea {
@@ -2019,7 +2113,7 @@ impl UiState {
         DirtyArea::Full
     }
 
-    fn activate_tap(&mut self) -> PowerAction {
+    fn activate_tap(&mut self) -> (PowerAction, Option<DirtyArea>) {
         let touch_action = self.touch_action.take().or_else(|| {
             if !self.touch_action_initialized && self.page == UiPage::Details {
                 display::details_action_at(
@@ -2036,7 +2130,7 @@ impl UiState {
         let pressed_action = self.pressed_action.take();
         let pressed_action = pressed_action.or(touch_action);
         if self.page == UiPage::DisplayTest {
-            return PowerAction::None;
+            return (PowerAction::None, Some(DirtyArea::Full));
         }
         if self.touch_y < display::STATUS_BAR_HEIGHT as i32 {
             self.page = match self.page {
@@ -2053,11 +2147,11 @@ impl UiState {
                     unreachable!("display-test taps return before the status bar")
                 }
             });
-            return PowerAction::None;
+            return (PowerAction::None, Some(DirtyArea::Full));
         }
         if self.page != UiPage::Details {
             self.reader_tap = Some(Point::new(self.touch_x, self.touch_y));
-            return PowerAction::None;
+            return (PowerAction::None, None);
         }
         // An action is committed only if release remains inside the exact
         // control that was pressed. A drag across another control therefore
@@ -2067,10 +2161,10 @@ impl UiState {
             && y < (display::DETAILS_DEBUG_TOP + display::DETAILS_DEBUG_HEIGHT) as i32;
         if within_debug_row && touch_action.is_none() && pressed_action.is_none() {
             self.debug_messages = !self.debug_messages;
-            return PowerAction::None;
+            return (PowerAction::None, Some(DirtyArea::Interaction));
         }
         let Some(touch_action) = touch_action else {
-            return PowerAction::None;
+            return (PowerAction::None, None);
         };
         if pressed_action != Some(touch_action)
             || display::details_action_at(
@@ -2080,36 +2174,36 @@ impl UiState {
                 display::SCREEN_HEIGHT,
             ) != Some(touch_action)
         {
-            return PowerAction::None;
+            return (PowerAction::None, Some(DirtyArea::Action(touch_action)));
         }
 
         match touch_action {
             display::DetailsAction::SyncNow => {
                 self.request_manual_sync();
-                PowerAction::None
+                (PowerAction::None, Some(DirtyArea::Action(touch_action)))
             }
             display::DetailsAction::ReturnToEntryPoint => {
                 self.reader_operation = Some(ReaderOperation::ReturnToEntryPoint);
                 self.set_debug_feedback("Returning to entry point");
-                PowerAction::None
+                (PowerAction::None, Some(DirtyArea::Action(touch_action)))
             }
             display::DetailsAction::DisplayTest => {
                 self.page = UiPage::DisplayTest;
                 self.set_debug_feedback("Display test open");
-                PowerAction::None
+                (PowerAction::None, Some(DirtyArea::Full))
             }
             display::DetailsAction::Reboot => {
                 self.set_debug_feedback("Reboot requested");
-                PowerAction::Reboot
+                (PowerAction::Reboot, Some(DirtyArea::Action(touch_action)))
             }
             display::DetailsAction::PowerOff => {
                 self.set_debug_feedback("Power off requested");
-                PowerAction::PowerOff
+                (PowerAction::PowerOff, Some(DirtyArea::Action(touch_action)))
             }
             display::DetailsAction::BackToReading => {
                 self.page = UiPage::Home;
                 self.set_debug_feedback("Returned to reading");
-                PowerAction::None
+                (PowerAction::None, Some(DirtyArea::Full))
             }
         }
     }
@@ -2125,7 +2219,7 @@ impl UiState {
                     self.ignore_power_until = None;
                 }
                 self.set_debug_feedback("Wake power ignored");
-                return (Some(DirtyArea::Power), PowerAction::None);
+                return (self.diagnostics_dirty(DirtyArea::Power), PowerAction::None);
             }
             self.ignore_power_until = None;
         }
@@ -2135,7 +2229,7 @@ impl UiState {
                     self.power_press_us = Some(event.timestamp_micros());
                 }
                 self.set_debug_feedback("Power held");
-                (Some(DirtyArea::Power), PowerAction::None)
+                (self.diagnostics_dirty(DirtyArea::Power), PowerAction::None)
             }
             0 => {
                 let duration = self
@@ -2151,7 +2245,10 @@ impl UiState {
                         source.label(),
                         duration / 1_000
                     );
-                    (Some(DirtyArea::Power), PowerAction::Reboot)
+                    (
+                        self.diagnostics_dirty(DirtyArea::Power),
+                        PowerAction::Reboot,
+                    )
                 } else {
                     self.set_debug_feedback("Short power - sleep");
                     eprintln!(
@@ -2159,14 +2256,14 @@ impl UiState {
                         source.label(),
                         duration / 1_000
                     );
-                    (Some(DirtyArea::Power), PowerAction::Sleep)
+                    (self.diagnostics_dirty(DirtyArea::Power), PowerAction::Sleep)
                 }
             }
             2 => {
                 self.set_debug_feedback("Power repeat");
-                (Some(DirtyArea::Power), PowerAction::None)
+                (self.diagnostics_dirty(DirtyArea::Power), PowerAction::None)
             }
-            _ => (Some(DirtyArea::Power), PowerAction::None),
+            _ => (self.diagnostics_dirty(DirtyArea::Power), PowerAction::None),
         }
     }
 }
@@ -2231,7 +2328,7 @@ mod tests {
         let (dirty, action) = state.observe(InputSourceKind::Touch, event(BTN_TOUCH, 0, 1_000_000));
 
         assert_eq!(action, super::PowerAction::None);
-        assert_eq!(dirty, Some(DirtyArea::Interaction));
+        assert_eq!(dirty, None);
         assert_eq!(state.take_reader_tap(), Some(Point::new(500, 156)));
         assert_eq!(state.page, UiPage::Home);
     }
@@ -2262,6 +2359,10 @@ mod tests {
         assert_eq!(
             super::reader_event_message(&event),
             "External link: https://example.com/reader"
+        );
+        assert_eq!(
+            super::reader_event_dirty_area(&ReaderEvent::NoAction, PageTone::Monochrome),
+            None
         );
     }
 
@@ -2325,6 +2426,85 @@ mod tests {
         assert!(!state.sync_active);
         assert_eq!(state.visible_feedback(), Some("Synchronization failed"));
         assert_eq!(super::screen_view_model(&state, true).status_bar.mode, "");
+    }
+
+    #[test]
+    fn unchanged_authorization_poll_does_not_request_a_redraw() {
+        let mut state = UiState::new();
+        state.sync_started();
+
+        assert_eq!(
+            state.apply_sync_event(SyncEvent::ApprovalUrl(
+                "https://reader.example.test/a/request".into(),
+            )),
+            Some(DirtyArea::Full)
+        );
+        assert_eq!(
+            state.apply_sync_event(SyncEvent::ApprovalUrl(
+                "https://reader.example.test/a/request".into(),
+            )),
+            None
+        );
+    }
+
+    #[test]
+    fn sync_transitions_use_bounded_status_damage_without_a_qr() {
+        let mut state = UiState::new();
+        assert_eq!(
+            super::merge_optional_dirty(None, Some(state.sync_status_dirty())),
+            Some(DirtyArea::SyncStatus)
+        );
+        assert_eq!(
+            DirtyArea::SyncStatus.region(600, 800, UiPage::Home),
+            super::DisplayRegion::new(0, 0, 600, display::STATUS_BAR_HEIGHT as u32)
+        );
+
+        state.sync_started();
+        assert_eq!(
+            state.apply_sync_event(SyncEvent::Finished(Ok(
+                super::sync::SyncOutcome::Unchanged {
+                    revision: prs_sync_protocol::InboxRevision::new(11),
+                },
+            ))),
+            Some(DirtyArea::SyncStatus)
+        );
+    }
+
+    #[test]
+    fn inert_details_tap_requests_no_display_update() {
+        let mut state = UiState::new();
+        state.page = UiPage::Details;
+        state.touch_x = 100;
+        state.touch_y = 250;
+        state.touch_down = true;
+
+        let (dirty, action) = state.observe(InputSourceKind::Touch, event(BTN_TOUCH, 0, 1_000_000));
+
+        assert_eq!(dirty, None);
+        assert_eq!(action, PowerAction::None);
+    }
+
+    #[test]
+    fn only_visible_feedback_clear_requests_the_feedback_strip() {
+        let mut state = UiState::new();
+        state.set_error_feedback("Reader error");
+        let (dirty, action) = state.observe(InputSourceKind::Keys, event(999, 0, 1_000_000));
+        assert_eq!(dirty, Some(DirtyArea::Feedback));
+        assert_eq!(action, PowerAction::None);
+        assert_eq!(
+            DirtyArea::Feedback.region(600, 800, UiPage::Home),
+            super::DisplayRegion::new(
+                0,
+                display::STATUS_BAR_HEIGHT as u32,
+                600,
+                (display::CONTENT_TOP - display::STATUS_BAR_HEIGHT) as u32,
+            )
+        );
+
+        let mut state = UiState::new();
+        let (dirty, action) = state.observe(InputSourceKind::Keys, event(999, 0, 1_000_000));
+        assert_eq!(dirty, None);
+        assert_eq!(action, PowerAction::None);
     }
 
     #[test]
@@ -2420,6 +2600,10 @@ mod tests {
             RefreshReason::Transient
         );
         assert_eq!(
+            DirtyArea::SyncStatus.reason(UiPage::Home),
+            RefreshReason::StatusBar
+        );
+        assert_eq!(
             DirtyArea::Status.merge(DirtyArea::PageTurn(PageTone::Monochrome)),
             DirtyArea::Full
         );
@@ -2430,7 +2614,7 @@ mod tests {
         let mut state = UiState::new();
 
         let (dirty, action) = state.observe(InputSourceKind::Keys, event(KEY_MENU, 1, 1_000_000));
-        assert_eq!(dirty, Some(DirtyArea::Key));
+        assert_eq!(dirty, None);
         assert_eq!(action, super::PowerAction::None);
 
         let (dirty, action) = state.observe(InputSourceKind::Keys, event(KEY_MENU, 0, 2_000_000));
@@ -2463,7 +2647,7 @@ mod tests {
         );
 
         let (dirty, action) = state.observe(InputSourceKind::Keys, event(KEY_LEFT, 2, 1_000_001));
-        assert_eq!(dirty, Some(DirtyArea::Key));
+        assert_eq!(dirty, None);
         assert_eq!(action, super::PowerAction::None);
         assert_eq!(state.take_reader_operation(), None);
 
@@ -2553,7 +2737,10 @@ mod tests {
 
         let (dirty, action) = state.observe(InputSourceKind::Touch, event(BTN_TOUCH, 0, 1_100_000));
 
-        assert_eq!(dirty, Some(DirtyArea::Full));
+        assert_eq!(
+            dirty,
+            Some(DirtyArea::Action(display::DetailsAction::SyncNow))
+        );
         assert_eq!(action, PowerAction::None);
         assert_eq!(state.pressed_action, None);
         assert_eq!(state.take_sync_trigger(), Some(super::SyncTrigger::Manual));
@@ -2582,7 +2769,10 @@ mod tests {
         assert_eq!(state.pressed_action, None);
 
         let (dirty, action) = state.observe(InputSourceKind::Touch, event(BTN_TOUCH, 0, 1_100_000));
-        assert_eq!(dirty, Some(DirtyArea::Full));
+        assert_eq!(
+            dirty,
+            Some(DirtyArea::Action(display::DetailsAction::SyncNow))
+        );
         assert_eq!(action, PowerAction::None);
         assert_eq!(state.page, UiPage::Details);
         assert_eq!(state.take_sync_trigger(), None);

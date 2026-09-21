@@ -531,6 +531,26 @@ pub fn draw_authorization_qr(
     approval_url: &str,
     status_line: &str,
 ) -> std::io::Result<()> {
+    draw_authorization_qr_with_plan(
+        display,
+        approval_url,
+        status_line,
+        DisplayRegion::full(display.width(), display.height()),
+        WaveformMode::Gc16,
+        true,
+        true,
+    )
+}
+
+pub fn draw_authorization_qr_with_plan(
+    display: &mut NativeDisplay,
+    approval_url: &str,
+    status_line: &str,
+    refresh_region: DisplayRegion,
+    waveform: WaveformMode,
+    wait_for_completion: bool,
+    force_refresh: bool,
+) -> std::io::Result<()> {
     let frame = render_authorization_qr(
         display.width() as usize,
         display.height() as usize,
@@ -539,10 +559,10 @@ pub fn draw_authorization_qr(
     )?;
     display.draw_frame_with_waveform(
         &frame,
-        DisplayRegion::full(display.width(), display.height()),
-        WaveformMode::Gc16,
-        true,
-        true,
+        refresh_region,
+        waveform,
+        wait_for_completion,
+        force_refresh,
     )
 }
 

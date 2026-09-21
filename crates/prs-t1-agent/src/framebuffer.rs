@@ -717,6 +717,13 @@ struct PendingUpdate {
     pixels: Vec<u8>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DisplayUpdateRequest {
+    region: DisplayRegion,
+    waveform: WaveformMode,
+    force_refresh: bool,
+}
+
 impl MappedFramebuffer {
     fn new(file: &File, length: usize) -> io::Result<Self> {
         Self::new_with_protection(file, length, PROT_READ)
@@ -834,18 +841,16 @@ impl NativeDisplay {
         // happen ahead of this barrier because `frame` is owned by the caller.
         self.wait_for_pending_update()?;
 
-        let changed = if force_refresh || self.presented.is_none() {
-            Some(requested_region)
-        } else {
-            damage::changed_region(
-                frame,
-                self.presented.as_ref().expect("presented checked above"),
-                self.var.xres,
-                self.var.yres,
-                DamageOptions::default(),
-            )?
-        };
-        let Some(region) = changed else {
+        let Some(request) = display_update_request(
+            frame,
+            self.presented.as_deref(),
+            requested_region,
+            waveform,
+            force_refresh,
+            self.var.xres,
+            self.var.yres,
+        )?
+        else {
             eprintln!(
                 "standalone-test: display refresh skipped unchanged requested=({},{} {}x{})",
                 requested_region.left,
@@ -855,28 +860,21 @@ impl NativeDisplay {
             );
             return Ok(());
         };
-        let waveform = if requested_region.contains(region) {
-            waveform
-        } else {
-            // An unexpected change escaped the semantic hint. Use the safer
-            // waveform until the runtime has an explicit damage set.
-            WaveformMode::Gc16
-        };
-        let pixels = self.copy_frame_region(frame, region)?;
+        let pixels = self.copy_frame_region(frame, request.region)?;
 
         let marker = self.next_marker;
         self.next_marker = self.next_marker.wrapping_add(1).max(10);
         let started = Instant::now();
         submit_update(
             self.file.as_raw_fd(),
-            region.as_mxcfb(),
-            waveform,
+            request.region.as_mxcfb(),
+            request.waveform,
             marker,
-            force_refresh,
+            request.force_refresh,
         )?;
         let pending = PendingUpdate {
             marker,
-            region,
+            region: request.region,
             pixels,
         };
         if wait_for_completion {
@@ -897,12 +895,12 @@ impl NativeDisplay {
         }
         eprintln!(
             "standalone-test: display refresh region=({},{} {}x{}) waveform={} update_mode={} completion={} elapsed_ms={} status={}",
-            region.left,
-            region.top,
-            region.width,
-            region.height,
-            waveform.label(),
-            if force_refresh { "FULL" } else { "PARTIAL" },
+            request.region.left,
+            request.region.top,
+            request.region.width,
+            request.region.height,
+            request.waveform.label(),
+            if request.force_refresh { "FULL" } else { "PARTIAL" },
             if wait_for_completion { "wait" } else { "nowait" },
             started.elapsed().as_millis(),
             "ok",
@@ -1120,6 +1118,42 @@ impl NativeDisplay {
         self.presented = None;
         Ok(())
     }
+}
+
+fn display_update_request(
+    frame: &[u8],
+    presented: Option<&[u8]>,
+    requested_region: DisplayRegion,
+    waveform: WaveformMode,
+    force_refresh: bool,
+    width: u32,
+    height: u32,
+) -> io::Result<Option<DisplayUpdateRequest>> {
+    let changed = if force_refresh || presented.is_none() {
+        Some(requested_region)
+    } else {
+        damage::changed_region(
+            frame,
+            presented.expect("presented checked above"),
+            width,
+            height,
+            DamageOptions::default(),
+        )?
+    };
+    let Some(region) = changed else {
+        return Ok(None);
+    };
+    Ok(Some(DisplayUpdateRequest {
+        region,
+        waveform: if requested_region.contains(region) {
+            waveform
+        } else {
+            // An unexpected change escaped the semantic hint. Use the safer
+            // waveform until the runtime has an explicit damage set.
+            WaveformMode::Gc16
+        },
+        force_refresh,
+    }))
 }
 
 pub struct DisplayCanvas<'a> {
@@ -1525,6 +1559,73 @@ mod tests {
     fn forced_refresh_uses_full_epdc_update_mode() {
         assert_eq!(update_mode(false), UPDATE_MODE_PARTIAL);
         assert_eq!(update_mode(true), UPDATE_MODE_FULL);
+    }
+
+    #[test]
+    fn unchanged_frame_does_not_create_a_display_update_request() {
+        let frame = vec![0xff; 4 * 4 * 2];
+        assert_eq!(
+            display_update_request(
+                &frame,
+                Some(&frame),
+                DisplayRegion::full(4, 4),
+                WaveformMode::Du,
+                false,
+                4,
+                4,
+            )
+            .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn changed_frame_creates_the_exact_damage_request() {
+        let previous = vec![0xff; 4 * 4 * 2];
+        let mut frame = previous.clone();
+        frame[(2 * 4 + 1) * 2..(2 * 4 + 2) * 2].copy_from_slice(&0u16.to_ne_bytes());
+
+        assert_eq!(
+            display_update_request(
+                &frame,
+                Some(&previous),
+                DisplayRegion::new(0, 0, 4, 4),
+                WaveformMode::Du,
+                false,
+                4,
+                4,
+            )
+            .unwrap(),
+            Some(DisplayUpdateRequest {
+                region: DisplayRegion::new(1, 2, 1, 1),
+                waveform: WaveformMode::Du,
+                force_refresh: false,
+            })
+        );
+    }
+
+    #[test]
+    fn forced_refresh_retains_intentional_update_request_for_identical_frame() {
+        let frame = vec![0xff; 4 * 4 * 2];
+        let requested_region = DisplayRegion::new(0, 0, 4, 2);
+
+        assert_eq!(
+            display_update_request(
+                &frame,
+                Some(&frame),
+                requested_region,
+                WaveformMode::Gc16,
+                true,
+                4,
+                4,
+            )
+            .unwrap(),
+            Some(DisplayUpdateRequest {
+                region: requested_region,
+                waveform: WaveformMode::Gc16,
+                force_refresh: true,
+            })
+        );
     }
 
     #[test]
