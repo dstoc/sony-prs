@@ -420,7 +420,7 @@ fn redraw(
                 display,
                 &lines,
                 state.visible_feedback(),
-                area.region(display, state.page),
+                area.region(display.width(), display.height(), state.page),
                 plan.waveform(),
                 plan.wait_for_completion(),
                 plan.force_refresh(),
@@ -435,7 +435,7 @@ fn redraw(
             display,
             status_line,
             state.visible_feedback(),
-            area.region(display, state.page),
+            area.region(display.width(), display.height(), state.page),
             plan,
         );
         if result.is_ok() {
@@ -446,7 +446,7 @@ fn redraw(
     let result = display::draw_screen_view(
         display,
         &view,
-        area.region(display, state.page),
+        area.region(display.width(), display.height(), state.page),
         plan.waveform(),
         plan.wait_for_completion(),
         plan.force_refresh(),
@@ -613,24 +613,35 @@ impl DirtyArea {
         }
     }
 
-    fn region(self, display: &NativeDisplay, page: UiPage) -> DisplayRegion {
+    fn region(self, width: u32, height: u32, page: UiPage) -> DisplayRegion {
         let content_region = || {
             DisplayRegion::new(
                 0,
                 display::STATUS_BAR_HEIGHT as u32,
-                display.width(),
-                display
-                    .height()
-                    .saturating_sub(display::STATUS_BAR_HEIGHT as u32),
+                width,
+                height.saturating_sub(display::STATUS_BAR_HEIGHT as u32),
+            )
+        };
+        let feedback_region = || {
+            DisplayRegion::new(
+                0,
+                display::STATUS_BAR_HEIGHT as u32,
+                width,
+                (display::CONTENT_TOP as u32).saturating_sub(display::STATUS_BAR_HEIGHT as u32),
             )
         };
         let region = match self {
-            Self::Full => DisplayRegion::full(display.width(), display.height()),
+            Self::Full => DisplayRegion::full(width, height),
             Self::PageTurn(_) | Self::Interaction => content_region(),
             Self::Status if page == UiPage::Home => {
-                DisplayRegion::new(0, 0, display.width(), display::STATUS_BAR_HEIGHT as u32)
+                DisplayRegion::new(0, 0, width, display::STATUS_BAR_HEIGHT as u32)
             }
-            Self::Status => DisplayRegion::new(0, 0, display.width(), 640),
+            Self::Status => DisplayRegion::new(0, 0, width, 640),
+            // Home feedback is cleared before every touch/key event. Repaint
+            // that band for the diagnostic-only damage hints as well, or the
+            // old message can remain visible until a later content redraw.
+            Self::Touch if page == UiPage::Home => feedback_region(),
+            Self::Key | Self::Power if page == UiPage::Home => feedback_region(),
             // The details page keeps the touch diagnostics near the bottom
             // of the content area. Keep the update well inside the display.
             Self::Touch => DisplayRegion::new(20, 460, 560, 130),
@@ -638,7 +649,7 @@ impl DirtyArea {
             // update the key row, power row, and status message together.
             Self::Key | Self::Power => DisplayRegion::new(20, 535, 560, 105),
         };
-        region.bounded(display.width(), display.height())
+        region.bounded(width, height)
     }
 }
 
@@ -2212,6 +2223,27 @@ mod tests {
         state.touch_down = true;
         state.observe(InputSourceKind::Touch, event(BTN_TOUCH, 0, 1_000_001));
         assert_eq!(state.visible_feedback(), None);
+    }
+
+    #[test]
+    fn home_button_feedback_clear_is_in_the_visible_redraw_region() {
+        let mut state = UiState::new();
+        state.set_error_feedback("Reader error");
+
+        let (dirty, action) = state.observe(InputSourceKind::Keys, event(KEY_MENU, 2, 1_000_000));
+
+        assert_eq!(action, super::PowerAction::None);
+        assert_eq!(state.visible_feedback(), None);
+        let redraw = dirty
+            .expect("physical button interaction should request a redraw")
+            .region(600, 800, UiPage::Home);
+        let feedback = super::DisplayRegion::new(
+            0,
+            display::STATUS_BAR_HEIGHT as u32,
+            600,
+            (display::CONTENT_TOP - display::STATUS_BAR_HEIGHT) as u32,
+        );
+        assert!(redraw.contains(feedback));
     }
 
     #[test]
