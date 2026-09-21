@@ -1,11 +1,10 @@
 //! PRSync reader authorization and bundle delivery.
 //!
 //! This module is deliberately independent of the Markdown reader. It owns
-//! the short-lived network session, the public QR view, and the filesystem
-//! handoff that makes one validated bundle visible to the reader.
+//! the short-lived network session, progress for the public QR view, and the
+//! filesystem handoff that makes one validated bundle visible to the reader.
 
-use crate::framebuffer::NativeDisplay;
-use crate::{display, network};
+use crate::network;
 use prs_sync_bundle::{extract_with_size_limit, BundleError, MAX_BUNDLE_PATH_BYTES};
 use prs_sync_protocol::{
     ApiError, ApiErrorCode, AuthorizationKind, AuthorizationStart, InboxManifestState,
@@ -15,15 +14,16 @@ use prs_sync_protocol::{
 };
 use reqwest::{Method, Response, Url};
 use serde::{de::DeserializeOwned, Serialize};
-use std::collections::HashSet;
+use std::cell::RefCell;
+use std::collections::{HashSet, VecDeque};
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Seek, SeekFrom, Write};
 use std::os::unix::fs::symlink;
 use std::path::{Component, Path, PathBuf};
+use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::runtime::Builder as RuntimeBuilder;
 
 pub const DEFAULT_ENDPOINT: &str = "https://prs-reader.dstoc.workers.dev";
 pub const DEFAULT_LIBRARY_ROOT: &str = "/mnt/prs-reader";
@@ -97,6 +97,14 @@ impl SyncConfig {
         let mut config = Self::parse(&[])?;
         config.framebuffer = framebuffer.to_owned();
         Ok(config)
+    }
+
+    pub(crate) fn library_root(&self) -> &Path {
+        &self.library_root
+    }
+
+    pub(crate) fn framebuffer(&self) -> &Path {
+        &self.framebuffer
     }
 }
 
@@ -238,6 +246,21 @@ pub(crate) enum SyncOutcome {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SyncProgressEvent {
+    ApprovalUrl(String),
+}
+
+pub(crate) type SyncProgress = Rc<RefCell<VecDeque<SyncProgressEvent>>>;
+
+pub(crate) fn new_progress() -> SyncProgress {
+    Rc::new(RefCell::new(VecDeque::new()))
+}
+
+pub(crate) fn take_progress(progress: &SyncProgress) -> Option<SyncProgressEvent> {
+    progress.borrow_mut().pop_front()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum ManifestSnapshot {
     Empty {
         revision: InboxRevision,
@@ -253,22 +276,20 @@ pub(crate) struct SyncClient {
     config: SyncConfig,
     session: Option<ReaderSession>,
     snapshot: Option<ManifestSnapshot>,
+    progress: SyncProgress,
 }
 
 impl SyncClient {
-    pub(crate) fn new(config: SyncConfig) -> Self {
+    pub(crate) fn with_progress(config: SyncConfig, progress: SyncProgress) -> Self {
         Self {
             config,
             session: None,
             snapshot: None,
+            progress,
         }
     }
 
-    async fn synchronize(
-        &mut self,
-        transport: &Transport,
-        display: &mut NativeDisplay,
-    ) -> Result<SyncOutcome, SyncError> {
+    async fn synchronize(&mut self, transport: &Transport) -> Result<SyncOutcome, SyncError> {
         fs::create_dir_all(&self.config.library_root)
             .map_err(|error| map_storage_error("could not create library root", error))?;
 
@@ -276,7 +297,7 @@ impl SyncClient {
         loop {
             let session = match self.session.as_ref() {
                 Some(session) if session.is_valid_at(now()?) => session.clone(),
-                _ => self.authorize(transport, display).await?,
+                _ => self.authorize(transport).await?,
             };
             self.session = Some(session.clone());
             match self.synchronize_with_session(transport, &session).await {
@@ -290,11 +311,7 @@ impl SyncClient {
         }
     }
 
-    async fn authorize(
-        &mut self,
-        transport: &Transport,
-        display: &mut NativeDisplay,
-    ) -> Result<ReaderSession, SyncError> {
+    async fn authorize(&mut self, transport: &Transport) -> Result<ReaderSession, SyncError> {
         let body = ReaderAuthorizationBody {
             protocol_version: CURRENT_PROTOCOL_VERSION,
         };
@@ -315,9 +332,11 @@ impl SyncClient {
             ));
         }
         validate_approval_url(&start.request.approval_url, &start.polling_secret)?;
-        display::draw_authorization_qr(display, &start.request.approval_url).map_err(|error| {
-            SyncError::local(format!("could not display authorization QR: {error}"))
-        })?;
+        self.progress
+            .borrow_mut()
+            .push_back(SyncProgressEvent::ApprovalUrl(
+                start.request.approval_url.clone(),
+            ));
         println!("sync.approval_url={}", start.request.approval_url);
         println!("sync.authorization=requested");
 
@@ -949,10 +968,15 @@ fn unique_path(parent: &Path, prefix: &str) -> io::Result<PathBuf> {
 
 fn publish_library(root: &Path, extracted: &Path) -> io::Result<()> {
     let current = root.join("current");
-    let old_target = match fs::symlink_metadata(&current) {
+    match fs::symlink_metadata(&current) {
         Ok(metadata) if metadata.file_type().is_symlink() => {
             let target = fs::read_link(&current)?;
-            safe_generation_target(root, &target)
+            safe_generation_target(root, &target).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "library current symlink points outside the PRSync root",
+                )
+            })?;
         }
         Ok(_) => {
             return Err(io::Error::new(
@@ -960,9 +984,9 @@ fn publish_library(root: &Path, extracted: &Path) -> io::Result<()> {
                 "library current path exists and is not the PRSync symlink",
             ))
         }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Err(error) => return Err(error),
-    };
+    }
     let target = extracted.file_name().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -974,11 +998,6 @@ fn publish_library(root: &Path, extracted: &Path) -> io::Result<()> {
     if let Err(error) = fs::rename(&temporary_link, &current) {
         let _ = fs::remove_file(&temporary_link);
         return Err(error);
-    }
-    if let Some(old_target) = old_target {
-        if old_target != extracted {
-            let _ = fs::remove_dir_all(old_target);
-        }
     }
     Ok(())
 }
@@ -1002,13 +1021,54 @@ fn clear_library(root: &Path) -> io::Result<()> {
             "library current symlink points outside the PRSync root",
         )
     })?;
+    fs::symlink_metadata(&target)?;
     let tombstone = unique_path(root, "prs-sync-clearing")?;
     fs::rename(&current, &tombstone)?;
-    if let Err(error) = fs::remove_dir_all(&target) {
+    if let Err(error) = fs::remove_file(&tombstone) {
         let _ = fs::rename(&tombstone, &current);
         return Err(error);
     }
-    fs::remove_file(tombstone)
+    Ok(())
+}
+
+/// Remove generations that are no longer referenced by the reader.
+///
+/// Publication and clear only change the `current` symlink. The runtime calls
+/// this after the reader has adopted the new state, so a canonicalized
+/// filesystem provider can continue reading its old complete generation while
+/// synchronization is in progress and during the idle handoff.
+pub(crate) fn cleanup_retired_generations(root: &Path) -> io::Result<()> {
+    let current_target = match fs::symlink_metadata(root.join("current")) {
+        Ok(metadata) if metadata.file_type().is_symlink() => Some(
+            safe_generation_target(root, &fs::read_link(root.join("current"))?).ok_or_else(
+                || {
+                    io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "library current symlink points outside the PRSync root",
+                    )
+                },
+            )?,
+        ),
+        Ok(_) => {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "library current path exists and is not the PRSync symlink",
+            ))
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error),
+    };
+    for entry in fs::read_dir(root)? {
+        let path = entry?.path();
+        let is_generation = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with(".prs-sync-library-"));
+        if is_generation && current_target.as_ref() != Some(&path) {
+            fs::remove_dir_all(path)?;
+        }
+    }
+    Ok(())
 }
 
 fn safe_generation_target(root: &Path, target: &Path) -> Option<PathBuf> {
@@ -1104,18 +1164,17 @@ pub(crate) fn run(args: Vec<String>) -> io::Result<()> {
     crate::wifi::run_sync(config)
 }
 
-pub(crate) fn run_active(config: SyncConfig, display: &mut NativeDisplay) -> io::Result<()> {
-    crate::status::ensure_native_ownership()?;
-    let runtime = RuntimeBuilder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|error| io::Error::other(format!("could not create sync runtime: {error}")))?;
-    let result = runtime.block_on(async {
+pub(crate) async fn run_active_outcome_async(
+    config: SyncConfig,
+    progress: SyncProgress,
+) -> io::Result<SyncOutcome> {
+    let result = async {
         crate::tls::initialize().map_err(|error| SyncError::network(error.to_string()))?;
         let transport = Transport::connect(&config.endpoint).await?;
-        let mut client = SyncClient::new(config);
-        client.synchronize(&transport, display).await
-    });
+        let mut client = SyncClient::with_progress(config, progress);
+        client.synchronize(&transport).await
+    }
+    .await;
     match result {
         Ok(SyncOutcome::Updated {
             revision,
@@ -1221,7 +1280,7 @@ mod tests {
     }
 
     #[test]
-    fn library_publish_replaces_only_the_current_symlink() {
+    fn library_publish_replaces_current_but_retains_the_old_generation() {
         let root = std::env::temp_dir().join(format!(
             "prs-t1-sync-test-{}-{}",
             std::process::id(),
@@ -1237,12 +1296,45 @@ mod tests {
         publish_library(&root, &first).unwrap();
         publish_library(&root, &second).unwrap();
         assert_eq!(fs::read(root.join("current/index.md")).unwrap(), b"second");
-        assert!(!first.exists());
+        assert!(first.exists());
         fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
-    fn clearing_the_library_removes_current_and_its_generation() {
+    fn canonicalized_reader_can_follow_a_link_during_publication() {
+        let root = std::env::temp_dir().join(format!(
+            "prs-t1-sync-reader-window-{}-{}",
+            std::process::id(),
+            TEMP_NAME_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let first = root.join(".prs-sync-library-old");
+        let second = root.join(".prs-sync-library-new");
+        fs::create_dir(&first).unwrap();
+        fs::write(first.join("index.md"), "[old link](linked.md)").unwrap();
+        fs::write(first.join("linked.md"), "# Old linked document").unwrap();
+        fs::create_dir(&second).unwrap();
+        fs::write(second.join("index.md"), "[new link](linked.md)").unwrap();
+        fs::write(second.join("linked.md"), "# New linked document").unwrap();
+        publish_library(&root, &first).unwrap();
+
+        let provider = prs_markdown::resources::FileSystemResourceProvider::new(
+            root.join("current"),
+            "index.md",
+        )
+        .unwrap();
+        publish_library(&root, &second).unwrap();
+
+        assert_eq!(
+            provider.read_markdown(Path::new("linked.md")).unwrap(),
+            "# Old linked document"
+        );
+        assert!(first.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn clearing_the_library_removes_current_but_retains_its_generation() {
         let root = std::env::temp_dir().join(format!(
             "prs-t1-sync-clear-test-{}-{}",
             std::process::id(),
@@ -1257,7 +1349,33 @@ mod tests {
         clear_library(&root).unwrap();
 
         assert!(!root.join("current").exists());
-        assert!(!generation.exists());
+        assert!(generation.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn retired_generation_cleanup_runs_after_reader_handoff() {
+        let root = std::env::temp_dir().join(format!(
+            "prs-t1-sync-cleanup-test-{}-{}",
+            std::process::id(),
+            TEMP_NAME_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let first = root.join(".prs-sync-library-old");
+        let second = root.join(".prs-sync-library-new");
+        fs::create_dir(&first).unwrap();
+        fs::create_dir(&second).unwrap();
+        publish_library(&root, &first).unwrap();
+        publish_library(&root, &second).unwrap();
+
+        cleanup_retired_generations(&root).unwrap();
+
+        assert!(!first.exists());
+        assert!(second.exists());
+        assert_eq!(
+            fs::read_link(root.join("current")).unwrap(),
+            Path::new(".prs-sync-library-new")
+        );
         fs::remove_dir_all(root).unwrap();
     }
 

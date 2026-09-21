@@ -5,12 +5,13 @@ use crate::{display, input, reader, sync};
 use embedded_graphics::geometry::Point;
 use prs_markdown::reader::{ReaderError, ReaderEvent};
 use std::fs::OpenOptions;
+use std::future::Future;
 use std::io::{self, Read, Write};
 use std::os::fd::AsRawFd;
 use std::os::raw::c_int;
 use std::path::Path;
+use std::pin::Pin;
 use std::process::{Child, ChildStdout, Command, Stdio};
-use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -111,7 +112,8 @@ pub fn run(path: &Path, suspend_mode: SuspendMode) -> io::Result<()> {
     )
     .map_err(|error| display_error("open development Markdown reader", error))?;
     let mut state = UiState::new();
-    let mut sync_worker = SyncWorker::new(path);
+    let mut sync_task =
+        SyncTask::new(path).map_err(|error| display_error("create sync runtime", error))?;
     let mut refresh_policy = RefreshPolicy::default();
     let mut adb_restart_pending = false;
 
@@ -185,24 +187,45 @@ pub fn run(path: &Path, suspend_mode: SuspendMode) -> io::Result<()> {
         }
 
         if state.take_sync_request() {
-            if sync_worker.start() {
+            if sync_task.start() {
                 state.sync_started();
                 redraw_area = Some(DirtyArea::Full);
             }
         }
-        if state.should_start_idle_sync() && sync_worker.start() {
+        if state.should_start_idle_sync() && sync_task.start() {
             state.sync_started();
             redraw_area = Some(DirtyArea::Full);
         }
-        while let Some(event) = sync_worker.try_event() {
+        while let Some(event) = sync_task.try_event() {
             state.apply_sync_event(event);
             redraw_area = Some(DirtyArea::Full);
         }
         if state.bundle_ready && state.is_idle() {
-            if markdown_reader.reload_current_bundle().is_ok() {
-                state.bundle_ready = false;
-                state.message = "New bundle ready".into();
-                redraw_area = Some(DirtyArea::Full);
+            match markdown_reader.reload_current_bundle() {
+                Ok(()) => {
+                    state.bundle_ready = false;
+                    state.pending_handoff = None;
+                    state.library_empty = markdown_reader.is_library_empty();
+                    if let Err(error) = sync::cleanup_retired_generations(sync_task.library_root())
+                    {
+                        state.last_sync_failure = Some(format!("cleanup retired bundle: {error}"));
+                        state.message = "Bundle ready; cleanup failed".into();
+                        eprintln!("standalone-test: retired bundle cleanup failed: {error}");
+                    } else {
+                        state.message = if state.library_empty {
+                            "Library cleared".into()
+                        } else {
+                            "New bundle ready".into()
+                        };
+                    }
+                    redraw_area = Some(DirtyArea::Full);
+                }
+                Err(error) => {
+                    state.last_sync_failure = Some(format!("reload current bundle: {error}"));
+                    state.message = "Bundle handoff failed".into();
+                    eprintln!("standalone-test: current bundle handoff failed: {error}");
+                    redraw_area = Some(DirtyArea::Full);
+                }
             }
         }
 
@@ -363,7 +386,26 @@ fn redraw(
         }
         return result;
     }
+    if state.sync_active {
+        if let Some(approval_url) = state.approval_url.as_deref() {
+            return display::draw_authorization_qr(display, approval_url);
+        }
+    }
     if state.page == UiPage::Home {
+        if state.library_empty {
+            let result = display::draw_screen(
+                display,
+                &lines,
+                area.region(display, state.page),
+                plan.waveform(),
+                plan.wait_for_completion(),
+                plan.force_refresh(),
+            );
+            if result.is_ok() {
+                refresh_policy.record_success(reason, plan);
+            }
+            return result;
+        }
         let status_line = lines.first().map(String::as_str).unwrap_or_default();
         let result = markdown_reader.draw(
             display,
@@ -1236,60 +1278,98 @@ enum ReaderOperation {
     ReturnToEntryPoint,
 }
 
-enum SyncCommand {
-    Run,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BundleHandoff {
+    Updated,
+    Cleared,
 }
 
 enum SyncEvent {
+    ApprovalUrl(String),
     Finished(Result<sync::SyncOutcome, String>),
 }
 
-struct SyncWorker {
-    commands: Sender<SyncCommand>,
-    events: Receiver<SyncEvent>,
+type SyncFuture = Pin<Box<dyn Future<Output = io::Result<sync::SyncOutcome>>>>;
+
+struct SyncTask {
+    config: sync::SyncConfig,
+    runtime: tokio::runtime::Runtime,
+    progress: sync::SyncProgress,
+    future: Option<SyncFuture>,
+    completion: Option<Result<sync::SyncOutcome, String>>,
     busy: bool,
 }
 
-impl SyncWorker {
-    fn new(framebuffer: &Path) -> Self {
-        let (command_sender, command_receiver) = mpsc::channel();
-        let (event_sender, event_receiver) = mpsc::channel();
-        let thread_framebuffer = framebuffer.to_owned();
-        thread::spawn(move || {
-            while let Ok(SyncCommand::Run) = command_receiver.recv() {
-                let result = sync::SyncConfig::for_runtime(&thread_framebuffer)
-                    .map_err(|error| error.to_string())
-                    .and_then(|config| {
-                        crate::wifi::run_sync_outcome(config).map_err(|error| error.to_string())
-                    });
-                if event_sender.send(SyncEvent::Finished(result)).is_err() {
-                    break;
-                }
-            }
-        });
-        Self {
-            commands: command_sender,
-            events: event_receiver,
+impl SyncTask {
+    fn new(framebuffer: &Path) -> io::Result<Self> {
+        let config = sync::SyncConfig::for_runtime(framebuffer).map_err(io::Error::other)?;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| io::Error::other(format!("could not create sync runtime: {error}")))?;
+        Ok(Self {
+            config,
+            runtime,
+            progress: sync::new_progress(),
+            future: None,
+            completion: None,
             busy: false,
-        }
+        })
     }
 
     fn start(&mut self) -> bool {
-        if self.busy || self.commands.send(SyncCommand::Run).is_err() {
+        if self.busy {
             return false;
         }
+        self.progress = sync::new_progress();
+        self.completion = None;
+        self.future = Some(Box::pin(crate::wifi::run_sync_outcome_async(
+            self.config.clone(),
+            self.progress.clone(),
+        )));
         self.busy = true;
         true
     }
 
     fn try_event(&mut self) -> Option<SyncEvent> {
-        match self.events.try_recv() {
-            Ok(event) => {
-                self.busy = false;
-                Some(event)
-            }
-            Err(TryRecvError::Empty | TryRecvError::Disconnected) => None,
+        if let Some(event) = sync::take_progress(&self.progress) {
+            return match event {
+                sync::SyncProgressEvent::ApprovalUrl(url) => Some(SyncEvent::ApprovalUrl(url)),
+            };
         }
+        if let Some(result) = self.completion.take() {
+            self.busy = false;
+            return Some(SyncEvent::Finished(result));
+        }
+        if let Some(future) = self.future.as_mut() {
+            if let Some(result) = self.runtime.block_on(poll_once(future.as_mut())) {
+                self.future = None;
+                self.completion = Some(result.map_err(|error| error.to_string()));
+            }
+        }
+        if let Some(event) = sync::take_progress(&self.progress) {
+            return match event {
+                sync::SyncProgressEvent::ApprovalUrl(url) => Some(SyncEvent::ApprovalUrl(url)),
+            };
+        }
+        self.completion.take().map(|result| {
+            self.busy = false;
+            SyncEvent::Finished(result)
+        })
+    }
+
+    fn library_root(&self) -> &Path {
+        self.config.library_root()
+    }
+}
+
+async fn poll_once<F>(future: Pin<&mut F>) -> Option<F::Output>
+where
+    F: Future + ?Sized,
+{
+    tokio::select! {
+        result = future => Some(result),
+        _ = tokio::task::yield_now() => None,
     }
 }
 
@@ -1325,7 +1405,10 @@ struct UiState {
     last_status_refresh: Instant,
     sync_active: bool,
     sync_requested: bool,
+    approval_url: Option<String>,
     pub(crate) bundle_ready: bool,
+    pending_handoff: Option<BundleHandoff>,
+    library_empty: bool,
     last_sync_failure: Option<String>,
     last_activity: Instant,
     last_idle_sync: Instant,
@@ -1358,7 +1441,10 @@ impl UiState {
             last_status_refresh: Instant::now(),
             sync_active: false,
             sync_requested: false,
+            approval_url: None,
             bundle_ready: false,
+            pending_handoff: None,
+            library_empty: false,
             last_sync_failure: None,
             last_activity: Instant::now(),
             last_idle_sync: Instant::now(),
@@ -1392,21 +1478,30 @@ impl UiState {
 
     fn sync_started(&mut self) {
         self.sync_active = true;
+        self.approval_url = None;
         self.last_idle_sync = Instant::now();
         self.message = "Synchronizing…".into();
     }
 
     fn apply_sync_event(&mut self, event: SyncEvent) {
-        self.sync_active = false;
         match event {
+            SyncEvent::ApprovalUrl(url) => {
+                self.approval_url = Some(url);
+                self.message = "Scan to authorize synchronization".into();
+            }
             SyncEvent::Finished(Ok(outcome)) => {
+                self.sync_active = false;
+                self.approval_url = None;
                 self.last_sync_failure = None;
                 match outcome {
                     sync::SyncOutcome::Updated { .. } => {
                         self.bundle_ready = true;
+                        self.pending_handoff = Some(BundleHandoff::Updated);
                         self.message = "Synchronization complete".into();
                     }
                     sync::SyncOutcome::Cleared { .. } => {
+                        self.bundle_ready = true;
+                        self.pending_handoff = Some(BundleHandoff::Cleared);
                         self.message = "Library cleared".into();
                     }
                     sync::SyncOutcome::Unchanged { .. } => {
@@ -1415,6 +1510,8 @@ impl UiState {
                 }
             }
             SyncEvent::Finished(Err(error)) => {
+                self.sync_active = false;
+                self.approval_url = None;
                 self.last_sync_failure = Some(error.clone());
                 self.message = "Synchronization failed".into();
                 eprintln!("standalone-test: synchronization failed: {error}");
@@ -1424,6 +1521,7 @@ impl UiState {
 
     fn should_start_idle_sync(&self) -> bool {
         !self.sync_active
+            && !self.bundle_ready
             && self.page == UiPage::Home
             && self.last_idle_sync.elapsed() >= IDLE_SYNC_INTERVAL
             && self.last_activity.elapsed() >= IDLE_SYNC_INTERVAL
@@ -1790,10 +1888,10 @@ impl UiState {
 #[cfg(test)]
 mod tests {
     use super::{
-        display, DirtyArea, InputSourceKind, PageTone, Point, ReaderOperation, RefreshReason,
-        SuspendMode, UiPage, UiState, ABS_MT_POSITION_X, ABS_MT_POSITION_Y, ABS_MT_TOUCH_MAJOR,
-        ABS_MT_TRACKING_ID, ABS_X, ABS_Y, BTN_TOUCH, EVENT_ABS, EVENT_KEY, EVENT_SYN, KEY_LEFT,
-        KEY_MENU, KEY_RIGHT, SYN_REPORT,
+        display, BundleHandoff, DirtyArea, InputSourceKind, PageTone, Point, ReaderOperation,
+        RefreshReason, SuspendMode, SyncEvent, UiPage, UiState, ABS_MT_POSITION_X,
+        ABS_MT_POSITION_Y, ABS_MT_TOUCH_MAJOR, ABS_MT_TRACKING_ID, ABS_X, ABS_Y, BTN_TOUCH,
+        EVENT_ABS, EVENT_KEY, EVENT_SYN, KEY_LEFT, KEY_MENU, KEY_RIGHT, SYN_REPORT,
     };
     use crate::input::RawEvent;
     use std::time::{Duration, Instant};
@@ -2018,6 +2116,28 @@ mod tests {
             state.take_reader_operation(),
             Some(ReaderOperation::ReturnToEntryPoint)
         );
+    }
+
+    #[test]
+    fn updated_and_cleared_syncs_both_schedule_idle_reader_handoffs() {
+        let mut state = UiState::new();
+        state.sync_started();
+        state.apply_sync_event(SyncEvent::Finished(Ok(super::sync::SyncOutcome::Cleared {
+            revision: prs_sync_protocol::InboxRevision::new(4),
+        })));
+
+        assert!(!state.sync_active);
+        assert!(state.bundle_ready);
+        assert_eq!(state.pending_handoff, Some(BundleHandoff::Cleared));
+        assert_eq!(state.message, "Library cleared");
+
+        state.sync_started();
+        state.apply_sync_event(SyncEvent::Finished(Ok(super::sync::SyncOutcome::Updated {
+            revision: prs_sync_protocol::InboxRevision::new(5),
+            entry_point: "index.md".into(),
+        })));
+        assert!(state.bundle_ready);
+        assert_eq!(state.pending_handoff, Some(BundleHandoff::Updated));
     }
 
     #[test]

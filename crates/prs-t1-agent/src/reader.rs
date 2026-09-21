@@ -136,7 +136,9 @@ pub struct T1Reader {
     reader: Reader<FileSystemResourceProvider, FontdueTextEngine, ComrakParser>,
     renderer: EmbeddedGraphicsRenderer<FontdueTextEngine>,
     entry_point: PathBuf,
+    library_root: PathBuf,
     external_url_notice: Option<String>,
+    library_empty: bool,
 }
 
 impl T1Reader {
@@ -148,6 +150,7 @@ impl T1Reader {
             ));
         }
 
+        let library_root = library_root_for_config(&config);
         let provider = FileSystemResourceProvider::new(&config.document_root, &config.document)
             .map_err(|error| integration_error("configure Markdown resources", error))?;
         let fonts = load_fonts(&config)?;
@@ -168,7 +171,9 @@ impl T1Reader {
             reader,
             renderer: EmbeddedGraphicsRenderer::new(engine),
             entry_point: config.document,
+            library_root,
             external_url_notice: None,
+            library_empty: false,
         })
     }
 
@@ -178,9 +183,20 @@ impl T1Reader {
     /// so an active reader keeps using its old complete generation until this
     /// method is called at an idle boundary.
     pub fn reload_current_bundle(&mut self) -> io::Result<()> {
-        let previous = self.reader.current_location().cloned();
         let viewport = self.reader.viewport();
-        let mut replacement = Self::open(ReaderConfig::from_current_bundle()?, viewport)?;
+        let config = match ReaderConfig::from_library_root(&self.library_root) {
+            Ok(config) => config,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                self.library_empty = true;
+                self.external_url_notice = None;
+                return Ok(());
+            }
+            Err(error) => return Err(error),
+        };
+        let previous = (!self.library_empty)
+            .then(|| self.reader.current_location().cloned())
+            .flatten();
+        let mut replacement = Self::open(config, viewport)?;
         if let Some(location) = previous {
             if replacement
                 .reader
@@ -196,8 +212,15 @@ impl T1Reader {
         Ok(())
     }
 
+    pub fn is_library_empty(&self) -> bool {
+        self.library_empty
+    }
+
     /// Return to the entry point of the currently open bundle.
     pub fn return_to_entry_point(&mut self) -> Result<ReaderEvent, ReaderError> {
+        if self.library_empty {
+            return Err(ReaderError::NoDocumentOpen);
+        }
         self.reader.open_document(&self.entry_point)
     }
 
@@ -219,6 +242,9 @@ impl T1Reader {
     /// Links get first refusal; a blank tap on the right half advances and a
     /// blank tap on the left half goes back.
     pub fn tap(&mut self, screen_point: Point) -> Result<ReaderEvent, ReaderError> {
+        if self.library_empty {
+            return Err(ReaderError::NoDocumentOpen);
+        }
         let Some(page_point) = self.screen_to_viewport(screen_point) else {
             return Ok(ReaderEvent::NoAction);
         };
@@ -235,14 +261,23 @@ impl T1Reader {
     }
 
     pub fn next_page(&mut self) -> Result<ReaderEvent, ReaderError> {
+        if self.library_empty {
+            return Err(ReaderError::NoDocumentOpen);
+        }
         self.reader.next_page_event()
     }
 
     pub fn previous_page(&mut self) -> Result<ReaderEvent, ReaderError> {
+        if self.library_empty {
+            return Err(ReaderError::NoDocumentOpen);
+        }
         self.reader.previous_page_event()
     }
 
     pub fn back(&mut self) -> Result<ReaderEvent, ReaderError> {
+        if self.library_empty {
+            return Err(ReaderError::NoDocumentOpen);
+        }
         self.reader.back_event()
     }
 
@@ -347,6 +382,12 @@ impl T1Reader {
         refresh_region: DisplayRegion,
         plan: RefreshPlan,
     ) -> io::Result<()> {
+        if self.library_empty {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "no current Markdown bundle",
+            ));
+        }
         let frame = self.render_frame(status_line, feedback, display.width(), display.height())?;
         display.draw_frame_with_waveform(
             &frame,
@@ -395,6 +436,22 @@ fn environment_path(name: &str, default: impl AsRef<std::ffi::OsStr>) -> PathBuf
     env::var_os(name)
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(default.as_ref()))
+}
+
+fn library_root_for_config(config: &ReaderConfig) -> PathBuf {
+    if config
+        .document_root
+        .file_name()
+        .is_some_and(|name| name == "current")
+    {
+        config
+            .document_root
+            .parent()
+            .map(Path::to_owned)
+            .unwrap_or_else(|| config.document_root.clone())
+    } else {
+        config.document_root.clone()
+    }
 }
 
 fn integration_error(stage: &str, error: impl Display) -> io::Error {
@@ -636,6 +693,41 @@ mod tests {
         let config = ReaderConfig::from_library_root(&root).expect("read current bundle");
         assert_eq!(config.document_root, root.join("current"));
         assert_eq!(config.document, PathBuf::from("chapter.md"));
+        fs::remove_dir_all(root).expect("remove bundle fixture");
+    }
+
+    #[test]
+    fn reload_adopts_an_empty_bundle_after_current_is_cleared() {
+        use std::os::unix::fs::symlink;
+
+        let root = fixture_root("# Current bundle");
+        let generation = root.join(".prs-sync-library-old");
+        fs::create_dir_all(&generation).expect("create bundle generation");
+        fs::write(generation.join("index.md"), "# Current bundle").expect("write entry point");
+        fs::write(
+            generation.join("manifest.json"),
+            r#"{"protocol_version":{"major":1,"minor":0},"bundle_format_version":1,"entry_point":"index.md","files":[{"path":"index.md","size":16}]}"#,
+        )
+        .expect("write bundle manifest");
+        fs::remove_file(root.join("index.md")).expect("remove fixture document");
+        symlink(".prs-sync-library-old", root.join("current")).expect("publish current symlink");
+
+        let mut reader = T1Reader::open(
+            fixture_config(&root.join("current")),
+            Viewport::new(240, 120),
+        )
+        .expect("open current bundle");
+        fs::remove_file(root.join("current")).expect("clear current symlink");
+
+        reader
+            .reload_current_bundle()
+            .expect("adopt cleared bundle");
+
+        assert!(reader.is_library_empty());
+        assert!(
+            generation.exists(),
+            "retired generation stays until cleanup"
+        );
         fs::remove_dir_all(root).expect("remove bundle fixture");
     }
 

@@ -11,6 +11,9 @@ use std::time::{Duration, Instant};
 
 use crate::framebuffer::NativeDisplay;
 use crate::status;
+use tokio::net::UnixDatagram as TokioUnixDatagram;
+use tokio::runtime::Builder as RuntimeBuilder;
+use tokio::time::{sleep, timeout};
 
 pub const WIFI_HELPER: &str = "/data/local/tmp/prs-t1-wifi-helper";
 const WIFI_INTERFACE: &str = "wlan0";
@@ -152,21 +155,56 @@ pub(crate) fn run_sync(config: crate::sync::SyncConfig) -> io::Result<()> {
 pub(crate) fn run_sync_outcome(
     config: crate::sync::SyncConfig,
 ) -> io::Result<crate::sync::SyncOutcome> {
+    let mut display = crate::framebuffer::NativeDisplay::open(config.framebuffer())
+        .map_err(|error| io::Error::other(format!("could not open sync display: {error}")))?;
+    status::ensure_native_ownership()?;
+    let progress = crate::sync::new_progress();
+    let runtime = RuntimeBuilder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| io::Error::other(format!("could not create sync runtime: {error}")))?;
+    let mut future = Box::pin(run_sync_outcome_async(config, progress.clone()));
+    loop {
+        if let Some(crate::sync::SyncProgressEvent::ApprovalUrl(url)) =
+            crate::sync::take_progress(&progress)
+        {
+            crate::display::draw_authorization_qr(&mut display, &url)?;
+        }
+        let result = runtime.block_on(async {
+            tokio::select! {
+                result = &mut future => Some(result),
+                _ = tokio::task::yield_now() => None,
+            }
+        });
+        if let Some(crate::sync::SyncProgressEvent::ApprovalUrl(url)) =
+            crate::sync::take_progress(&progress)
+        {
+            crate::display::draw_authorization_qr(&mut display, &url)?;
+        }
+        if let Some(result) = result {
+            return result;
+        }
+    }
+}
+
+pub(crate) async fn run_sync_outcome_async(
+    config: crate::sync::SyncConfig,
+    progress: crate::sync::SyncProgress,
+) -> io::Result<crate::sync::SyncOutcome> {
     print_operation("sync");
     print_snapshot("before");
     print_timeouts();
 
-    let mut display = NativeDisplay::open(config.framebuffer_path())
-        .map_err(|error| io::Error::other(format!("could not open sync display: {error}")))?;
-    if let Err(error) = bring_up() {
-        let result = finish_failed_startup(error);
-        drop(display);
-        return result;
+    if let Err(error) = bring_up_async().await {
+        let startup = error.to_string();
+        return match finish_failed_startup_async(error).await {
+            Ok(()) => Err(io::Error::other(startup)),
+            Err(cleanup) => Err(cleanup),
+        };
     }
     print_snapshot("ready");
-    let sync_result = crate::sync::run_active(config, &mut display);
-    let shutdown_result = shutdown();
-    drop(display);
+    let sync_result = crate::sync::run_active_outcome_async(config, progress).await;
+    let shutdown_result = shutdown_async().await;
     print_snapshot("after");
 
     match (sync_result, shutdown_result) {
@@ -307,10 +345,44 @@ fn bring_up() -> Result<(), WifiFailure> {
     Ok(())
 }
 
+async fn bring_up_async() -> Result<(), WifiFailure> {
+    println!("wifi.stage=load_driver");
+    run_helper("load-driver")?;
+    println!("wifi.stage=driver_loaded");
+
+    println!("wifi.stage=start_supplicant");
+    run_helper("start-supplicant")?;
+    println!("wifi.stage=supplicant_started");
+
+    wait_for_association_async().await?;
+    println!("wifi.stage=associated");
+
+    println!("wifi.stage=start_dhcp");
+    set_property("ctl.start", DHCP_SERVICE)?;
+    println!("wifi.stage=dhcp_started");
+
+    wait_for_dhcp_async().await?;
+    println!("wifi.stage=ready");
+    Ok(())
+}
+
 fn finish_failed_startup(error: WifiFailure) -> io::Result<()> {
     println!("wifi.result=failure");
     print_failure(&error);
     let cleanup_result = shutdown();
+    print_snapshot("after_failure_cleanup");
+    match cleanup_result {
+        Ok(()) => Err(io::Error::other(error)),
+        Err(cleanup_error) => Err(io::Error::other(format!(
+            "Wi-Fi startup failed: {error}; cleanup failed: {cleanup_error}"
+        ))),
+    }
+}
+
+async fn finish_failed_startup_async(error: WifiFailure) -> io::Result<()> {
+    println!("wifi.result=failure");
+    print_failure(&error);
+    let cleanup_result = shutdown_async().await;
     print_snapshot("after_failure_cleanup");
     match cleanup_result {
         Ok(()) => Err(io::Error::other(error)),
@@ -350,9 +422,54 @@ fn shutdown() -> Result<(), WifiFailure> {
     }
 }
 
+async fn shutdown_async() -> Result<(), WifiFailure> {
+    println!("wifi.stage=stop_dhcp");
+    let dhcp_result = stop_dhcp_async().await;
+    print_shutdown_step("stop_dhcp", &dhcp_result);
+
+    println!("wifi.stage=stop_supplicant");
+    let supplicant_result = run_helper("stop-supplicant");
+    print_shutdown_step("stop_supplicant", &supplicant_result);
+
+    println!("wifi.stage=unload_driver");
+    let driver_result = run_helper("unload-driver");
+    print_shutdown_step("unload_driver", &driver_result);
+
+    let failures = [
+        dhcp_result.err(),
+        supplicant_result.err(),
+        driver_result.err(),
+    ]
+    .into_iter()
+    .flatten()
+    .map(|error| error.to_string())
+    .collect::<Vec<_>>();
+    if failures.is_empty() {
+        println!("wifi.stage=off");
+        Ok(())
+    } else {
+        Err(WifiFailure::new("shutdown", failures.join("; ")))
+    }
+}
+
 fn stop_dhcp() -> Result<(), WifiFailure> {
     let stop_result = set_property("ctl.stop", DHCP_SERVICE);
     let wait_result = wait_for_dhcp_service_stop();
+
+    match (stop_result, wait_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(stop_error), Ok(())) => Err(stop_error),
+        (Ok(()), Err(wait_error)) => Err(wait_error),
+        (Err(stop_error), Err(wait_error)) => Err(WifiFailure::new(
+            "dhcp_stop",
+            format!("{stop_error}; {wait_error}"),
+        )),
+    }
+}
+
+async fn stop_dhcp_async() -> Result<(), WifiFailure> {
+    let stop_result = set_property("ctl.stop", DHCP_SERVICE);
+    let wait_result = wait_for_dhcp_service_stop_async().await;
 
     match (stop_result, wait_result) {
         (Ok(()), Ok(())) => Ok(()),
@@ -412,6 +529,56 @@ fn wait_for_dhcp_service_stop() -> Result<(), WifiFailure> {
             ));
         }
         thread::sleep(POLL_INTERVAL);
+    }
+}
+
+async fn wait_for_dhcp_service_stop_async() -> Result<(), WifiFailure> {
+    let deadline = Instant::now() + DHCP_STOP_TIMEOUT;
+    let mut last_state = None;
+
+    loop {
+        match read_property(DHCP_SERVICE_STATE_PROPERTY) {
+            Ok(state) if dhcp_service_is_stopped(&state) => {
+                println!(
+                    "wifi.dhcp_service_state={}",
+                    if state.is_empty() {
+                        "absent"
+                    } else {
+                        "stopped"
+                    }
+                );
+                return Ok(());
+            }
+            Ok(state) => {
+                if last_state.as_deref() != Some(state.as_str()) {
+                    println!("wifi.dhcp_service_state={state}");
+                    last_state = Some(state);
+                }
+            }
+            Err(error) => {
+                if last_state.is_some() {
+                    println!("wifi.dhcp_service_state=unknown");
+                    last_state = None;
+                }
+                if Instant::now() >= deadline {
+                    return Err(WifiFailure::new(
+                        "dhcp_stop_timeout",
+                        format!("could not read {DHCP_SERVICE_STATE_PROPERTY}: {error}"),
+                    ));
+                }
+            }
+        }
+
+        if Instant::now() >= deadline {
+            return Err(WifiFailure::new(
+                "dhcp_stop_timeout",
+                format!(
+                    "{DHCP_SERVICE_STATE_PROPERTY} did not become stopped or absent (last={})",
+                    last_state.as_deref().unwrap_or("unknown")
+                ),
+            ));
+        }
+        sleep(POLL_INTERVAL).await;
     }
 }
 
@@ -502,6 +669,85 @@ fn wait_for_association() -> Result<(), WifiFailure> {
     }
 }
 
+async fn wait_for_association_async() -> Result<(), WifiFailure> {
+    let deadline = Instant::now() + ASSOCIATION_TIMEOUT;
+    let mut last_state = None;
+    let mut last_control_error;
+    let mut last_state_error;
+    let mut last_error_kind = None;
+    let mut last_source = None;
+
+    loop {
+        match read_association_status_internal_async(WIFI_INTERFACE, WPA_READ_TIMEOUT).await {
+            Ok(status) => {
+                if last_source.as_deref() != Some(status.source.as_str()) {
+                    println!("wifi.association_source={}", status.source);
+                    last_source = Some(status.source.clone());
+                }
+                let Some(state) = status.state else {
+                    if last_state.is_some() {
+                        println!("wifi.association_state=unknown");
+                        last_state = None;
+                    }
+                    last_control_error = Some(WpaControlError::new(
+                        WpaControlErrorKind::Protocol,
+                        Some(&status.source),
+                        "WPA status did not include wpa_state",
+                    ));
+                    last_state_error = None;
+                    if Instant::now() >= deadline {
+                        return association_timeout(last_control_error, last_state_error);
+                    }
+                    sleep(POLL_INTERVAL).await;
+                    continue;
+                };
+                if last_state.as_deref() != Some(state.as_str()) {
+                    println!("wifi.association_state={state}");
+                    last_state = Some(state.clone());
+                }
+                if state == "COMPLETED" {
+                    return Ok(());
+                }
+                last_control_error = None;
+                last_state_error = Some((status.source, state));
+            }
+            Err(error) => {
+                if last_state.is_some() {
+                    println!("wifi.association_state=unknown");
+                    last_state = None;
+                }
+                if last_error_kind != Some(error.kind) {
+                    println!("wifi.association_error_kind={}", error.kind.label());
+                    if let Some(path) = &error.path {
+                        println!("wifi.association_error_path={path}");
+                    }
+                    last_error_kind = Some(error.kind);
+                }
+                if error.kind == WpaControlErrorKind::PermissionDenied {
+                    return Err(WifiFailure::with_kind(
+                        "association_control",
+                        error.kind.label(),
+                        error.to_string(),
+                    ));
+                }
+                if supplicant_is_stopped() {
+                    return Err(WifiFailure::with_kind(
+                        "association_control",
+                        "supplicant_crashed",
+                        format!("{error}; init.svc.wpa_supplicant=stopped"),
+                    ));
+                }
+                last_control_error = Some(error);
+                last_state_error = None;
+            }
+        }
+        if Instant::now() >= deadline {
+            return association_timeout(last_control_error, last_state_error);
+        }
+        sleep(POLL_INTERVAL).await;
+    }
+}
+
 fn association_timeout(
     last_control_error: Option<WpaControlError>,
     last_state_error: Option<(String, String)>,
@@ -577,6 +823,54 @@ fn wait_for_dhcp() -> Result<(), WifiFailure> {
             ));
         }
         thread::sleep(POLL_INTERVAL);
+    }
+}
+
+async fn wait_for_dhcp_async() -> Result<(), WifiFailure> {
+    let deadline = Instant::now() + DHCP_TIMEOUT;
+    let mut last_result = None;
+
+    loop {
+        match read_property("dhcp.wlan0.result") {
+            Ok(result) => {
+                if last_result.as_deref() != Some(result.as_str()) {
+                    println!(
+                        "wifi.dhcp_result={}",
+                        if result.is_empty() {
+                            "unknown"
+                        } else {
+                            &result
+                        }
+                    );
+                    last_result = Some(result.clone());
+                }
+                if dhcp_service_is_bound(&result) {
+                    return Ok(());
+                }
+            }
+            Err(error) => {
+                if last_result.is_some() {
+                    println!("wifi.dhcp_result=unknown");
+                    last_result = None;
+                }
+                if Instant::now() >= deadline {
+                    return Err(WifiFailure::new(
+                        "dhcp_timeout",
+                        format!("could not read dhcp.wlan0.result: {error}"),
+                    ));
+                }
+            }
+        }
+        if Instant::now() >= deadline {
+            return Err(WifiFailure::new(
+                "dhcp_timeout",
+                format!(
+                    "dhcp.wlan0.result did not become BOUND (last={})",
+                    last_result.as_deref().unwrap_or("unknown")
+                ),
+            ));
+        }
+        sleep(POLL_INTERVAL).await;
     }
 }
 
@@ -684,6 +978,61 @@ fn read_association_status_internal(
     Err(WpaControlError::new(kind, None, detail))
 }
 
+async fn read_association_status_internal_async(
+    interface: &str,
+    timeout: Duration,
+) -> Result<AssociationStatus, WpaControlError> {
+    let deadline = Instant::now() + timeout;
+    let per_path_timeout = timeout.min(Duration::from_millis(500));
+    let mut errors = Vec::new();
+
+    for remote in control_socket_candidates(interface) {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        match read_wpa_status_from_path_async(&remote, remaining.min(per_path_timeout)).await {
+            Ok(response) => {
+                return Ok(AssociationStatus {
+                    state: parse_wpa_state(&response),
+                    source: remote,
+                });
+            }
+            Err(error) => {
+                if matches!(
+                    error.kind,
+                    WpaControlErrorKind::PermissionDenied | WpaControlErrorKind::Protocol
+                ) {
+                    return Err(error);
+                }
+                errors.push(error);
+            }
+        }
+    }
+
+    let kind = errors
+        .iter()
+        .map(|error| error.kind)
+        .find(|kind| *kind == WpaControlErrorKind::ReadTimeout)
+        .or_else(|| {
+            errors
+                .iter()
+                .map(|error| error.kind)
+                .find(|kind| *kind == WpaControlErrorKind::SupplicantUnavailable)
+        })
+        .unwrap_or(WpaControlErrorKind::MissingSocket);
+    let detail = if errors.is_empty() {
+        "no WPA control socket candidates were attempted".to_owned()
+    } else {
+        errors
+            .iter()
+            .map(|error| error.to_string())
+            .collect::<Vec<_>>()
+            .join("; ")
+    };
+    Err(WpaControlError::new(kind, None, detail))
+}
+
 fn read_wpa_status_from_path(remote: &str, timeout: Duration) -> Result<String, WpaControlError> {
     let counter = WPA_CLIENT_SOCKET_COUNTER.fetch_add(1, Ordering::Relaxed);
     let local = format!("{WPA_CLIENT_SOCKET}-{}-{counter}.sock", std::process::id());
@@ -727,6 +1076,59 @@ fn read_wpa_status_from_path(remote: &str, timeout: Duration) -> Result<String, 
         }
         Ok(String::from_utf8_lossy(&response[..length]).into_owned())
     })();
+    let _ = fs::remove_file(&local);
+    result
+}
+
+async fn read_wpa_status_from_path_async(
+    remote: &str,
+    timeout_duration: Duration,
+) -> Result<String, WpaControlError> {
+    let counter = WPA_CLIENT_SOCKET_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let local = format!("{WPA_CLIENT_SOCKET}-{}-{counter}.sock", std::process::id());
+    let _ = fs::remove_file(&local);
+
+    let result = async {
+        let socket = TokioUnixDatagram::bind(Path::new(&local)).map_err(|error| {
+            WpaControlError::from_io(error, WpaControlErrorKind::PermissionDenied, Some(&local))
+        })?;
+        socket.connect(remote).map_err(|error| {
+            WpaControlError::from_io(
+                error,
+                WpaControlErrorKind::SupplicantUnavailable,
+                Some(remote),
+            )
+        })?;
+        socket.send(b"STATUS").await.map_err(|error| {
+            WpaControlError::from_io(
+                error,
+                WpaControlErrorKind::SupplicantUnavailable,
+                Some(remote),
+            )
+        })?;
+        let mut response = [0_u8; 4096];
+        let length = timeout(timeout_duration, socket.recv(&mut response))
+            .await
+            .map_err(|_| {
+                WpaControlError::new(
+                    WpaControlErrorKind::ReadTimeout,
+                    Some(remote),
+                    "WPA control socket read timed out",
+                )
+            })?
+            .map_err(|error| {
+                WpaControlError::from_io(error, WpaControlErrorKind::ReadTimeout, Some(remote))
+            })?;
+        if length == 0 {
+            return Err(WpaControlError::new(
+                WpaControlErrorKind::Protocol,
+                Some(remote),
+                "WPA control socket returned an empty response",
+            ));
+        }
+        Ok(String::from_utf8_lossy(&response[..length]).into_owned())
+    }
+    .await;
     let _ = fs::remove_file(&local);
     result
 }
