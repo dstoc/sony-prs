@@ -128,7 +128,10 @@ assert "should_enter_inactivity_sleep" in runtime
 assert "should_start_idle_sync" not in runtime
 sleep_cycle = runtime[runtime.index("fn sleep_cycle("):runtime.index("fn request_suspend(")]
 assert sleep_cycle.index("state.sync_cancelled()") < sleep_cycle.index("state.enter_sleep(")
-assert sleep_cycle.index("let woke = state.wake()") < sleep_cycle.index("sync_task.start()")
+assert sleep_cycle.index("let woke = state.wake()") < sleep_cycle.index(
+    "wake transition queued one automatic synchronization"
+)
+assert "start_requested_sync(&mut state, || sync_task.start())" in runtime
 assert "self.last_activity = Instant::now();" in runtime
 
 expected_tops = {

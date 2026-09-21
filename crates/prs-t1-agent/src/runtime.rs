@@ -194,11 +194,8 @@ pub fn run(path: &Path, suspend_mode: SuspendMode) -> io::Result<()> {
             }
         }
 
-        if state.take_sync_request() {
-            if sync_task.start() {
-                state.sync_started();
-                redraw_area = Some(DirtyArea::Full);
-            }
+        if start_requested_sync(&mut state, || sync_task.start()).is_some() {
+            redraw_area = Some(DirtyArea::Full);
         }
         while let Some(event) = sync_task.try_event() {
             state.apply_sync_event(event);
@@ -973,9 +970,8 @@ fn sleep_cycle(
     state.message = format!("Woke after {suspend_elapsed_ms}ms");
     state.last_power_duration_ms = None;
     state.ignore_power_until = Some(Instant::now() + Duration::from_secs(2));
-    if woke && sync_task.start() {
-        state.sync_started();
-        eprintln!("standalone-test: wake transition started one automatic synchronization");
+    if woke {
+        eprintln!("standalone-test: wake transition queued one automatic synchronization");
     }
     redraw(
         display,
@@ -1390,6 +1386,19 @@ struct SyncTask {
     busy: bool,
 }
 
+fn start_requested_sync<F>(state: &mut UiState, start: F) -> Option<SyncTrigger>
+where
+    F: FnOnce() -> bool,
+{
+    let trigger = state.take_sync_trigger()?;
+    if start() {
+        state.sync_started();
+        Some(trigger)
+    } else {
+        None
+    }
+}
+
 impl SyncTask {
     fn new(framebuffer: &Path) -> io::Result<Self> {
         let config = sync::SyncConfig::for_runtime(framebuffer).map_err(io::Error::other)?;
@@ -1486,6 +1495,12 @@ enum UiPage {
     DisplayTest,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SyncTrigger {
+    Wake,
+    Manual,
+}
+
 struct UiState {
     page: UiPage,
     mode: &'static str,
@@ -1511,6 +1526,7 @@ struct UiState {
     last_status_refresh: Instant,
     sync_active: bool,
     sync_requested: bool,
+    wake_sync_requested: bool,
     approval_url: Option<String>,
     pub(crate) bundle_ready: bool,
     pending_handoff: Option<BundleHandoff>,
@@ -1546,6 +1562,7 @@ impl UiState {
             last_status_refresh: Instant::now(),
             sync_active: false,
             sync_requested: false,
+            wake_sync_requested: false,
             approval_url: None,
             bundle_ready: false,
             pending_handoff: None,
@@ -1576,8 +1593,19 @@ impl UiState {
         self.reader_operation.take()
     }
 
-    fn take_sync_request(&mut self) -> bool {
-        std::mem::take(&mut self.sync_requested)
+    fn take_sync_trigger(&mut self) -> Option<SyncTrigger> {
+        if std::mem::take(&mut self.wake_sync_requested) {
+            Some(SyncTrigger::Wake)
+        } else if std::mem::take(&mut self.sync_requested) {
+            Some(SyncTrigger::Manual)
+        } else {
+            None
+        }
+    }
+
+    fn request_manual_sync(&mut self) {
+        self.sync_requested = true;
+        self.message = "Sync requested".into();
     }
 
     fn sync_started(&mut self) {
@@ -1594,6 +1622,7 @@ impl UiState {
 
     fn enter_sleep(&mut self, suspend_mode: SuspendMode) {
         self.mode = "SLEEPING";
+        self.wake_sync_requested = false;
         self.message = match suspend_mode {
             SuspendMode::EInk => "E-ink standby mode",
             SuspendMode::Normal => "Normal mem mode",
@@ -1607,6 +1636,7 @@ impl UiState {
         }
         self.mode = "ACTIVE";
         self.last_activity = Instant::now();
+        self.wake_sync_requested = true;
         true
     }
 
@@ -1909,8 +1939,7 @@ impl UiState {
         let within_sync_row = y >= display::DETAILS_SYNC_TOP as i32
             && y < (display::DETAILS_SYNC_TOP + display::DETAILS_ACTION_HEIGHT) as i32;
         if within_sync_row {
-            self.sync_requested = true;
-            self.message = "Sync requested".into();
+            self.request_manual_sync();
             return PowerAction::None;
         }
 
@@ -2270,7 +2299,7 @@ mod tests {
         state.touch_x = 100;
         state.touch_y = super::display::DETAILS_SYNC_TOP as i32 + 10;
         state.observe(InputSourceKind::Touch, event(BTN_TOUCH, 0, 1_000_000));
-        assert!(state.take_sync_request());
+        assert_eq!(state.take_sync_trigger(), Some(super::SyncTrigger::Manual));
 
         state.touch_down = true;
         state.touch_y = super::display::DETAILS_RETURN_ENTRY_TOP as i32 + 10;
@@ -2326,12 +2355,44 @@ mod tests {
     }
 
     #[test]
-    fn wake_transition_is_one_shot_and_rearms_the_inactivity_timer() {
+    fn wake_transition_starts_one_automatic_sync_per_episode() {
         let mut state = UiState::new();
         state.enter_sleep(SuspendMode::EInk);
         assert!(state.wake());
+        let mut starts = 0;
+        assert_eq!(
+            super::start_requested_sync(&mut state, || {
+                starts += 1;
+                true
+            }),
+            Some(super::SyncTrigger::Wake)
+        );
+        state.apply_sync_event(SyncEvent::Finished(Ok(
+            super::sync::SyncOutcome::Unchanged {
+                revision: prs_sync_protocol::InboxRevision::new(7),
+            },
+        )));
+        assert_eq!(
+            super::start_requested_sync(&mut state, || {
+                starts += 1;
+                true
+            }),
+            None
+        );
+        assert_eq!(starts, 1);
         assert!(!state.wake());
         assert!(!state.should_enter_inactivity_sleep(Duration::from_secs(5 * 60)));
+
+        state.enter_sleep(SuspendMode::EInk);
+        assert!(state.wake());
+        assert_eq!(
+            super::start_requested_sync(&mut state, || {
+                starts += 1;
+                true
+            }),
+            Some(super::SyncTrigger::Wake)
+        );
+        assert_eq!(starts, 2);
     }
 
     #[test]
@@ -2339,12 +2400,27 @@ mod tests {
         let mut state = UiState::new();
         state.enter_sleep(SuspendMode::EInk);
         assert!(state.wake());
-        state.sync_started();
+        let mut starts = 0;
+        assert_eq!(
+            super::start_requested_sync(&mut state, || {
+                starts += 1;
+                true
+            }),
+            Some(super::SyncTrigger::Wake)
+        );
         state.apply_sync_event(SyncEvent::Finished(Err("network loss".into())));
 
         assert!(!state.sync_active);
         assert!(!state.bundle_ready);
         assert_eq!(state.last_sync_failure.as_deref(), Some("network loss"));
+        assert_eq!(
+            super::start_requested_sync(&mut state, || {
+                starts += 1;
+                true
+            }),
+            None
+        );
+        assert_eq!(starts, 1);
         assert!(!state.should_enter_inactivity_sleep(Duration::from_secs(5 * 60)));
     }
 
@@ -2353,11 +2429,62 @@ mod tests {
         let mut state = UiState::new();
         state.enter_sleep(SuspendMode::EInk);
         assert!(state.wake());
-        state.sync_started();
+        let mut starts = 0;
+        assert_eq!(
+            super::start_requested_sync(&mut state, || {
+                starts += 1;
+                true
+            }),
+            Some(super::SyncTrigger::Wake)
+        );
         state.apply_sync_event(SyncEvent::Finished(Err("network loss".into())));
-        state.sync_requested = true;
+        state.request_manual_sync();
 
-        assert!(state.take_sync_request());
+        assert_eq!(
+            super::start_requested_sync(&mut state, || {
+                starts += 1;
+                true
+            }),
+            Some(super::SyncTrigger::Manual)
+        );
+        assert_eq!(starts, 2);
+    }
+
+    #[test]
+    fn successful_wake_syncs_do_not_restart_while_awake() {
+        for outcome in [
+            super::sync::SyncOutcome::Updated {
+                revision: prs_sync_protocol::InboxRevision::new(8),
+                entry_point: "index.md".into(),
+            },
+            super::sync::SyncOutcome::Cleared {
+                revision: prs_sync_protocol::InboxRevision::new(9),
+            },
+            super::sync::SyncOutcome::Unchanged {
+                revision: prs_sync_protocol::InboxRevision::new(10),
+            },
+        ] {
+            let mut state = UiState::new();
+            state.enter_sleep(SuspendMode::EInk);
+            assert!(state.wake());
+            let mut starts = 0;
+            assert_eq!(
+                super::start_requested_sync(&mut state, || {
+                    starts += 1;
+                    true
+                }),
+                Some(super::SyncTrigger::Wake)
+            );
+            state.apply_sync_event(SyncEvent::Finished(Ok(outcome)));
+            assert_eq!(
+                super::start_requested_sync(&mut state, || {
+                    starts += 1;
+                    true
+                }),
+                None
+            );
+            assert_eq!(starts, 1);
+        }
     }
 
     #[test]
