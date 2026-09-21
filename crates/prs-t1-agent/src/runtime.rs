@@ -369,7 +369,8 @@ fn redraw(
     refresh_policy: &mut RefreshPolicy,
     sync_task: Option<&mut SyncTask>,
 ) -> io::Result<()> {
-    let lines = screen_lines(state, wake_lock_held);
+    let view = screen_view_model(state, wake_lock_held);
+    let lines = screen_lines_for_page(state, &view);
     let reason = area.reason(state.page);
     let plan = refresh_policy.plan(reason);
     eprintln!(
@@ -432,9 +433,9 @@ fn redraw(
         }
         return finish_redraw(result, sync_task);
     }
-    let result = display::draw_screen(
+    let result = display::draw_screen_view(
         display,
-        &lines,
+        &view,
         area.region(display, state.page),
         plan.waveform(),
         plan.wait_for_completion(),
@@ -615,7 +616,7 @@ impl DirtyArea {
     }
 }
 
-fn screen_lines(state: &UiState, wake_lock_held: bool) -> Vec<String> {
+fn screen_view_model(state: &UiState, wake_lock_held: bool) -> display::UiViewModel {
     let status = &state.status;
     let touch = state
         .last_touch
@@ -683,16 +684,118 @@ fn screen_lines(state: &UiState, wake_lock_held: bool) -> Vec<String> {
     } else {
         pretty_value(state.mode)
     };
-    let header = format!(
-        "{}|{}|{}|{}|{}|{}",
-        battery_label,
-        pretty_value(&wifi_state),
-        pretty_value(usb_connected),
-        pretty_value(adb),
-        mode_label,
-        short_clock()
-    );
+    let clock = short_clock();
 
+    let status_bar = display::StatusBarViewModel {
+        battery: battery_label,
+        wifi: pretty_value(&wifi_state),
+        usb: pretty_value(usb_connected),
+        adb: pretty_value(adb),
+        mode: mode_label,
+        clock,
+    };
+    let rows = vec![
+        display::DetailsRow::Section("Power".into()),
+        display::DetailsRow::Value(format!(
+            "Battery {}  {}",
+            percent_label(&battery_level),
+            pretty_value(&battery_state)
+        )),
+        display::DetailsRow::Value(format!(
+            "Health {}  Voltage {}",
+            pretty_value(&uppercase_or_unknown(status.battery.health.as_deref())),
+            voltage_label(status.battery.voltage_uv)
+        )),
+        display::DetailsRow::Value(format!(
+            "Temperature {} C  AC {}  USB {}",
+            temperature,
+            pretty_value(ac),
+            pretty_value(usb_power)
+        )),
+        display::DetailsRow::Section("Connectivity".into()),
+        display::DetailsRow::Value(format!(
+            "WiFi {} {}",
+            status.wifi.interface.to_ascii_lowercase(),
+            pretty_value(&wifi_state)
+        )),
+        display::DetailsRow::Value(format!("Supplicant {}", pretty_value(&supplicant))),
+        display::DetailsRow::Value(format!(
+            "USB {}  Gadget {}",
+            pretty_value(usb_connected),
+            pretty_value(&uppercase_or_unknown(status.usb.gadget_state.as_deref()))
+        )),
+        display::DetailsRow::Value(format!(
+            "USB functions {}",
+            pretty_value(&uppercase_or_unknown(
+                status.usb.gadget_functions.as_deref()
+            ))
+        )),
+        display::DetailsRow::Value("Synchronization".into()),
+        display::DetailsRow::Value(format!(
+            "Sync {}",
+            if state.sync_active { "active" } else { "idle" }
+        )),
+        display::DetailsRow::Value(format!(
+            "Failure {}",
+            state.last_sync_failure.as_deref().unwrap_or("none")
+        )),
+        display::DetailsRow::Value(format!(
+            "ADB process {}  Service {}",
+            pretty_value(adb),
+            pretty_value(&uppercase_or_unknown(status.adb.service_state.as_deref()))
+        )),
+        display::DetailsRow::Section("System".into()),
+        display::DetailsRow::Value(format!(
+            "Framebuffer {}  Rotate {}",
+            pretty_value(framebuffer),
+            number_or_unknown(status.screen.rotate)
+        )),
+        display::DetailsRow::Value(format!(
+            "Android: zygote {}  dispd {}",
+            pretty_value(zygote),
+            pretty_value(dispd)
+        )),
+        display::DetailsRow::Value(format!(
+            "Wake lock {}",
+            pretty_value(if wake_lock_held { "yes" } else { "no" })
+        )),
+        display::DetailsRow::Value(format!("Date {}", date_time())),
+        display::DetailsRow::Section("Storage".into()),
+        display::DetailsRow::Value(format!(
+            "Data {} KiB free",
+            number_or_unknown(status.storage.data.available_kib)
+        )),
+        display::DetailsRow::Value(format!(
+            "SD card {} KiB free",
+            number_or_unknown(status.storage.sdcard.available_kib)
+        )),
+        display::DetailsRow::Section("Input".into()),
+        display::DetailsRow::Value(coordinates),
+        display::DetailsRow::Value(touch),
+        display::DetailsRow::Value(format!("Touch events {}", state.touch_events)),
+        display::DetailsRow::Value(key),
+        display::DetailsRow::Value(format!("Key events {}", state.key_events)),
+        display::DetailsRow::Value(format!(
+            "Power last {}",
+            state
+                .last_power_duration_ms
+                .map(|duration| format!("{}ms", duration))
+                .unwrap_or_else(|| "none".into())
+        )),
+    ];
+    display::UiViewModel::new(
+        status_bar,
+        display::DetailsViewModel::new("Details / Settings", rows),
+    )
+}
+
+fn screen_lines(state: &UiState, wake_lock_held: bool) -> Vec<String> {
+    let view = screen_view_model(state, wake_lock_held);
+    screen_lines_for_page(state, &view)
+}
+
+fn screen_lines_for_page(state: &UiState, view: &display::UiViewModel) -> Vec<String> {
+    let header = view.status_bar.to_wire_line();
     if state.page == UiPage::Home {
         return vec![
             header,
@@ -704,93 +807,8 @@ fn screen_lines(state: &UiState, wake_lock_held: bool) -> Vec<String> {
         return vec![header, "Display Test".into(), state.message.clone()];
     }
 
-    let mut lines = vec![header, "Details / Settings".into()];
-    lines.extend([
-        "Power".into(),
-        format!(
-            "Battery {}  {}",
-            percent_label(&battery_level),
-            pretty_value(&battery_state)
-        ),
-        format!(
-            "Health {}  Voltage {}",
-            pretty_value(&uppercase_or_unknown(status.battery.health.as_deref())),
-            voltage_label(status.battery.voltage_uv)
-        ),
-        format!(
-            "Temperature {} C  AC {}  USB {}",
-            temperature,
-            pretty_value(ac),
-            pretty_value(usb_power)
-        ),
-        "Connectivity".into(),
-        format!(
-            "WiFi {} {}",
-            status.wifi.interface.to_ascii_lowercase(),
-            pretty_value(&wifi_state)
-        ),
-        format!("Supplicant {}", pretty_value(&supplicant)),
-        format!(
-            "USB {}  Gadget {}",
-            pretty_value(usb_connected),
-            pretty_value(&uppercase_or_unknown(status.usb.gadget_state.as_deref()))
-        ),
-        format!(
-            "USB functions {}",
-            pretty_value(&uppercase_or_unknown(
-                status.usb.gadget_functions.as_deref()
-            ))
-        ),
-        "Synchronization".into(),
-        format!("Sync {}", if state.sync_active { "active" } else { "idle" }),
-        format!(
-            "Failure {}",
-            state.last_sync_failure.as_deref().unwrap_or("none")
-        ),
-        format!(
-            "ADB process {}  Service {}",
-            pretty_value(adb),
-            pretty_value(&uppercase_or_unknown(status.adb.service_state.as_deref()))
-        ),
-        "System".into(),
-        format!(
-            "Framebuffer {}  Rotate {}",
-            pretty_value(framebuffer),
-            number_or_unknown(status.screen.rotate)
-        ),
-        format!(
-            "Android: zygote {}  dispd {}",
-            pretty_value(zygote),
-            pretty_value(dispd)
-        ),
-        format!(
-            "Wake lock {}",
-            pretty_value(if wake_lock_held { "yes" } else { "no" })
-        ),
-        format!("Date {}", date_time()),
-        "Storage".into(),
-        format!(
-            "Data {} KiB free",
-            number_or_unknown(status.storage.data.available_kib)
-        ),
-        format!(
-            "SD card {} KiB free",
-            number_or_unknown(status.storage.sdcard.available_kib)
-        ),
-        "Input".into(),
-        coordinates,
-        touch,
-        format!("Touch events {}", state.touch_events),
-        key,
-        format!("Key events {}", state.key_events),
-        format!(
-            "Power last {}",
-            state
-                .last_power_duration_ms
-                .map(|duration| format!("{}ms", duration))
-                .unwrap_or_else(|| "none".into())
-        ),
-    ]);
+    let mut lines = vec![header];
+    lines.extend(view.details.to_lines());
     lines
 }
 
@@ -866,6 +884,7 @@ fn sleep_cycle(
     )
     .map_err(|error| display_error("pre-suspend redraw", error))?;
     let standby_lines = screen_lines(state, wake_lock.is_held());
+    let view = screen_view_model(state, wake_lock.is_held());
     let standby = match state.page {
         UiPage::Home => markdown_reader.render_frame(
             standby_lines
@@ -880,8 +899,8 @@ fn sleep_cycle(
             display.width() as usize,
             display.height() as usize,
         ),
-        UiPage::Details => display::standby_screen(
-            &standby_lines,
+        UiPage::Details => display::render_details_settings_frame(
+            &view,
             display.width() as usize,
             display.height() as usize,
         ),

@@ -8,6 +8,8 @@ use embedded_graphics::pixelcolor::{Rgb565, RgbColor};
 use embedded_graphics::prelude::*;
 use embedded_graphics::text::{Baseline, Text};
 use std::convert::Infallible;
+#[cfg(test)]
+use std::io::{self, Write};
 use std::path::Path;
 use std::thread;
 use std::time::Duration;
@@ -39,6 +41,8 @@ pub const DETAILS_POWER_OFF_TOP: usize = 720;
 pub const DETAILS_BACK_TOP: usize = 760;
 pub const DETAILS_ACTION_HEIGHT: usize = 40;
 pub const SCREEN_WIDTH: usize = 600;
+#[cfg(test)]
+pub const SCREEN_HEIGHT: usize = 800;
 
 const STATUS_BAR_SIDE_MARGIN: usize = 16;
 const STATUS_BAR_CLOCK_WIDTH: usize = 96;
@@ -50,6 +54,107 @@ const USB_ICON: &[u8] = include_bytes!("../assets/usb-20x20.bin");
 const ADB_ICON: &[u8] = include_bytes!("../assets/adb-20x20.bin");
 const CLOCK_ICON: &[u8] = include_bytes!("../assets/clock-20x20.bin");
 
+/// The display data needed by the native status bar.
+///
+/// The values are already formatted for the small native UI. Keeping this
+/// model independent of sysfs and process state makes the renderer usable in
+/// deterministic host tests.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct StatusBarViewModel {
+    pub battery: String,
+    pub wifi: String,
+    pub usb: String,
+    pub adb: String,
+    pub mode: String,
+    pub clock: String,
+}
+
+impl StatusBarViewModel {
+    pub fn from_wire_line(line: &str) -> Self {
+        let mut fields = line.split('|');
+        Self {
+            battery: fields.next().unwrap_or_default().into(),
+            wifi: fields.next().unwrap_or_default().into(),
+            usb: fields.next().unwrap_or_default().into(),
+            adb: fields.next().unwrap_or_default().into(),
+            mode: fields.next().unwrap_or_default().into(),
+            clock: fields.next().unwrap_or_default().into(),
+        }
+    }
+
+    pub fn to_wire_line(&self) -> String {
+        format!(
+            "{}|{}|{}|{}|{}|{}",
+            self.battery, self.wifi, self.usb, self.adb, self.mode, self.clock
+        )
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DetailsRow {
+    Section(String),
+    Value(String),
+}
+
+/// The native Details / Settings data after status collection and formatting.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DetailsViewModel {
+    pub title: String,
+    pub rows: Vec<DetailsRow>,
+}
+
+impl DetailsViewModel {
+    pub fn new(title: impl Into<String>, rows: Vec<DetailsRow>) -> Self {
+        Self {
+            title: title.into(),
+            rows,
+        }
+    }
+
+    pub fn from_lines(lines: &[String]) -> Self {
+        let title = lines
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "Details / Settings".into());
+        let rows = lines
+            .iter()
+            .skip(1)
+            .map(|line| {
+                if is_section_heading(line) {
+                    DetailsRow::Section(line.clone())
+                } else {
+                    DetailsRow::Value(line.clone())
+                }
+            })
+            .collect();
+        Self { title, rows }
+    }
+
+    pub fn to_lines(&self) -> Vec<String> {
+        let mut lines = vec![self.title.clone()];
+        lines.extend(self.rows.iter().map(|row| match row {
+            DetailsRow::Section(text) | DetailsRow::Value(text) => text.clone(),
+        }));
+        lines
+    }
+}
+
+/// The host-testable view model for the native status and details screens.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UiViewModel {
+    pub status_bar: StatusBarViewModel,
+    pub details: DetailsViewModel,
+}
+
+impl UiViewModel {
+    pub fn new(status_bar: StatusBarViewModel, details: DetailsViewModel) -> Self {
+        Self {
+            status_bar,
+            details,
+        }
+    }
+}
+
 pub fn draw_screen(
     display: &mut NativeDisplay,
     lines: &[String],
@@ -58,7 +163,24 @@ pub fn draw_screen(
     wait_for_completion: bool,
     force_refresh: bool,
 ) -> std::io::Result<()> {
-    let frame = render_screen(lines, display.width() as usize, display.height() as usize);
+    let frame = if lines
+        .get(1)
+        .is_some_and(|line| line == "Details / Settings")
+    {
+        let status = lines
+            .first()
+            .map(|line| StatusBarViewModel::from_wire_line(line))
+            .unwrap_or_default();
+        let details = DetailsViewModel::from_lines(&lines[1..]);
+        render_details_settings(
+            &status,
+            &details,
+            display.width() as usize,
+            display.height() as usize,
+        )
+    } else {
+        render_screen(lines, display.width() as usize, display.height() as usize)
+    };
     display.draw_frame_with_waveform(
         &frame,
         refresh_region,
@@ -66,6 +188,195 @@ pub fn draw_screen(
         wait_for_completion,
         force_refresh,
     )
+}
+
+/// Draw the status and Details / Settings view from its extracted model.
+pub fn draw_screen_view(
+    display: &mut NativeDisplay,
+    view: &UiViewModel,
+    refresh_region: DisplayRegion,
+    waveform: WaveformMode,
+    wait_for_completion: bool,
+    force_refresh: bool,
+) -> std::io::Result<()> {
+    let frame = render_details_settings(
+        &view.status_bar,
+        &view.details,
+        display.width() as usize,
+        display.height() as usize,
+    );
+    display.draw_frame_with_waveform(
+        &frame,
+        refresh_region,
+        waveform,
+        wait_for_completion,
+        force_refresh,
+    )
+}
+
+/// Render a complete host frame containing only the status bar.
+#[cfg(test)]
+pub fn render_status_bar_host(status: &StatusBarViewModel) -> Vec<u8> {
+    let mut frame = white_frame(SCREEN_WIDTH, SCREEN_HEIGHT);
+    let mut canvas = DisplayCanvas::new(
+        &mut frame,
+        SCREEN_WIDTH,
+        SCREEN_HEIGHT,
+        SCREEN_WIDTH.saturating_mul(2),
+        0,
+        0,
+    );
+    draw_status_bar_model(&mut canvas, status);
+    frame
+}
+
+/// Render the complete 600x800 Details / Settings host frame.
+#[cfg(test)]
+pub fn render_details_settings_host(view: &UiViewModel) -> Vec<u8> {
+    render_details_settings(&view.status_bar, &view.details, SCREEN_WIDTH, SCREEN_HEIGHT)
+}
+
+pub(crate) fn render_details_settings_frame(
+    view: &UiViewModel,
+    width: usize,
+    height: usize,
+) -> Vec<u8> {
+    render_details_settings(&view.status_bar, &view.details, width, height)
+}
+
+fn render_details_settings(
+    status: &StatusBarViewModel,
+    details: &DetailsViewModel,
+    width: usize,
+    height: usize,
+) -> Vec<u8> {
+    let mut frame = white_frame(width, height);
+    let mut canvas = DisplayCanvas::new(&mut frame, width, height, width.saturating_mul(2), 0, 0);
+    draw_status_bar_model(&mut canvas, status);
+    draw_details_model(&mut canvas, details);
+    frame
+}
+
+fn white_frame(width: usize, height: usize) -> Vec<u8> {
+    let mut frame = vec![0u8; width.saturating_mul(height).saturating_mul(2)];
+    for pixel in frame.chunks_exact_mut(2) {
+        pixel.copy_from_slice(&WHITE.to_ne_bytes());
+    }
+    frame
+}
+
+/// Convert a tightly packed native RGB565 frame to a deterministic grayscale
+/// PNG suitable for host golden tests.
+#[cfg(test)]
+pub fn rgb565_to_png(frame: &[u8], width: usize, height: usize) -> io::Result<Vec<u8>> {
+    if width == 0 || height == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "PNG dimensions must be non-zero",
+        ));
+    }
+    let expected = width
+        .checked_mul(height)
+        .and_then(|pixels| pixels.checked_mul(2))
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "RGB565 frame is too large"))?;
+    if frame.len() != expected {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "RGB565 frame has {} bytes; expected {expected}",
+                frame.len()
+            ),
+        ));
+    }
+
+    let mut grayscale = Vec::with_capacity(width.saturating_mul(height));
+    for pixel in frame.chunks_exact(2) {
+        let value = u16::from_ne_bytes([pixel[0], pixel[1]]);
+        let red = u32::from((value >> 11) & 0x1f) * 255 / 31;
+        let green = u32::from((value >> 5) & 0x3f) * 255 / 63;
+        let blue = u32::from(value & 0x1f) * 255 / 31;
+        grayscale.push(((red * 299 + green * 587 + blue * 114 + 500) / 1000) as u8);
+    }
+
+    let mut output = Vec::new();
+    output.extend_from_slice(b"\x89PNG\r\n\x1a\n");
+    let width_u32 = u32::try_from(width)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "PNG width is too large"))?;
+    let height_u32 = u32::try_from(height)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "PNG height is too large"))?;
+    let mut header = Vec::with_capacity(13);
+    header.extend_from_slice(&width_u32.to_be_bytes());
+    header.extend_from_slice(&height_u32.to_be_bytes());
+    header.extend_from_slice(&[8, 0, 0, 0, 0]);
+    write_png_chunk(&mut output, b"IHDR", &header)?;
+
+    let scanline_width = width
+        .checked_add(1)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "PNG row is too large"))?;
+    let mut scanlines = Vec::with_capacity(scanline_width.saturating_mul(height));
+    for row in grayscale.chunks_exact(width) {
+        scanlines.push(0);
+        scanlines.extend_from_slice(row);
+    }
+    let mut compressed = Vec::new();
+    write_zlib_stored(&scanlines, &mut compressed);
+    write_png_chunk(&mut output, b"IDAT", &compressed)?;
+    write_png_chunk(&mut output, b"IEND", &[])?;
+    Ok(output)
+}
+
+#[cfg(test)]
+fn write_png_chunk(output: &mut impl Write, kind: &[u8; 4], data: &[u8]) -> io::Result<()> {
+    let length = u32::try_from(data.len())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "PNG chunk is too large"))?;
+    output.write_all(&length.to_be_bytes())?;
+    output.write_all(kind)?;
+    output.write_all(data)?;
+    output.write_all(&png_crc(kind, data).to_be_bytes())
+}
+
+#[cfg(test)]
+fn write_zlib_stored(data: &[u8], output: &mut Vec<u8>) {
+    output.extend_from_slice(&[0x78, 0x01]);
+    if data.is_empty() {
+        output.extend_from_slice(&[1, 0, 0, 0xff, 0xff]);
+    } else {
+        let mut offset = 0;
+        while offset < data.len() {
+            let end = offset.saturating_add(u16::MAX as usize).min(data.len());
+            output.push(u8::from(end == data.len()));
+            let length = (end - offset) as u16;
+            output.extend_from_slice(&length.to_le_bytes());
+            output.extend_from_slice(&(!length).to_le_bytes());
+            output.extend_from_slice(&data[offset..end]);
+            offset = end;
+        }
+    }
+    output.extend_from_slice(&adler32(data).to_be_bytes());
+}
+
+#[cfg(test)]
+fn adler32(data: &[u8]) -> u32 {
+    const MODULO: u32 = 65_521;
+    let (mut low, mut high) = (1u32, 0u32);
+    for byte in data {
+        low = (low + u32::from(*byte)) % MODULO;
+        high = (high + low) % MODULO;
+    }
+    high << 16 | low
+}
+
+#[cfg(test)]
+fn png_crc(kind: &[u8; 4], data: &[u8]) -> u32 {
+    let mut crc = u32::MAX;
+    for byte in kind.iter().chain(data) {
+        crc ^= u32::from(*byte);
+        for _ in 0..8 {
+            let mask = 0u32.wrapping_sub(crc & 1);
+            crc = (crc >> 1) ^ (0xedb8_8320 & mask);
+        }
+    }
+    !crc
 }
 
 /// Render the short-lived reader authorization screen.
@@ -537,8 +848,28 @@ fn draw_screen_contents(canvas: &mut DisplayCanvas<'_>, lines: &[String]) {
     }
 }
 
+fn draw_details_model(canvas: &mut DisplayCanvas<'_>, details: &DetailsViewModel) {
+    draw_text_font(
+        canvas,
+        24,
+        CONTENT_TOP,
+        &details.title,
+        &FONT_10X20,
+        Rgb565::BLACK,
+    );
+    for (index, row) in details.rows.iter().enumerate() {
+        let y = CONTENT_TOP.saturating_add((index + 1).saturating_mul(DETAILS_LINE_STEP));
+        match row {
+            DetailsRow::Section(text) => draw_section_heading(canvas, y, text),
+            DetailsRow::Value(text) => draw_text(canvas, 24, y, text),
+        }
+    }
+    draw_details_actions(canvas);
+}
+
 /// Render a logical screen into the format expected by the EPDC standby
 /// framebuffer ioctl. This buffer has no virtual-screen padding or offsets.
+#[cfg(test)]
 pub fn standby_screen(lines: &[String], width: usize, height: usize) -> Vec<u8> {
     render_screen(lines, width, height)
 }
@@ -554,48 +885,52 @@ fn render_screen(lines: &[String], width: usize, height: usize) -> Vec<u8> {
 }
 
 pub(crate) fn draw_status_bar(canvas: &mut DisplayCanvas<'_>, lines: &[String]) {
+    let Some(line) = lines.first() else {
+        canvas.fill_rect(0, 0, canvas.width(), STATUS_BAR_HEIGHT, BLACK);
+        return;
+    };
+    draw_status_bar_model(canvas, &StatusBarViewModel::from_wire_line(line));
+}
+
+fn draw_status_bar_model(canvas: &mut DisplayCanvas<'_>, view: &StatusBarViewModel) {
     let width = canvas.width();
     canvas.fill_rect(0, 0, width, STATUS_BAR_HEIGHT, BLACK);
 
-    let Some(line) = lines.first() else {
-        return;
-    };
-    let fields = line.split('|').collect::<Vec<_>>();
     let side_margin = STATUS_BAR_SIDE_MARGIN.min(width / 2);
     let clock_width = STATUS_BAR_CLOCK_WIDTH.min(width.saturating_sub(side_margin * 2));
     let clock_left = width.saturating_sub(side_margin + clock_width);
     let mut left = side_margin;
 
-    if let Some(value) = fields.first().copied() {
-        left = left.saturating_add(draw_status_value(canvas, left, value, BATTERY_ICON));
+    if !view.battery.is_empty() {
+        left = left.saturating_add(draw_status_value(canvas, left, &view.battery, BATTERY_ICON));
         left = left.saturating_add(8);
     }
-    for (index, sprite) in [(1, WIFI_ICON), (2, USB_ICON), (3, ADB_ICON)] {
-        if let Some(value) = fields.get(index).copied() {
-            if status_icon_is_on(value) {
-                draw_icon_sprite(canvas, left, 14, sprite);
-                left = left.saturating_add(20 + STATUS_ICON_GAP);
-            }
+    for (value, sprite) in [
+        (&view.wifi, WIFI_ICON),
+        (&view.usb, USB_ICON),
+        (&view.adb, ADB_ICON),
+    ] {
+        if status_icon_is_on(value) {
+            draw_icon_sprite(canvas, left, 14, sprite);
+            left = left.saturating_add(20 + STATUS_ICON_GAP);
         }
     }
 
-    if let Some(value) = fields.get(4).copied() {
-        if !value.is_empty() {
-            let mode_left = clock_left.saturating_sub(STATUS_MODE_WIDTH + 16);
-            draw_text_centered_in_rect_font(
-                canvas,
-                mode_left,
-                0,
-                STATUS_MODE_WIDTH,
-                STATUS_BAR_HEIGHT,
-                value,
-                &FONT_8X13_BOLD,
-                Rgb565::WHITE,
-            );
-        }
+    if !view.mode.is_empty() {
+        let mode_left = clock_left.saturating_sub(STATUS_MODE_WIDTH + 16);
+        draw_text_centered_in_rect_font(
+            canvas,
+            mode_left,
+            0,
+            STATUS_MODE_WIDTH,
+            STATUS_BAR_HEIGHT,
+            &view.mode,
+            &FONT_8X13_BOLD,
+            Rgb565::WHITE,
+        );
     }
-    if let Some(value) = fields.get(5).copied() {
-        draw_status_value(canvas, clock_left, value, CLOCK_ICON);
+    if !view.clock.is_empty() {
+        draw_status_value(canvas, clock_left, &view.clock, CLOCK_ICON);
     }
 }
 
@@ -804,11 +1139,148 @@ impl DrawTarget for DisplayCanvas<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::{gray565, render_authorization_qr, render_display_test, standby_screen};
+    use super::{
+        gray565, render_authorization_qr, render_details_settings_host, render_display_test,
+        render_status_bar_host, rgb565_to_png, standby_screen, DetailsRow, DetailsViewModel,
+        StatusBarViewModel, UiViewModel, SCREEN_HEIGHT, SCREEN_WIDTH,
+    };
+    use std::env;
+    use std::fs;
+    use std::path::Path;
 
     fn pixel(frame: &[u8], width: usize, x: usize, y: usize) -> u16 {
         let offset = (y * width + x) * 2;
         u16::from_ne_bytes([frame[offset], frame[offset + 1]])
+    }
+
+    fn screenshot_view() -> UiViewModel {
+        let status_bar = StatusBarViewModel {
+            battery: "87%".into(),
+            wifi: "UP".into(),
+            usb: "ON".into(),
+            adb: "ON".into(),
+            mode: "SYNCING".into(),
+            clock: "12:34".into(),
+        };
+        let rows = vec![
+            DetailsRow::Section("Power".into()),
+            DetailsRow::Value("Battery 87%  CHARGING".into()),
+            DetailsRow::Value("Health GOOD  Voltage 4.20 V".into()),
+            DetailsRow::Value("Temperature 24 C  AC ON  USB ON".into()),
+            DetailsRow::Section("Connectivity".into()),
+            DetailsRow::Value("WiFi wlan0 UP".into()),
+            DetailsRow::Value("Supplicant COMPLETED".into()),
+            DetailsRow::Value("USB ON  Gadget CONFIGURED".into()),
+            DetailsRow::Value("USB functions ADB".into()),
+            DetailsRow::Value("Synchronization".into()),
+            DetailsRow::Value("Sync active".into()),
+            DetailsRow::Value("Failure none".into()),
+            DetailsRow::Value("ADB process ON  Service RUNNING".into()),
+            DetailsRow::Section("System".into()),
+            DetailsRow::Value("Framebuffer ACTIVE  Rotate 0".into()),
+            DetailsRow::Value("Android: zygote STOP  dispd STOP".into()),
+            DetailsRow::Value("Wake lock yes".into()),
+            DetailsRow::Value("Date 21 Sep 2026 12:34".into()),
+            DetailsRow::Section("Storage".into()),
+            DetailsRow::Value("Data 123456 KiB free".into()),
+            DetailsRow::Value("SD card 654321 KiB free".into()),
+            DetailsRow::Section("Input".into()),
+            DetailsRow::Value("Touch: X ---  Y ---".into()),
+            DetailsRow::Value("Touch: none".into()),
+            DetailsRow::Value("Touch events 0".into()),
+            DetailsRow::Value("Key: none".into()),
+            DetailsRow::Value("Key events 0".into()),
+            DetailsRow::Value("Power last none".into()),
+        ];
+        UiViewModel::new(
+            status_bar,
+            DetailsViewModel::new("Details / Settings", rows),
+        )
+    }
+
+    fn assert_png_golden(name: &str, actual: &[u8]) {
+        let golden = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/goldens")
+            .join(format!("{name}.png"));
+        if env::var_os("PRS_T1_UPDATE_GOLDENS").is_some() {
+            fs::create_dir_all(golden.parent().expect("golden has a parent"))
+                .expect("create screenshot golden directory");
+            fs::write(&golden, actual).expect("write screenshot golden");
+            return;
+        }
+
+        let expected = fs::read(&golden).unwrap_or_else(|error| {
+            let failure = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../target")
+                .join("prs-t1-agent-golden-failures")
+                .join(format!("{name}.png"));
+            fs::create_dir_all(failure.parent().expect("failure has a parent"))
+                .expect("create screenshot failure directory");
+            fs::write(&failure, actual).expect("write screenshot failure");
+            panic!(
+                "missing native UI golden {} ({error}); rendered output was written to {}",
+                golden.display(),
+                failure.display()
+            );
+        });
+        if expected != actual {
+            let failure = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../target")
+                .join("prs-t1-agent-golden-failures")
+                .join(format!("{name}.png"));
+            fs::create_dir_all(failure.parent().expect("failure has a parent"))
+                .expect("create screenshot failure directory");
+            fs::write(&failure, actual).expect("write screenshot failure");
+            panic!(
+                "native UI golden mismatch for {name}; rendered output was written to {}",
+                failure.display()
+            );
+        }
+    }
+
+    #[test]
+    fn status_bar_host_renderer_matches_png_golden() {
+        let frame = render_status_bar_host(&screenshot_view().status_bar);
+        assert_eq!(frame.len(), SCREEN_WIDTH * SCREEN_HEIGHT * 2);
+        let png = rgb565_to_png(&frame, SCREEN_WIDTH, SCREEN_HEIGHT).expect("encode status PNG");
+        assert_png_golden("status-bar", &png);
+    }
+
+    #[test]
+    fn details_settings_host_renderer_matches_png_golden() {
+        let frame = render_details_settings_host(&screenshot_view());
+        assert_eq!(frame.len(), SCREEN_WIDTH * SCREEN_HEIGHT * 2);
+        let png = rgb565_to_png(&frame, SCREEN_WIDTH, SCREEN_HEIGHT).expect("encode details PNG");
+        assert_png_golden("details-settings", &png);
+    }
+
+    #[test]
+    fn details_view_model_preserves_the_existing_device_frame() {
+        let view = screenshot_view();
+        let mut lines = vec![view.status_bar.to_wire_line()];
+        lines.extend(view.details.to_lines());
+
+        let expected = standby_screen(&lines, SCREEN_WIDTH, SCREEN_HEIGHT);
+        let actual = render_details_settings_host(&view);
+        let differences = expected
+            .chunks_exact(2)
+            .zip(actual.chunks_exact(2))
+            .enumerate()
+            .filter(|(_, (expected, actual))| expected != actual)
+            .map(|(index, _)| (index % SCREEN_WIDTH, index / SCREEN_WIDTH))
+            .collect::<Vec<_>>();
+        assert!(
+            differences.is_empty(),
+            "{} pixels differ; first differences: {:?}",
+            differences.len(),
+            &differences[..differences.len().min(12)]
+        );
+    }
+
+    #[test]
+    fn rgb565_png_conversion_rejects_wrong_frame_size() {
+        let error = rgb565_to_png(&[0, 0], 2, 2).expect_err("short RGB565 frame");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
     }
 
     #[test]

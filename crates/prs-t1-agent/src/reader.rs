@@ -519,25 +519,32 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn fixture_config(root: &Path) -> ReaderConfig {
-        let font = PathBuf::from("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf");
-        let monospace = PathBuf::from("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf");
-        let monospace_bold =
-            PathBuf::from("/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf");
-        let monospace_italic =
-            PathBuf::from("/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Oblique.ttf");
-        let monospace_bold_italic =
-            PathBuf::from("/usr/share/fonts/truetype/dejavu/DejaVuSansMono-BoldOblique.ttf");
+        let paths = [
+            ("regular.ttf", notosans::REGULAR_TTF),
+            ("bold.ttf", notosans::BOLD_TTF),
+            ("italic.ttf", notosans::ITALIC_TTF),
+            ("bold-italic.ttf", notosans::BOLD_ITALIC_TTF),
+            ("monospace.ttf", notosans::REGULAR_TTF),
+            ("monospace-bold.ttf", notosans::BOLD_TTF),
+            ("monospace-italic.ttf", notosans::ITALIC_TTF),
+            ("monospace-bold-italic.ttf", notosans::BOLD_ITALIC_TTF),
+        ]
+        .map(|(name, bytes)| {
+            let path = root.join(name);
+            fs::write(&path, bytes).expect("write checked-in fixture font");
+            path
+        });
         ReaderConfig {
             document_root: root.to_owned(),
             document: PathBuf::from("index.md"),
-            regular_font: font.clone(),
-            bold_font: font.clone(),
-            italic_font: font.clone(),
-            bold_italic_font: font,
-            monospace_font: monospace,
-            monospace_bold_font: monospace_bold,
-            monospace_italic_font: monospace_italic,
-            monospace_bold_italic_font: monospace_bold_italic,
+            regular_font: paths[0].clone(),
+            bold_font: paths[1].clone(),
+            italic_font: paths[2].clone(),
+            bold_italic_font: paths[3].clone(),
+            monospace_font: paths[4].clone(),
+            monospace_bold_font: paths[5].clone(),
+            monospace_italic_font: paths[6].clone(),
+            monospace_bold_italic_font: paths[7].clone(),
         }
     }
 

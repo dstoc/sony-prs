@@ -56,6 +56,11 @@ host build; it does not produce a T1-compatible ARM executable. See the
 ARMv7/musl cross-build and the optional
 [tap-to-launch APK](tools/prs-t1-launcher/build.md).
 
+The native status bar and Details / Settings page also have deterministic
+600x800 PNG goldens. Run them with `cargo test -p prs-t1-agent`. To update the
+goldens after inspecting an intentional UI change, run
+`PRS_T1_UPDATE_GOLDENS=1 cargo test -p prs-t1-agent`.
+
 Merging a Release Please PR publishes the matching ARM executable in the
 `prs-t1-agent-vX.Y.Z` GitHub Release as `prs-t1-agent-armv7`. See the
 [automated release notes](crates/prs-t1-agent/build.md#automated-github-releases)

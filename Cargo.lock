@@ -1397,6 +1397,7 @@ version = "0.11.1"
 dependencies = [
  "embedded-graphics",
  "hickory-resolver",
+ "notosans",
  "prs-markdown",
  "prs-sync-bundle",
  "prs-sync-protocol",
