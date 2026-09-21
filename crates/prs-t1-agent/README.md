@@ -464,8 +464,11 @@ from the power/settings UI.
 Tap the status bar to open **Details / Settings**. The details page groups the
 live snapshot under:
 
+- **Settings** — the **Debug messages** toggle is off by default. Enable it
+  when troubleshooting to show the native reader's diagnostic feedback.
 - **Power** — battery state, temperature, voltage, AC, USB, and supported power states.
 - **Connectivity** — Wi-Fi interface/link/supplicant state, USB gadget state, and ADB.
+- **Synchronization** — the current sync state and the latest failure summary.
 - **System** — uptime, framebuffer state/rotation, Android process state, and wake lock.
 - **Storage** — available space on `/data` and `/mnt/sdcard`.
 - **Input** — the latest touch, key, and power events and their coordinates/counts.
@@ -475,6 +478,13 @@ reading** targets. Touch release is accepted from the event shapes observed on
 the T1: `BTN_TOUCH=0`, `ABS_MT_TRACKING_ID=-1`, or
 `ABS_MT_TOUCH_MAJOR=0`, committed by `SYN_REPORT`. The legacy `ABS_X/Y` path is
 normalized from the panel's advertised 800x600 axes before hit testing.
+
+The reader feedback strip between the status bar and document content is quiet
+in normal mode. It shows actionable errors until the next touch or physical
+button press. Diagnostic input, navigation, power, timing, and synchronization
+messages appear there only when **Debug messages** is enabled. An active sync
+uses the status bar's operational state area as **Syncing**; successful and
+unchanged syncs return to the normal status bar without a feedback message.
 
 The physical menu button is event0 code 357 (`Unknown` in the old kernel). On
 the Home reading surface, a short press invokes reader Back and a hold of at

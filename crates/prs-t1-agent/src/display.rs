@@ -33,6 +33,8 @@ pub const CONTENT_TOP: usize = 76;
 pub const CONTENT_LINE_STEP: usize = 25;
 pub const DETAILS_LINE_STEP: usize = 21;
 pub const DETAILS_ACTION_MARGIN: usize = 24;
+pub const DETAILS_DEBUG_TOP: usize = 106;
+pub const DETAILS_DEBUG_HEIGHT: usize = 32;
 pub const DETAILS_SYNC_TOP: usize = 560;
 pub const DETAILS_RETURN_ENTRY_TOP: usize = 600;
 pub const DETAILS_DISPLAY_TEST_TOP: usize = 640;
@@ -94,6 +96,7 @@ impl StatusBarViewModel {
 pub enum DetailsRow {
     Section(String),
     Value(String),
+    Toggle { label: String, enabled: bool },
 }
 
 /// The native Details / Settings data after status collection and formatting.
@@ -120,7 +123,12 @@ impl DetailsViewModel {
             .iter()
             .skip(1)
             .map(|line| {
-                if is_section_heading(line) {
+                if let Some(enabled) = debug_toggle_state(line) {
+                    DetailsRow::Toggle {
+                        label: "Debug messages".into(),
+                        enabled,
+                    }
+                } else if is_section_heading(line) {
                     DetailsRow::Section(line.clone())
                 } else {
                     DetailsRow::Value(line.clone())
@@ -134,6 +142,9 @@ impl DetailsViewModel {
         let mut lines = vec![self.title.clone()];
         lines.extend(self.rows.iter().map(|row| match row {
             DetailsRow::Section(text) | DetailsRow::Value(text) => text.clone(),
+            DetailsRow::Toggle { label, enabled } => {
+                format!("{label} {}", if *enabled { "ON" } else { "OFF" })
+            }
         }));
         lines
     }
@@ -155,9 +166,10 @@ impl UiViewModel {
     }
 }
 
-pub fn draw_screen(
+pub fn draw_screen_with_feedback(
     display: &mut NativeDisplay,
     lines: &[String],
+    feedback: Option<&str>,
     refresh_region: DisplayRegion,
     waveform: WaveformMode,
     wait_for_completion: bool,
@@ -179,7 +191,12 @@ pub fn draw_screen(
             display.height() as usize,
         )
     } else {
-        render_screen(lines, display.width() as usize, display.height() as usize)
+        render_screen_with_feedback(
+            lines,
+            feedback,
+            display.width() as usize,
+            display.height() as usize,
+        )
     };
     display.draw_frame_with_waveform(
         &frame,
@@ -386,11 +403,13 @@ fn png_crc(kind: &[u8; 4], data: &[u8]) -> u32 {
 pub fn draw_authorization_qr(
     display: &mut NativeDisplay,
     approval_url: &str,
+    status_line: &str,
 ) -> std::io::Result<()> {
     let frame = render_authorization_qr(
         display.width() as usize,
         display.height() as usize,
         approval_url,
+        status_line,
     )?;
     display.draw_frame_with_waveform(
         &frame,
@@ -405,6 +424,7 @@ pub(crate) fn render_authorization_qr(
     width: usize,
     height: usize,
     approval_url: &str,
+    status_line: &str,
 ) -> std::io::Result<Vec<u8>> {
     let qr = QrMatrix::encode(approval_url).map_err(|error| {
         std::io::Error::new(std::io::ErrorKind::InvalidInput, error.to_string())
@@ -412,9 +432,10 @@ pub(crate) fn render_authorization_qr(
     let mut frame = vec![0u8; width.saturating_mul(height).saturating_mul(2)];
     let mut canvas = DisplayCanvas::new(&mut frame, width, height, width.saturating_mul(2), 0, 0);
     canvas.fill(WHITE);
+    draw_status_bar(&mut canvas, &[status_line.to_owned()]);
     draw_text_centered_font(
         &mut canvas,
-        22,
+        58,
         "Scan to authorize",
         &FONT_10X20,
         Rgb565::BLACK,
@@ -812,9 +833,16 @@ fn gray565(gray: u8) -> u16 {
     (red_blue << 11) | (green << 5) | red_blue
 }
 
-fn draw_screen_contents(canvas: &mut DisplayCanvas<'_>, lines: &[String]) {
+fn draw_screen_contents_with_feedback(
+    canvas: &mut DisplayCanvas<'_>,
+    lines: &[String],
+    feedback: Option<&str>,
+) {
     canvas.fill(WHITE);
     draw_status_bar(canvas, lines);
+    if let Some(feedback) = feedback {
+        draw_reader_feedback(canvas, feedback);
+    }
 
     let details = lines
         .get(1)
@@ -829,6 +857,8 @@ fn draw_screen_contents(canvas: &mut DisplayCanvas<'_>, lines: &[String]) {
         if details {
             if index == 0 {
                 draw_text_font(canvas, 24, y, line, &FONT_10X20, Rgb565::BLACK);
+            } else if let Some(enabled) = debug_toggle_state(line) {
+                draw_debug_toggle(canvas, y, "Debug messages", enabled);
             } else if is_section_heading(line) {
                 draw_section_heading(canvas, y, line);
             } else {
@@ -862,6 +892,7 @@ fn draw_details_model(canvas: &mut DisplayCanvas<'_>, details: &DetailsViewModel
         match row {
             DetailsRow::Section(text) => draw_section_heading(canvas, y, text),
             DetailsRow::Value(text) => draw_text(canvas, 24, y, text),
+            DetailsRow::Toggle { label, enabled } => draw_debug_toggle(canvas, y, label, *enabled),
         }
     }
     draw_details_actions(canvas);
@@ -874,12 +905,22 @@ pub fn standby_screen(lines: &[String], width: usize, height: usize) -> Vec<u8> 
     render_screen(lines, width, height)
 }
 
+#[cfg(test)]
 fn render_screen(lines: &[String], width: usize, height: usize) -> Vec<u8> {
+    render_screen_with_feedback(lines, None, width, height)
+}
+
+fn render_screen_with_feedback(
+    lines: &[String],
+    feedback: Option<&str>,
+    width: usize,
+    height: usize,
+) -> Vec<u8> {
     let mut image = vec![0u8; width.saturating_mul(height).saturating_mul(2)];
     {
         let mut canvas =
             DisplayCanvas::new(&mut image, width, height, width.saturating_mul(2), 0, 0);
-        draw_screen_contents(&mut canvas, lines);
+        draw_screen_contents_with_feedback(&mut canvas, lines, feedback);
     }
     image
 }
@@ -993,8 +1034,34 @@ fn status_icon_is_on(value: &str) -> bool {
 fn is_section_heading(line: &str) -> bool {
     matches!(
         line,
-        "Power" | "Connectivity" | "System" | "Storage" | "Input"
+        "Settings" | "Synchronization" | "Power" | "Connectivity" | "System" | "Storage" | "Input"
     )
+}
+
+fn debug_toggle_state(line: &str) -> Option<bool> {
+    line.strip_prefix("Debug messages ")
+        .and_then(|value| match value {
+            "ON" => Some(true),
+            "OFF" => Some(false),
+            _ => None,
+        })
+}
+
+fn draw_debug_toggle(canvas: &mut DisplayCanvas<'_>, y: usize, label: &str, enabled: bool) {
+    draw_text(canvas, 24, y, label);
+    let left = 430;
+    let top = y.saturating_sub(3);
+    let width = canvas.width().saturating_sub(left + 24);
+    canvas.stroke_rect(left, top, width, 22, BLACK);
+    draw_text_centered_in_rect(
+        canvas,
+        left,
+        top,
+        width,
+        22,
+        if enabled { "ON" } else { "OFF" },
+        Rgb565::BLACK,
+    );
 }
 
 fn draw_section_heading(canvas: &mut DisplayCanvas<'_>, y: usize, text: &str) {
@@ -1153,7 +1220,7 @@ mod tests {
         u16::from_ne_bytes([frame[offset], frame[offset + 1]])
     }
 
-    fn screenshot_view() -> UiViewModel {
+    fn screenshot_view(debug_messages: bool) -> UiViewModel {
         let status_bar = StatusBarViewModel {
             battery: "87%".into(),
             wifi: "UP".into(),
@@ -1163,34 +1230,27 @@ mod tests {
             clock: "12:34".into(),
         };
         let rows = vec![
+            DetailsRow::Section("Settings".into()),
+            DetailsRow::Toggle {
+                label: "Debug messages".into(),
+                enabled: debug_messages,
+            },
+            DetailsRow::Section("Synchronization".into()),
+            DetailsRow::Value("Sync active  Failure none".into()),
             DetailsRow::Section("Power".into()),
-            DetailsRow::Value("Battery 87%  CHARGING".into()),
-            DetailsRow::Value("Health GOOD  Voltage 4.20 V".into()),
-            DetailsRow::Value("Temperature 24 C  AC ON  USB ON".into()),
+            DetailsRow::Value("Battery 87% Charging  Temp 24 C".into()),
+            DetailsRow::Value("Health Good  Voltage 4.20 V  AC On USB On".into()),
             DetailsRow::Section("Connectivity".into()),
-            DetailsRow::Value("WiFi wlan0 UP".into()),
-            DetailsRow::Value("Supplicant COMPLETED".into()),
-            DetailsRow::Value("USB ON  Gadget CONFIGURED".into()),
-            DetailsRow::Value("USB functions ADB".into()),
-            DetailsRow::Value("Synchronization".into()),
-            DetailsRow::Value("Sync active".into()),
-            DetailsRow::Value("Failure none".into()),
-            DetailsRow::Value("ADB process ON  Service RUNNING".into()),
+            DetailsRow::Value("WiFi wlan0 Up  Supplicant Completed".into()),
+            DetailsRow::Value("USB On  Gadget Configured  ADB On".into()),
             DetailsRow::Section("System".into()),
-            DetailsRow::Value("Framebuffer ACTIVE  Rotate 0".into()),
-            DetailsRow::Value("Android: zygote STOP  dispd STOP".into()),
-            DetailsRow::Value("Wake lock yes".into()),
-            DetailsRow::Value("Date 21 Sep 2026 12:34".into()),
+            DetailsRow::Value("Framebuffer Active  Rotate 0  Android Run / Stop".into()),
+            DetailsRow::Value("Wake lock Yes  Date 21 Sep 2026 12:34".into()),
             DetailsRow::Section("Storage".into()),
-            DetailsRow::Value("Data 123456 KiB free".into()),
-            DetailsRow::Value("SD card 654321 KiB free".into()),
+            DetailsRow::Value("Data 123456 KiB  SD card 654321 KiB  USB functions Adb".into()),
             DetailsRow::Section("Input".into()),
-            DetailsRow::Value("Touch: X ---  Y ---".into()),
-            DetailsRow::Value("Touch: none".into()),
-            DetailsRow::Value("Touch events 0".into()),
-            DetailsRow::Value("Key: none".into()),
-            DetailsRow::Value("Key events 0".into()),
-            DetailsRow::Value("Power last none".into()),
+            DetailsRow::Value("Touch: X --- Y ---  Touch: none".into()),
+            DetailsRow::Value("Key: none  Events 0  Power last none".into()),
         ];
         UiViewModel::new(
             status_bar,
@@ -1240,7 +1300,7 @@ mod tests {
 
     #[test]
     fn status_bar_host_renderer_matches_png_golden() {
-        let frame = render_status_bar_host(&screenshot_view().status_bar);
+        let frame = render_status_bar_host(&screenshot_view(false).status_bar);
         assert_eq!(frame.len(), SCREEN_WIDTH * SCREEN_HEIGHT * 2);
         let png = rgb565_to_png(&frame, SCREEN_WIDTH, SCREEN_HEIGHT).expect("encode status PNG");
         assert_png_golden("status-bar", &png);
@@ -1248,15 +1308,30 @@ mod tests {
 
     #[test]
     fn details_settings_host_renderer_matches_png_golden() {
-        let frame = render_details_settings_host(&screenshot_view());
+        let frame = render_details_settings_host(&screenshot_view(false));
         assert_eq!(frame.len(), SCREEN_WIDTH * SCREEN_HEIGHT * 2);
         let png = rgb565_to_png(&frame, SCREEN_WIDTH, SCREEN_HEIGHT).expect("encode details PNG");
         assert_png_golden("details-settings", &png);
     }
 
     #[test]
+    fn status_bar_syncing_host_renderer_matches_png_golden() {
+        let frame = render_status_bar_host(&screenshot_view(false).status_bar);
+        let png = rgb565_to_png(&frame, SCREEN_WIDTH, SCREEN_HEIGHT).expect("encode syncing PNG");
+        assert_png_golden("status-bar-syncing", &png);
+    }
+
+    #[test]
+    fn details_settings_debug_toggle_host_renderer_matches_png_golden() {
+        let frame = render_details_settings_host(&screenshot_view(true));
+        let png =
+            rgb565_to_png(&frame, SCREEN_WIDTH, SCREEN_HEIGHT).expect("encode debug settings PNG");
+        assert_png_golden("details-settings-debug", &png);
+    }
+
+    #[test]
     fn details_view_model_preserves_the_existing_device_frame() {
-        let view = screenshot_view();
+        let view = screenshot_view(false);
         let mut lines = vec![view.status_bar.to_wire_line()];
         lines.extend(view.details.to_lines());
 
@@ -1274,6 +1349,22 @@ mod tests {
             "{} pixels differ; first differences: {:?}",
             differences.len(),
             &differences[..differences.len().min(12)]
+        );
+    }
+
+    #[test]
+    fn details_content_stays_above_the_action_stack() {
+        let view = screenshot_view(false);
+        let last_baseline = super::CONTENT_TOP + view.details.rows.len() * super::DETAILS_LINE_STEP;
+        let text_bottom = last_baseline + 16;
+        assert!(
+            text_bottom < super::DETAILS_SYNC_TOP,
+            "details text reaches y={text_bottom}, before action stack at y={}",
+            super::DETAILS_SYNC_TOP
+        );
+        assert!(
+            super::DETAILS_DEBUG_TOP + super::DETAILS_DEBUG_HEIGHT < super::DETAILS_SYNC_TOP,
+            "debug toggle overlaps action stack"
         );
     }
 
@@ -1302,8 +1393,13 @@ mod tests {
 
     #[test]
     fn authorization_qr_is_a_full_frame_with_dark_modules() {
-        let frame =
-            render_authorization_qr(600, 800, "https://reader.example/a/request-1").unwrap();
+        let frame = render_authorization_qr(
+            600,
+            800,
+            "https://reader.example/a/request-1",
+            "||||SYNCING|",
+        )
+        .unwrap();
 
         assert_eq!(frame.len(), 600 * 800 * 2);
         assert!(frame

@@ -131,7 +131,7 @@ pub fn run(path: &Path, suspend_mode: SuspendMode) -> io::Result<()> {
     );
     redraw(
         &mut display,
-        &state,
+        &mut state,
         &mut markdown_reader,
         wake_lock.is_held(),
         DirtyArea::Full,
@@ -210,20 +210,20 @@ pub fn run(path: &Path, suspend_mode: SuspendMode) -> io::Result<()> {
                     if let Err(error) = sync::cleanup_retired_generations(sync_task.library_root())
                     {
                         state.last_sync_failure = Some(format!("cleanup retired bundle: {error}"));
-                        state.message = "Bundle ready; cleanup failed".into();
+                        state.set_error_feedback("Bundle ready; cleanup failed");
                         eprintln!("standalone-test: retired bundle cleanup failed: {error}");
                     } else {
-                        state.message = if state.library_empty {
-                            "Library cleared".into()
+                        state.set_debug_feedback(if state.library_empty {
+                            "Library cleared"
                         } else {
-                            "New bundle ready".into()
-                        };
+                            "New bundle ready"
+                        });
                     }
                     redraw_area = Some(DirtyArea::Full);
                 }
                 Err(error) => {
                     state.last_sync_failure = Some(format!("reload current bundle: {error}"));
-                    state.message = "Bundle handoff failed".into();
+                    state.set_error_feedback("Bundle handoff failed");
                     eprintln!("standalone-test: current bundle handoff failed: {error}");
                     redraw_area = Some(DirtyArea::Full);
                 }
@@ -257,15 +257,14 @@ pub fn run(path: &Path, suspend_mode: SuspendMode) -> io::Result<()> {
             PowerAction::Reboot | PowerAction::PowerOff => {
                 eprintln!("standalone-test: executing power action={action:?}");
                 state.mode = "REBOOTING";
-                state.message = match action {
+                state.set_debug_feedback(match action {
                     PowerAction::Reboot => "REBOOT REQUESTED",
                     PowerAction::PowerOff => "POWER OFF REQUESTED",
                     PowerAction::None | PowerAction::Sleep => unreachable!(),
-                }
-                .into();
+                });
                 redraw(
                     &mut display,
-                    &state,
+                    &mut state,
                     &mut markdown_reader,
                     wake_lock.is_held(),
                     DirtyArea::Full,
@@ -283,7 +282,7 @@ pub fn run(path: &Path, suspend_mode: SuspendMode) -> io::Result<()> {
             PowerAction::None if let Some(area) = redraw_area => {
                 redraw(
                     &mut display,
-                    &state,
+                    &mut state,
                     &mut markdown_reader,
                     wake_lock.is_held(),
                     area,
@@ -367,7 +366,7 @@ fn wait_for_framework_stop() -> io::Result<()> {
 
 fn redraw(
     display: &mut NativeDisplay,
-    state: &UiState,
+    state: &mut UiState,
     markdown_reader: &mut reader::T1Reader,
     wake_lock_held: bool,
     area: DirtyArea,
@@ -400,21 +399,27 @@ fn redraw(
         if result.is_ok() {
             refresh_policy.record_success(reason, plan);
         }
-        return finish_redraw(result, sync_task);
+        return finish_redraw(result, state, sync_task);
     }
     if state.sync_active {
         if let Some(approval_url) = state.approval_url.as_deref() {
             return finish_redraw(
-                display::draw_authorization_qr(display, approval_url),
+                display::draw_authorization_qr(
+                    display,
+                    approval_url,
+                    &view.status_bar.to_wire_line(),
+                ),
+                state,
                 sync_task,
             );
         }
     }
     if state.page == UiPage::Home {
         if state.library_empty {
-            let result = display::draw_screen(
+            let result = display::draw_screen_with_feedback(
                 display,
                 &lines,
+                state.visible_feedback(),
                 area.region(display, state.page),
                 plan.waveform(),
                 plan.wait_for_completion(),
@@ -423,20 +428,20 @@ fn redraw(
             if result.is_ok() {
                 refresh_policy.record_success(reason, plan);
             }
-            return finish_redraw(result, sync_task);
+            return finish_redraw(result, state, sync_task);
         }
         let status_line = lines.first().map(String::as_str).unwrap_or_default();
         let result = markdown_reader.draw(
             display,
             status_line,
-            &state.message,
+            state.visible_feedback(),
             area.region(display, state.page),
             plan,
         );
         if result.is_ok() {
             refresh_policy.record_success(reason, plan);
         }
-        return finish_redraw(result, sync_task);
+        return finish_redraw(result, state, sync_task);
     }
     let result = display::draw_screen_view(
         display,
@@ -449,10 +454,14 @@ fn redraw(
     if result.is_ok() {
         refresh_policy.record_success(reason, plan);
     }
-    finish_redraw(result, sync_task)
+    finish_redraw(result, state, sync_task)
 }
 
-fn finish_redraw(result: io::Result<()>, sync_task: Option<&mut SyncTask>) -> io::Result<()> {
+fn finish_redraw(
+    result: io::Result<()>,
+    state: &mut UiState,
+    sync_task: Option<&mut SyncTask>,
+) -> io::Result<()> {
     let Err(render_error) = result else {
         return Ok(());
     };
@@ -460,11 +469,19 @@ fn finish_redraw(result: io::Result<()>, sync_task: Option<&mut SyncTask>) -> io
         return Err(render_error);
     };
     match sync_task.cancel() {
-        Ok(()) => Err(render_error),
-        Err(cleanup_error) => Err(io::Error::new(
-            render_error.kind(),
-            format!("display render failed: {render_error}; Wi-Fi cleanup failed: {cleanup_error}"),
-        )),
+        Ok(()) => {
+            state.sync_cancelled();
+            Err(render_error)
+        }
+        Err(cleanup_error) => {
+            state.sync_cancelled();
+            Err(io::Error::new(
+                render_error.kind(),
+                format!(
+                    "display render failed: {render_error}; Wi-Fi cleanup failed: {cleanup_error}"
+                ),
+            ))
+        }
     }
 }
 
@@ -520,6 +537,10 @@ fn reader_event_message(event: &ReaderEvent) -> String {
     }
 }
 
+fn record_reader_event_feedback(state: &mut UiState, event: &ReaderEvent) {
+    state.set_debug_feedback(reader_event_message(event));
+}
+
 fn apply_reader_result(
     state: &mut UiState,
     markdown_reader: &mut reader::T1Reader,
@@ -527,7 +548,7 @@ fn apply_reader_result(
 ) -> DirtyArea {
     match result {
         Ok(event) => {
-            state.message = reader_event_message(&event);
+            record_reader_event_feedback(state, &event);
             let dirty = reader_event_dirty_area(&event, markdown_reader.current_page_tone())
                 .unwrap_or(DirtyArea::Full);
             match event {
@@ -545,7 +566,7 @@ fn apply_reader_result(
             dirty
         }
         Err(error) => {
-            state.message = format!("Reader error: {error}");
+            state.set_error_feedback(format!("Reader error: {error}"));
             markdown_reader.set_external_url_notice(None);
             eprintln!("standalone-test: Markdown operation failed: {error}");
             DirtyArea::Full
@@ -684,7 +705,9 @@ fn screen_view_model(state: &UiState, wake_lock_held: bool) -> display::UiViewMo
         "STOP"
     };
     let battery_label = percent_label(&battery_level);
-    let mode_label = if state.mode == "ACTIVE" {
+    let mode_label = if state.sync_active {
+        "SYNCING".into()
+    } else if state.mode == "ACTIVE" {
         String::new()
     } else {
         pretty_value(state.mode)
@@ -700,88 +723,72 @@ fn screen_view_model(state: &UiState, wake_lock_held: bool) -> display::UiViewMo
         clock,
     };
     let rows = vec![
+        display::DetailsRow::Section("Settings".into()),
+        display::DetailsRow::Toggle {
+            label: "Debug messages".into(),
+            enabled: state.debug_messages,
+        },
+        display::DetailsRow::Section("Synchronization".into()),
+        display::DetailsRow::Value(format!(
+            "Sync {}  Failure {}",
+            if state.sync_active { "active" } else { "idle" },
+            state.last_sync_failure.as_deref().unwrap_or("none")
+        )),
         display::DetailsRow::Section("Power".into()),
         display::DetailsRow::Value(format!(
-            "Battery {}  {}",
+            "Battery {} {}  Temp {} C",
             percent_label(&battery_level),
-            pretty_value(&battery_state)
+            pretty_value(&battery_state),
+            temperature
         )),
         display::DetailsRow::Value(format!(
-            "Health {}  Voltage {}",
+            "Health {}  Voltage {}  AC {} USB {}",
             pretty_value(&uppercase_or_unknown(status.battery.health.as_deref())),
-            voltage_label(status.battery.voltage_uv)
-        )),
-        display::DetailsRow::Value(format!(
-            "Temperature {} C  AC {}  USB {}",
-            temperature,
+            voltage_label(status.battery.voltage_uv),
             pretty_value(ac),
             pretty_value(usb_power)
         )),
         display::DetailsRow::Section("Connectivity".into()),
         display::DetailsRow::Value(format!(
-            "WiFi {} {}",
+            "WiFi {} {}  Supplicant {}",
             status.wifi.interface.to_ascii_lowercase(),
-            pretty_value(&wifi_state)
+            pretty_value(&wifi_state),
+            pretty_value(&supplicant)
         )),
-        display::DetailsRow::Value(format!("Supplicant {}", pretty_value(&supplicant))),
         display::DetailsRow::Value(format!(
-            "USB {}  Gadget {}",
+            "USB {}  Gadget {}  ADB {}",
             pretty_value(usb_connected),
-            pretty_value(&uppercase_or_unknown(status.usb.gadget_state.as_deref()))
-        )),
-        display::DetailsRow::Value(format!(
-            "USB functions {}",
-            pretty_value(&uppercase_or_unknown(
-                status.usb.gadget_functions.as_deref()
-            ))
-        )),
-        display::DetailsRow::Value("Synchronization".into()),
-        display::DetailsRow::Value(format!(
-            "Sync {}",
-            if state.sync_active { "active" } else { "idle" }
-        )),
-        display::DetailsRow::Value(format!(
-            "Failure {}",
-            state.last_sync_failure.as_deref().unwrap_or("none")
-        )),
-        display::DetailsRow::Value(format!(
-            "ADB process {}  Service {}",
-            pretty_value(adb),
-            pretty_value(&uppercase_or_unknown(status.adb.service_state.as_deref()))
+            pretty_value(&uppercase_or_unknown(status.usb.gadget_state.as_deref())),
+            pretty_value(adb)
         )),
         display::DetailsRow::Section("System".into()),
         display::DetailsRow::Value(format!(
-            "Framebuffer {}  Rotate {}",
+            "Framebuffer {}  Rotate {}  Android {} / {}",
             pretty_value(framebuffer),
-            number_or_unknown(status.screen.rotate)
-        )),
-        display::DetailsRow::Value(format!(
-            "Android: zygote {}  dispd {}",
+            number_or_unknown(status.screen.rotate),
             pretty_value(zygote),
             pretty_value(dispd)
         )),
         display::DetailsRow::Value(format!(
-            "Wake lock {}",
-            pretty_value(if wake_lock_held { "yes" } else { "no" })
+            "Wake lock {}  Date {}",
+            pretty_value(if wake_lock_held { "yes" } else { "no" }),
+            date_time()
         )),
-        display::DetailsRow::Value(format!("Date {}", date_time())),
         display::DetailsRow::Section("Storage".into()),
         display::DetailsRow::Value(format!(
-            "Data {} KiB free",
-            number_or_unknown(status.storage.data.available_kib)
-        )),
-        display::DetailsRow::Value(format!(
-            "SD card {} KiB free",
-            number_or_unknown(status.storage.sdcard.available_kib)
+            "Data {} KiB  SD card {} KiB  USB functions {}",
+            number_or_unknown(status.storage.data.available_kib),
+            number_or_unknown(status.storage.sdcard.available_kib),
+            pretty_value(&uppercase_or_unknown(
+                status.usb.gadget_functions.as_deref()
+            ))
         )),
         display::DetailsRow::Section("Input".into()),
-        display::DetailsRow::Value(coordinates),
-        display::DetailsRow::Value(touch),
-        display::DetailsRow::Value(format!("Touch events {}", state.touch_events)),
-        display::DetailsRow::Value(key),
-        display::DetailsRow::Value(format!("Key events {}", state.key_events)),
+        display::DetailsRow::Value(format!("{}  {}", coordinates, touch)),
         display::DetailsRow::Value(format!(
-            "Power last {}",
+            "{}  Events {}  Power last {}",
+            key,
+            state.key_events,
             state
                 .last_power_duration_ms
                 .map(|duration| format!("{}ms", duration))
@@ -809,7 +816,7 @@ fn screen_lines_for_page(state: &UiState, view: &display::UiViewModel) -> Vec<St
         ];
     }
     if state.page == UiPage::DisplayTest {
-        return vec![header, "Display Test".into(), state.message.clone()];
+        return vec![header, "Display Test".into()];
     }
 
     let mut lines = vec![header];
@@ -902,6 +909,10 @@ fn sleep_cycle(
         state.sync_cancelled();
     }
     state.enter_sleep(suspend_mode);
+    state.set_debug_feedback(match suspend_mode {
+        SuspendMode::EInk => "E-ink standby mode",
+        SuspendMode::Normal => "Normal mem mode",
+    });
     eprintln!("standalone-test: drawing pre-suspend screen");
     redraw(
         display,
@@ -921,7 +932,7 @@ fn sleep_cycle(
                 .first()
                 .map(String::as_str)
                 .unwrap_or_default(),
-            &state.message,
+            state.visible_feedback(),
             display.width(),
             display.height(),
         )?,
@@ -967,7 +978,7 @@ fn sleep_cycle(
     let woke = state.wake();
     debug_assert!(woke, "sleep_cycle must wake an active sleep state");
     state.refresh_status();
-    state.message = format!("Woke after {suspend_elapsed_ms}ms");
+    state.set_debug_feedback(format!("Woke after {suspend_elapsed_ms}ms"));
     state.last_power_duration_ms = None;
     state.ignore_power_until = Some(Instant::now() + Duration::from_secs(2));
     if woke {
@@ -1041,6 +1052,7 @@ fn wait_for_display_wake(inputs: &mut InputSet, state: &mut UiState) -> io::Resu
                     && event.event_type == EVENT_KEY
                     && event.code == KEY_POWER
                 {
+                    state.clear_feedback();
                     state.last_key = Some((source.kind, event));
                     state.key_events += 1;
                     eprintln!(
@@ -1501,10 +1513,17 @@ enum SyncTrigger {
     Manual,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Feedback {
+    Error(String),
+    Debug(String),
+}
+
 struct UiState {
     page: UiPage,
     mode: &'static str,
-    message: String,
+    feedback: Option<Feedback>,
+    debug_messages: bool,
     reader_tap: Option<Point>,
     reader_operation: Option<ReaderOperation>,
     touch_seen: bool,
@@ -1540,7 +1559,8 @@ impl UiState {
         Self {
             page: UiPage::Home,
             mode: "ACTIVE",
-            message: "Input ready".into(),
+            feedback: None,
+            debug_messages: false,
             reader_tap: None,
             reader_operation: None,
             touch_seen: false,
@@ -1605,29 +1625,48 @@ impl UiState {
 
     fn request_manual_sync(&mut self) {
         self.sync_requested = true;
-        self.message = "Sync requested".into();
+        self.set_debug_feedback("Sync requested");
+    }
+
+    fn visible_feedback(&self) -> Option<&str> {
+        match self.feedback.as_ref() {
+            Some(Feedback::Error(text)) => Some(text),
+            Some(Feedback::Debug(text)) if self.debug_messages => Some(text),
+            Some(Feedback::Debug(_)) | None => None,
+        }
+    }
+
+    fn set_error_feedback(&mut self, text: impl Into<String>) {
+        self.feedback = Some(Feedback::Error(text.into()));
+    }
+
+    fn set_debug_feedback(&mut self, text: impl Into<String>) {
+        self.feedback = Some(Feedback::Debug(text.into()));
+    }
+
+    fn clear_feedback(&mut self) {
+        self.feedback = None;
     }
 
     fn sync_started(&mut self) {
         self.sync_active = true;
         self.approval_url = None;
-        self.message = "Synchronizing…".into();
+        self.set_debug_feedback("Synchronizing…");
     }
 
     fn sync_cancelled(&mut self) {
         self.sync_active = false;
         self.approval_url = None;
-        self.message = "Synchronization canceled".into();
+        self.set_error_feedback("Synchronization cancelled");
     }
 
     fn enter_sleep(&mut self, suspend_mode: SuspendMode) {
         self.mode = "SLEEPING";
         self.wake_sync_requested = false;
-        self.message = match suspend_mode {
+        self.set_debug_feedback(match suspend_mode {
             SuspendMode::EInk => "E-ink standby mode",
             SuspendMode::Normal => "Normal mem mode",
-        }
-        .into();
+        });
     }
 
     fn wake(&mut self) -> bool {
@@ -1644,7 +1683,7 @@ impl UiState {
         match event {
             SyncEvent::ApprovalUrl(url) => {
                 self.approval_url = Some(url);
-                self.message = "Scan to authorize synchronization".into();
+                self.set_debug_feedback("Scan to authorize synchronization");
             }
             SyncEvent::Finished(Ok(outcome)) => {
                 self.sync_active = false;
@@ -1654,15 +1693,15 @@ impl UiState {
                     sync::SyncOutcome::Updated { .. } => {
                         self.bundle_ready = true;
                         self.pending_handoff = Some(BundleHandoff::Updated);
-                        self.message = "Synchronization complete".into();
+                        self.set_debug_feedback("Synchronization complete");
                     }
                     sync::SyncOutcome::Cleared { .. } => {
                         self.bundle_ready = true;
                         self.pending_handoff = Some(BundleHandoff::Cleared);
-                        self.message = "Library cleared".into();
+                        self.set_debug_feedback("Library cleared");
                     }
                     sync::SyncOutcome::Unchanged { .. } => {
-                        self.message = "Already current".into();
+                        self.set_debug_feedback("Already current");
                     }
                 }
             }
@@ -1670,7 +1709,7 @@ impl UiState {
                 self.sync_active = false;
                 self.approval_url = None;
                 self.last_sync_failure = Some(error.clone());
-                self.message = "Synchronization failed".into();
+                self.set_error_feedback("Synchronization failed");
                 eprintln!("standalone-test: synchronization failed: {error}");
             }
         }
@@ -1692,6 +1731,9 @@ impl UiState {
         event: RawEvent,
     ) -> (Option<DirtyArea>, PowerAction) {
         self.last_activity = Instant::now();
+        if source == InputSourceKind::Touch || event.event_type == EVENT_KEY {
+            self.clear_feedback();
+        }
         if source == InputSourceKind::Touch {
             self.last_touch = Some(event);
             if event.event_type == EVENT_ABS {
@@ -1778,13 +1820,13 @@ impl UiState {
                 };
                 if let Some(operation) = operation {
                     self.reader_operation = Some(operation);
-                    self.message = match operation {
-                        ReaderOperation::PreviousPage => "Previous page".into(),
-                        ReaderOperation::NextPage => "Next page".into(),
+                    self.set_debug_feedback(match operation {
+                        ReaderOperation::PreviousPage => "Previous page",
+                        ReaderOperation::NextPage => "Next page",
                         ReaderOperation::Back | ReaderOperation::ReturnToEntryPoint => {
                             unreachable!()
                         }
-                    };
+                    });
                     return (Some(DirtyArea::Full), PowerAction::None);
                 }
             }
@@ -1843,7 +1885,7 @@ impl UiState {
                     self.menu_press_us = Some(event.timestamp_micros());
                     self.menu_pressed_at = Some(Instant::now());
                     self.menu_hold_triggered = false;
-                    self.message = "Menu held".into();
+                    self.set_debug_feedback("Menu held");
                 }
                 (Some(DirtyArea::Key), PowerAction::None)
             }
@@ -1858,7 +1900,7 @@ impl UiState {
                 if due {
                     (Some(self.trigger_menu_redraw()), PowerAction::None)
                 } else {
-                    self.message = "Menu repeat".into();
+                    self.set_debug_feedback("Menu repeat");
                     (Some(DirtyArea::Key), PowerAction::None)
                 }
             }
@@ -1866,7 +1908,7 @@ impl UiState {
                 let Some(start) = self.menu_press_us.take() else {
                     self.menu_pressed_at = None;
                     self.menu_hold_triggered = false;
-                    self.message = "Menu released".into();
+                    self.set_debug_feedback("Menu released");
                     return (Some(DirtyArea::Key), PowerAction::None);
                 };
                 let duration = event.timestamp_micros().saturating_sub(start);
@@ -1877,14 +1919,14 @@ impl UiState {
                     (Some(self.trigger_menu_redraw()), PowerAction::None)
                 } else if !already_triggered && self.page == UiPage::DisplayTest {
                     self.page = UiPage::Details;
-                    self.message = "Returned to Details / Settings".into();
+                    self.set_debug_feedback("Returned to Details / Settings");
                     (Some(DirtyArea::Full), PowerAction::None)
                 } else if !already_triggered && self.page == UiPage::Home {
                     self.reader_operation = Some(ReaderOperation::Back);
-                    self.message = "Reader back".into();
+                    self.set_debug_feedback("Reader back");
                     (Some(DirtyArea::Full), PowerAction::None)
                 } else {
-                    self.message = "Menu released".into();
+                    self.set_debug_feedback("Menu released");
                     (Some(DirtyArea::Key), PowerAction::None)
                 }
             }
@@ -1894,7 +1936,7 @@ impl UiState {
 
     fn trigger_menu_redraw(&mut self) -> DirtyArea {
         self.menu_hold_triggered = true;
-        self.message = "Menu hold - full redraw".into();
+        self.set_debug_feedback("Menu hold - full redraw");
         eprintln!(
             "standalone-test: menu hold reached {}ms; requesting full {} redraw",
             MENU_HOLD_MICROS / 1_000,
@@ -1916,13 +1958,13 @@ impl UiState {
                     unreachable!("display-test taps return before the status bar")
                 }
             };
-            self.message = match self.page {
-                UiPage::Home => "Returned to reading".into(),
-                UiPage::Details => "Details open".into(),
+            self.set_debug_feedback(match self.page {
+                UiPage::Home => "Returned to reading",
+                UiPage::Details => "Details open",
                 UiPage::DisplayTest => {
                     unreachable!("display-test taps return before the status bar")
                 }
-            };
+            });
             return PowerAction::None;
         }
         if self.page != UiPage::Details {
@@ -1933,6 +1975,13 @@ impl UiState {
             && self.touch_x
                 < (display::SCREEN_WIDTH.saturating_sub(display::DETAILS_ACTION_MARGIN)) as i32;
         if !within_action_x {
+            return PowerAction::None;
+        }
+
+        let within_debug_row = y >= display::DETAILS_DEBUG_TOP as i32
+            && y < (display::DETAILS_DEBUG_TOP + display::DETAILS_DEBUG_HEIGHT) as i32;
+        if within_debug_row {
+            self.debug_messages = !self.debug_messages;
             return PowerAction::None;
         }
 
@@ -1947,7 +1996,7 @@ impl UiState {
             && y < (display::DETAILS_RETURN_ENTRY_TOP + display::DETAILS_ACTION_HEIGHT) as i32;
         if within_entry_point_row {
             self.reader_operation = Some(ReaderOperation::ReturnToEntryPoint);
-            self.message = "Returning to entry point".into();
+            self.set_debug_feedback("Returning to entry point");
             return PowerAction::None;
         }
 
@@ -1955,21 +2004,21 @@ impl UiState {
             && y < (display::DETAILS_DISPLAY_TEST_TOP + display::DETAILS_ACTION_HEIGHT) as i32;
         if within_display_test_row {
             self.page = UiPage::DisplayTest;
-            self.message = "Display test open".into();
+            self.set_debug_feedback("Display test open");
             return PowerAction::None;
         }
 
         let within_reboot_row = y >= display::DETAILS_REBOOT_TOP as i32
             && y < (display::DETAILS_REBOOT_TOP + display::DETAILS_ACTION_HEIGHT) as i32;
         if within_reboot_row {
-            self.message = "Reboot requested".into();
+            self.set_debug_feedback("Reboot requested");
             return PowerAction::Reboot;
         }
 
         let within_power_off_row = y >= display::DETAILS_POWER_OFF_TOP as i32
             && y < (display::DETAILS_POWER_OFF_TOP + display::DETAILS_ACTION_HEIGHT) as i32;
         if within_power_off_row {
-            self.message = "Power off requested".into();
+            self.set_debug_feedback("Power off requested");
             return PowerAction::PowerOff;
         }
 
@@ -1977,7 +2026,7 @@ impl UiState {
             && y < (display::DETAILS_BACK_TOP + display::DETAILS_ACTION_HEIGHT) as i32;
         if within_back_row {
             self.page = UiPage::Home;
-            self.message = "Returned to reading".into();
+            self.set_debug_feedback("Returned to reading");
         }
         PowerAction::None
     }
@@ -1992,7 +2041,7 @@ impl UiState {
                 if event.value == 0 {
                     self.ignore_power_until = None;
                 }
-                self.message = "Wake power ignored".into();
+                self.set_debug_feedback("Wake power ignored");
                 return (Some(DirtyArea::Power), PowerAction::None);
             }
             self.ignore_power_until = None;
@@ -2002,7 +2051,7 @@ impl UiState {
                 if self.power_press_us.is_none() {
                     self.power_press_us = Some(event.timestamp_micros());
                 }
-                self.message = "Power held".into();
+                self.set_debug_feedback("Power held");
                 (Some(DirtyArea::Power), PowerAction::None)
             }
             0 => {
@@ -2013,7 +2062,7 @@ impl UiState {
                     .unwrap_or_default();
                 self.last_power_duration_ms = Some(duration / 1_000);
                 if duration >= LONG_PRESS_MICROS {
-                    self.message = "Long power - reboot".into();
+                    self.set_debug_feedback("Long power - reboot");
                     eprintln!(
                         "standalone-test: power release source={} duration_ms={} action=REBOOT",
                         source.label(),
@@ -2021,7 +2070,7 @@ impl UiState {
                     );
                     (Some(DirtyArea::Power), PowerAction::Reboot)
                 } else {
-                    self.message = "Short power - sleep".into();
+                    self.set_debug_feedback("Short power - sleep");
                     eprintln!(
                         "standalone-test: power release source={} duration_ms={} action=SLEEP",
                         source.label(),
@@ -2031,7 +2080,7 @@ impl UiState {
                 }
             }
             2 => {
-                self.message = "Power repeat".into();
+                self.set_debug_feedback("Power repeat");
                 (Some(DirtyArea::Power), PowerAction::None)
             }
             _ => (Some(DirtyArea::Power), PowerAction::None),
@@ -2042,12 +2091,13 @@ impl UiState {
 #[cfg(test)]
 mod tests {
     use super::{
-        display, BundleHandoff, DirtyArea, InputSourceKind, PageTone, Point, ReaderOperation,
-        RefreshReason, SuspendMode, SyncEvent, UiPage, UiState, ABS_MT_POSITION_X,
-        ABS_MT_POSITION_Y, ABS_MT_TOUCH_MAJOR, ABS_MT_TRACKING_ID, ABS_X, ABS_Y, BTN_TOUCH,
-        EVENT_ABS, EVENT_KEY, EVENT_SYN, KEY_LEFT, KEY_MENU, KEY_RIGHT, SYN_REPORT,
+        display, record_reader_event_feedback, BundleHandoff, DirtyArea, Feedback, InputSourceKind,
+        PageTone, Point, ReaderOperation, RefreshReason, SuspendMode, SyncEvent, UiPage, UiState,
+        ABS_MT_POSITION_X, ABS_MT_POSITION_Y, ABS_MT_TOUCH_MAJOR, ABS_MT_TRACKING_ID, ABS_X, ABS_Y,
+        BTN_TOUCH, EVENT_ABS, EVENT_KEY, EVENT_SYN, KEY_LEFT, KEY_MENU, KEY_RIGHT, SYN_REPORT,
     };
     use crate::input::RawEvent;
+    use prs_markdown::reader::ReaderEvent;
     use std::time::{Duration, Instant};
 
     fn event(code: u16, value: i32, timestamp_micros: u64) -> RawEvent {
@@ -2107,6 +2157,88 @@ mod tests {
         let state = UiState::new();
         let lines = super::screen_lines(&state, true);
         assert_eq!(lines[0].split('|').nth(4), Some(""));
+    }
+
+    #[test]
+    fn syncing_uses_status_bar_mode_and_finishes_quietly_or_with_an_error() {
+        let mut state = UiState::new();
+        state.sync_started();
+        assert_eq!(
+            super::screen_view_model(&state, true).status_bar.mode,
+            "SYNCING"
+        );
+
+        state.apply_sync_event(SyncEvent::Finished(Ok(
+            super::sync::SyncOutcome::Unchanged {
+                revision: prs_sync_protocol::InboxRevision::new(3),
+            },
+        )));
+        assert!(!state.sync_active);
+        assert_eq!(super::screen_view_model(&state, true).status_bar.mode, "");
+        assert_eq!(state.visible_feedback(), None);
+
+        state.sync_started();
+        state.apply_sync_event(SyncEvent::Finished(Err("network loss".into())));
+        assert!(!state.sync_active);
+        assert_eq!(state.visible_feedback(), Some("Synchronization failed"));
+        assert_eq!(super::screen_view_model(&state, true).status_bar.mode, "");
+    }
+
+    #[test]
+    fn routine_reader_events_are_hidden_unless_debug_messages_are_enabled() {
+        let mut state = UiState::new();
+        let event = ReaderEvent::PageChanged {
+            page: 1,
+            page_count: 4,
+        };
+        record_reader_event_feedback(&mut state, &event);
+        assert_eq!(state.visible_feedback(), None);
+
+        state.debug_messages = true;
+        assert_eq!(state.visible_feedback(), Some("Page 2 of 4"));
+    }
+
+    #[test]
+    fn interaction_clears_feedback_before_processing_the_next_event() {
+        let mut state = UiState::new();
+        state.set_error_feedback("Reader error");
+        let (_, action) = state.observe(InputSourceKind::Keys, event(999, 0, 1_000_000));
+        assert_eq!(action, super::PowerAction::None);
+        assert_eq!(state.visible_feedback(), None);
+
+        state.set_error_feedback("Reader error");
+        state.touch_x = 520;
+        state.touch_y = display::CONTENT_TOP as i32 + 20;
+        state.touch_down = true;
+        state.observe(InputSourceKind::Touch, event(BTN_TOUCH, 0, 1_000_001));
+        assert_eq!(state.visible_feedback(), None);
+    }
+
+    #[test]
+    fn debug_messages_toggle_is_off_by_default_and_tappable_in_details() {
+        let mut state = UiState::new();
+        assert!(!state.debug_messages);
+        state.page = UiPage::Details;
+        state.touch_x = 100;
+        state.touch_y = (display::DETAILS_DEBUG_TOP + 10) as i32;
+        state.touch_down = true;
+
+        state.observe(InputSourceKind::Touch, event(BTN_TOUCH, 0, 1_000_000));
+        assert!(state.debug_messages);
+
+        state.touch_down = true;
+        state.observe(InputSourceKind::Touch, event(BTN_TOUCH, 0, 1_000_001));
+        assert!(!state.debug_messages);
+    }
+
+    #[test]
+    fn cancelled_sync_clears_status_bar_state() {
+        let mut state = UiState::new();
+        state.sync_started();
+        state.sync_cancelled();
+        assert!(!state.sync_active);
+        assert_eq!(state.visible_feedback(), Some("Synchronization cancelled"));
+        assert_eq!(super::screen_view_model(&state, true).status_bar.mode, "");
     }
 
     #[test]
@@ -2498,7 +2630,10 @@ mod tests {
         assert!(!state.sync_active);
         assert!(state.bundle_ready);
         assert_eq!(state.pending_handoff, Some(BundleHandoff::Cleared));
-        assert_eq!(state.message, "Library cleared");
+        assert!(matches!(
+            state.feedback,
+            Some(Feedback::Debug(ref message)) if message == "Library cleared"
+        ));
 
         state.sync_started();
         state.apply_sync_event(SyncEvent::Finished(Ok(super::sync::SyncOutcome::Updated {

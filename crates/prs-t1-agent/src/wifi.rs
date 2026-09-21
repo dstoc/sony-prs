@@ -167,7 +167,9 @@ pub(crate) fn run_sync_outcome(
         if let Some(crate::sync::SyncProgressEvent::ApprovalUrl(url)) =
             crate::sync::take_progress(&progress)
         {
-            if let Err(render_error) = crate::display::draw_authorization_qr(&mut display, &url) {
+            if let Err(render_error) =
+                crate::display::draw_authorization_qr(&mut display, &url, "||||SYNCING|")
+            {
                 drop(future);
                 let cleanup = runtime.block_on(shutdown_after_sync_cancellation_async());
                 return match cleanup {
@@ -190,7 +192,9 @@ pub(crate) fn run_sync_outcome(
         if let Some(crate::sync::SyncProgressEvent::ApprovalUrl(url)) =
             crate::sync::take_progress(&progress)
         {
-            if let Err(render_error) = crate::display::draw_authorization_qr(&mut display, &url) {
+            if let Err(render_error) =
+                crate::display::draw_authorization_qr(&mut display, &url, "||||SYNCING|")
+            {
                 if result.is_some() {
                     return Err(render_error);
                 }

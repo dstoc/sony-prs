@@ -318,7 +318,7 @@ impl T1Reader {
     pub fn render_frame(
         &mut self,
         status_line: &str,
-        feedback: &str,
+        feedback: Option<&str>,
         width: u32,
         height: u32,
     ) -> io::Result<Vec<u8>> {
@@ -335,7 +335,9 @@ impl T1Reader {
         canvas.fill(Rgb565::WHITE.into_storage());
         let status = [status_line.to_owned()];
         display::draw_status_bar(&mut canvas, &status);
-        display::draw_reader_feedback(&mut canvas, feedback);
+        if let Some(feedback) = feedback {
+            display::draw_reader_feedback(&mut canvas, feedback);
+        }
 
         let page = self.reader.current_page().ok_or_else(|| {
             io::Error::new(
@@ -403,7 +405,7 @@ impl T1Reader {
         &mut self,
         display: &mut NativeDisplay,
         status_line: &str,
-        feedback: &str,
+        feedback: Option<&str>,
         refresh_region: DisplayRegion,
         plan: RefreshPlan,
     ) -> io::Result<()> {
@@ -515,7 +517,9 @@ mod tests {
     use super::*;
     use embedded_graphics::geometry::Point;
     use prs_markdown::typography::{FontFace, TextEngine, TextRun, TextStyle as TypographyStyle};
+    use std::env;
     use std::fs;
+    use std::path::Path;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn fixture_config(root: &Path) -> ReaderConfig {
@@ -557,6 +561,50 @@ mod tests {
         fs::create_dir_all(&root).expect("create reader fixture root");
         fs::write(root.join("index.md"), source).expect("write reader fixture");
         root
+    }
+
+    fn assert_png_golden(name: &str, actual: &[u8]) {
+        let golden = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/goldens")
+            .join(format!("{name}.png"));
+        if env::var_os("PRS_T1_UPDATE_GOLDENS").is_some() {
+            fs::create_dir_all(golden.parent().expect("golden has a parent"))
+                .expect("create reader screenshot golden directory");
+            fs::write(&golden, actual).expect("write reader screenshot golden");
+            return;
+        }
+
+        let expected = fs::read(&golden).unwrap_or_else(|error| {
+            let failure = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../target")
+                .join("prs-t1-agent-golden-failures")
+                .join(format!("{name}.png"));
+            fs::create_dir_all(failure.parent().expect("failure has a parent"))
+                .expect("create screenshot failure directory");
+            fs::write(&failure, actual).expect("write screenshot failure");
+            panic!(
+                "missing native reader golden {} ({error}); rendered output was written to {}",
+                golden.display(),
+                failure.display()
+            );
+        });
+        if expected != actual {
+            let failure = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../target")
+                .join("prs-t1-agent-golden-failures")
+                .join(format!("{name}.png"));
+            fs::create_dir_all(
+                failure
+                    .parent()
+                    .expect("create screenshot failure directory"),
+            )
+            .expect("create screenshot failure directory");
+            fs::write(&failure, actual).expect("write screenshot failure");
+            panic!(
+                "native reader golden mismatch for {name}; rendered output was written to {}",
+                failure.display()
+            );
+        }
     }
 
     fn sync_library_root() -> PathBuf {
@@ -635,7 +683,7 @@ mod tests {
         let viewport = Viewport::new(240, 180);
         let mut reader = T1Reader::open(fixture_config(&root), viewport).expect("open fixture");
         let frame = reader
-            .render_frame("100%|On|On|On|||12:00", "Opened document", 240, 256)
+            .render_frame("100%|On|On|On|||12:00", None, 240, 256)
             .expect("render fixture");
 
         let content_offset = CONTENT_TOP * 240 * 2;
@@ -644,6 +692,37 @@ mod tests {
             .any(|pixel| *pixel != Rgb565::WHITE.into_storage().to_ne_bytes()[0]));
         assert_eq!(reader.reader.page_count(), 1);
         assert_eq!(reader.current_page_tone(), PageTone::Monochrome);
+        fs::remove_dir_all(root).expect("remove reader fixture root");
+    }
+
+    #[test]
+    fn reader_without_feedback_matches_png_golden() {
+        let root = fixture_root("# Native reader\n\nNormal reading stays quiet.");
+        let mut reader =
+            T1Reader::open(fixture_config(&root), Viewport::new(600, 708)).expect("open fixture");
+        let frame = reader
+            .render_frame("87%|UP|ON|ON||12:34", None, 600, 800)
+            .expect("render normal reader");
+        let png = crate::display::rgb565_to_png(&frame, 600, 800).expect("encode reader PNG");
+        assert_png_golden("reader-normal", &png);
+        fs::remove_dir_all(root).expect("remove reader fixture root");
+    }
+
+    #[test]
+    fn reader_error_feedback_matches_png_golden() {
+        let root = fixture_root("# Native reader\n\nA recoverable error is visible.");
+        let mut reader =
+            T1Reader::open(fixture_config(&root), Viewport::new(600, 708)).expect("open fixture");
+        let frame = reader
+            .render_frame(
+                "87%|UP|ON|ON||12:34",
+                Some("Synchronization failed"),
+                600,
+                800,
+            )
+            .expect("render reader error");
+        let png = crate::display::rgb565_to_png(&frame, 600, 800).expect("encode reader PNG");
+        assert_png_golden("reader-error-feedback", &png);
         fs::remove_dir_all(root).expect("remove reader fixture root");
     }
 
