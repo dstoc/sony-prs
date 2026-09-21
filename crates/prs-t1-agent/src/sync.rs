@@ -126,7 +126,6 @@ pub(crate) enum SyncState {
     AuthorizationFailure,
     AuthorizationExpired,
     SessionRejected,
-    EmptyInbox,
     StaleObject,
     InvalidBundle,
     TmpfsInsufficient,
@@ -142,7 +141,6 @@ impl SyncState {
             Self::AuthorizationFailure => "authorization_failure",
             Self::AuthorizationExpired => "authorization_expired",
             Self::SessionRejected => "session_rejected",
-            Self::EmptyInbox => "empty_inbox",
             Self::StaleObject => "stale_object",
             Self::InvalidBundle => "invalid_bundle",
             Self::TmpfsInsufficient => "tmpfs_insufficient",
@@ -221,15 +219,23 @@ pub(crate) enum SyncOutcome {
         revision: InboxRevision,
         entry_point: String,
     },
+    Cleared {
+        revision: InboxRevision,
+    },
     Unchanged {
         revision: InboxRevision,
     },
 }
 
-#[derive(Debug, Clone)]
-struct ManifestSnapshot {
-    revision: InboxRevision,
-    etag: String,
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ManifestSnapshot {
+    Empty {
+        revision: InboxRevision,
+    },
+    Current {
+        revision: InboxRevision,
+        etag: String,
+    },
 }
 
 #[derive(Debug)]
@@ -361,8 +367,15 @@ impl SyncClient {
         let mut request = transport.request(Method::GET, "/api/v1/reader/manifest")?;
         request = request.bearer_auth(session.bearer_token.as_str());
         if let Some(snapshot) = &self.snapshot {
-            request = request.header("If-Revision", snapshot.revision.value().to_string());
-            request = request.header("If-None-Match", snapshot.etag.as_str());
+            match snapshot {
+                ManifestSnapshot::Empty { revision }
+                | ManifestSnapshot::Current { revision, .. } => {
+                    request = request.header("If-Revision", revision.value().to_string());
+                }
+            }
+            if let ManifestSnapshot::Current { etag, .. } = snapshot {
+                request = request.header("If-None-Match", etag.as_str());
+            }
         }
         let response = request
             .send()
@@ -373,22 +386,28 @@ impl SyncClient {
         require_protocol(response.protocol_version, "manifest response")?;
         match response.state {
             InboxManifestState::Empty { revision } => {
-                self.snapshot = None;
-                Err(SyncError::new(
-                    "manifest",
-                    SyncState::EmptyInbox,
-                    format!("reader inbox is empty at revision {}", revision.value()),
-                ))
+                if self.snapshot == Some(ManifestSnapshot::Empty { revision }) {
+                    return Ok(SyncOutcome::Unchanged { revision });
+                }
+                clear_library(&self.config.library_root).map_err(|error| {
+                    map_storage_error("could not clear the current library", error)
+                })?;
+                self.snapshot = Some(ManifestSnapshot::Empty { revision });
+                Ok(SyncOutcome::Cleared { revision })
             }
             InboxManifestState::NotModified { revision, etag } => {
-                let Some(snapshot) = self.snapshot.as_ref() else {
+                let Some(ManifestSnapshot::Current {
+                    revision: snapshot_revision,
+                    etag: snapshot_etag,
+                }) = self.snapshot.as_ref()
+                else {
                     return Err(SyncError::new(
                         "manifest",
                         SyncState::StaleObject,
                         "server returned not-modified without a local manifest snapshot",
                     ));
                 };
-                if snapshot.revision != revision || snapshot.etag != etag.as_str() {
+                if *snapshot_revision != revision || snapshot_etag != etag.as_str() {
                     return Err(SyncError::new(
                         "manifest",
                         SyncState::StaleObject,
@@ -403,9 +422,12 @@ impl SyncClient {
                 manifest,
             } => {
                 validate_manifest(&manifest)?;
-                if self.snapshot.as_ref().is_some_and(|snapshot| {
-                    snapshot.revision == revision && snapshot.etag == etag.as_str()
-                }) {
+                if self.snapshot
+                    == Some(ManifestSnapshot::Current {
+                        revision,
+                        etag: etag.as_str().to_owned(),
+                    })
+                {
                     return Ok(SyncOutcome::Unchanged { revision });
                 }
                 self.download_and_publish(transport, session, revision, etag.as_str(), manifest)
@@ -425,7 +447,7 @@ impl SyncClient {
         let current = self.config.library_root.join("current");
         let current_size = existing_library_size(&current)
             .map_err(|error| map_storage_error("could not inspect current library", error))?;
-        let expected_files_size = manifest_files_size(&manifest)?;
+        let extracted_size = manifest_storage_size(&manifest)?;
 
         let response = transport
             .request(Method::GET, "/api/v1/reader/bundle")?
@@ -452,16 +474,7 @@ impl SyncClient {
             ));
         }
         let archive_bound = content_length.unwrap_or(MAX_BUNDLE_SIZE);
-        let required = current_size
-            .checked_add(archive_bound)
-            .and_then(|value| value.checked_add(expected_files_size))
-            .ok_or_else(|| {
-                SyncError::new(
-                    "download",
-                    SyncState::TmpfsInsufficient,
-                    "tmpfs requirement overflowed",
-                )
-            })?;
+        let required = required_storage_bytes(current_size, archive_bound, extracted_size)?;
         if required > self.config.tmpfs_limit_bytes {
             return Err(SyncError::new(
                 "download",
@@ -478,7 +491,7 @@ impl SyncClient {
         let mut archive_file = archive.file.try_clone().map_err(|error| {
             SyncError::local(format!("could not open bundle staging file: {error}"))
         })?;
-        stream_bundle(response, &mut archive_file).await?;
+        stream_bundle(response, &mut archive_file, archive_bound).await?;
         archive_file.flush().map_err(|error| {
             SyncError::local(format!("could not flush bundle staging file: {error}"))
         })?;
@@ -500,7 +513,7 @@ impl SyncClient {
         }
         publish_library(&self.config.library_root, &extracted)
             .map_err(|error| map_storage_error("could not publish bundle", error))?;
-        self.snapshot = Some(ManifestSnapshot {
+        self.snapshot = Some(ManifestSnapshot::Current {
             revision,
             etag: etag.to_owned(),
         });
@@ -642,7 +655,11 @@ async fn read_bounded_body(mut response: Response, operation: &str) -> Result<Ve
     Ok(body)
 }
 
-async fn stream_bundle(mut response: Response, file: &mut File) -> Result<(), SyncError> {
+async fn stream_bundle(
+    mut response: Response,
+    file: &mut File,
+    limit: u64,
+) -> Result<(), SyncError> {
     let mut received = 0u64;
     while let Some(chunk) = response
         .chunk()
@@ -656,11 +673,11 @@ async fn stream_bundle(mut response: Response, file: &mut File) -> Result<(), Sy
                 "bundle size overflowed",
             )
         })?;
-        if received > MAX_BUNDLE_SIZE {
+        if received > limit {
             return Err(SyncError::new(
                 "download",
                 SyncState::InvalidBundle,
-                format!("bundle exceeds {MAX_BUNDLE_SIZE} bytes"),
+                format!("bundle exceeds {limit} bytes"),
             ));
         }
         file.write_all(&chunk)
@@ -784,6 +801,37 @@ fn manifest_files_size(manifest: &Manifest) -> Result<u64, SyncError> {
         ));
     }
     Ok(size)
+}
+
+fn manifest_storage_size(manifest: &Manifest) -> Result<u64, SyncError> {
+    let files_size = manifest_files_size(manifest)?;
+    let manifest_size = serde_json::to_vec(manifest)
+        .map_err(|error| SyncError::new("manifest", SyncState::InvalidBundle, error.to_string()))?
+        .len() as u64;
+    files_size.checked_add(manifest_size).ok_or_else(|| {
+        SyncError::new(
+            "manifest",
+            SyncState::TmpfsInsufficient,
+            "staged library size overflowed",
+        )
+    })
+}
+
+fn required_storage_bytes(
+    current_size: u64,
+    archive_size: u64,
+    extracted_size: u64,
+) -> Result<u64, SyncError> {
+    current_size
+        .checked_add(archive_size)
+        .and_then(|value| value.checked_add(extracted_size))
+        .ok_or_else(|| {
+            SyncError::new(
+                "download",
+                SyncState::TmpfsInsufficient,
+                "tmpfs requirement overflowed",
+            )
+        })
 }
 
 fn validate_approval_url(
@@ -917,6 +965,34 @@ fn publish_library(root: &Path, extracted: &Path) -> io::Result<()> {
     Ok(())
 }
 
+fn clear_library(root: &Path) -> io::Result<()> {
+    let current = root.join("current");
+    let metadata = match fs::symlink_metadata(&current) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    if !metadata.file_type().is_symlink() {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "library current path exists and is not the PRSync symlink",
+        ));
+    }
+    let target = safe_generation_target(root, &fs::read_link(&current)?).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "library current symlink points outside the PRSync root",
+        )
+    })?;
+    let tombstone = unique_path(root, "prs-sync-clearing")?;
+    fs::rename(&current, &tombstone)?;
+    if let Err(error) = fs::remove_dir_all(&target) {
+        let _ = fs::rename(&tombstone, &current);
+        return Err(error);
+    }
+    fs::remove_file(tombstone)
+}
+
 fn safe_generation_target(root: &Path, target: &Path) -> Option<PathBuf> {
     if target.is_absolute()
         || target
@@ -1033,6 +1109,11 @@ pub(crate) fn run_active(config: SyncConfig) -> io::Result<()> {
             println!("sync.entry_point={entry_point}");
             Ok(())
         }
+        Ok(SyncOutcome::Cleared { revision }) => {
+            println!("sync.result=cleared");
+            println!("sync.revision={}", revision.value());
+            Ok(())
+        }
         Ok(SyncOutcome::Unchanged { revision }) => {
             println!("sync.result=unchanged");
             println!("sync.revision={}", revision.value());
@@ -1137,6 +1218,55 @@ mod tests {
         assert_eq!(fs::read(root.join("current/index.md")).unwrap(), b"second");
         assert!(!first.exists());
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn clearing_the_library_removes_current_and_its_generation() {
+        let root = std::env::temp_dir().join(format!(
+            "prs-t1-sync-clear-test-{}-{}",
+            std::process::id(),
+            TEMP_NAME_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let generation = root.join(".generation");
+        fs::create_dir(&generation).unwrap();
+        fs::write(generation.join("index.md"), b"current").unwrap();
+        publish_library(&root, &generation).unwrap();
+
+        clear_library(&root).unwrap();
+
+        assert!(!root.join("current").exists());
+        assert!(!generation.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn failed_library_clear_restores_the_current_symlink() {
+        let root = std::env::temp_dir().join(format!(
+            "prs-t1-sync-clear-rollback-test-{}-{}",
+            std::process::id(),
+            TEMP_NAME_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&root).unwrap();
+        symlink(Path::new(".missing-generation"), root.join("current")).unwrap();
+
+        let error = clear_library(&root).unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        assert_eq!(
+            fs::read_link(root.join("current")).unwrap(),
+            Path::new(".missing-generation")
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn tmpfs_budget_includes_the_current_archive_and_extracted_library() {
+        assert_eq!(required_storage_bytes(10, 20, 30).unwrap(), 60);
+        assert_eq!(
+            required_storage_bytes(u64::MAX, 1, 1).unwrap_err().state(),
+            SyncState::TmpfsInsufficient
+        );
     }
 
     #[test]

@@ -85,8 +85,10 @@ Only `render-test`, `display-test`, `standalone-test`, `launch-standalone`,
 `sync`, `wifi-up`, `wifi-down`, and `wifi-probe` mutate device state. `sync`
 holds polling and reader credentials only in RAM. It validates the untrusted
 bundle before atomically replacing `PRS_T1_LIBRARY_ROOT/current`; an empty
-inbox, authorization failure, network loss, stale object, invalid bundle, or
-tmpfs-capacity failure leaves the current library unchanged. `render-test` is bounded and restores the bytes it changes,
+inbox atomically clears the current library and reports a successful
+synchronization boundary. Authorization failure, network loss, stale object,
+invalid bundle, or tmpfs-capacity failure leaves the current library unchanged.
+`render-test` is bounded and restores the bytes it changes,
 but it still requires a reader-side recovery route and physical observation of
 the panel. `display-test` is bounded but leaves its full-screen pattern visible
 when it exits. Use `capture` during its wait to record the framebuffer and use a
@@ -113,8 +115,10 @@ Wi-Fi after success and after every failure.
 The `sync` command does not persist authorization secrets or the downloaded
 archive. It reports recoverable failures with `sync.failure_kind`, including
 `network_loss`, `authorization_failure`, `authorization_expired`,
-`session_rejected`, `empty_inbox`, `stale_object`, `invalid_bundle`, and
-`tmpfs_insufficient`. A failed attempt does not replace the current library.
+`session_rejected`, `stale_object`, `invalid_bundle`, and
+`tmpfs_insufficient`. An empty inbox reports `sync.result=cleared` and removes
+the current library at that synchronization boundary. A failed attempt does
+not replace or clear the current library.
 
 ## Build and deploy
 
