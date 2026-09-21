@@ -8,6 +8,7 @@ wifi_source="$repo_root/crates/prs-t1-agent/src/wifi.rs"
 network_source="$repo_root/crates/prs-t1-agent/src/network.rs"
 network_readme="$repo_root/crates/prs-t1-agent/README.md"
 main_source="$repo_root/crates/prs-t1-agent/src/main.rs"
+agent_readme="$repo_root/crates/prs-t1-agent/README.md"
 
 for symbol in \
   wifi_load_driver \
@@ -58,6 +59,8 @@ assert (
     '[--invalid-hostname] [--inject-network-loss STAGE]'
 ) in usage
 PY
+grep -Fq '  prs-t1-agent sync [HTTPS_ENDPOINT] [FRAMEBUFFER]' "$main_source"
+grep -Fq 'fixed 16 MiB encoded archive limit' "$agent_readme"
 
 python3 - "$wifi_source" <<'PY'
 from pathlib import Path
@@ -85,6 +88,15 @@ candidate_paths = [
     "/data/misc/wifi/wpa_supplicant",
 ]
 assert all(path in source for path in candidate_paths)
+PY
+
+python3 - "$main_source" <<'PY'
+from pathlib import Path
+import sys
+
+source = Path(sys.argv[1]).read_text()
+usage = source[source.index("Usage:\\n"):source.index("`probe`, `status`")]
+assert "  prs-t1-agent sync [HTTPS_ENDPOINT] [FRAMEBUFFER]" in usage
 PY
 
 echo 'PRS-T1 Wi-Fi shim and lifecycle contract checks passed'
