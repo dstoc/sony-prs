@@ -721,6 +721,7 @@ fn screen_view_model(state: &UiState, wake_lock_held: bool) -> display::UiViewMo
         pretty_value(state.mode)
     };
     let clock = short_clock();
+    let current_date = date_time();
 
     let status_bar = display::StatusBarViewModel {
         battery: battery_label,
@@ -783,15 +784,16 @@ fn screen_view_model(state: &UiState, wake_lock_held: bool) -> display::UiViewMo
         // above a dedicated action pane without losing the live counters.
         display::DetailsRow::Section("Diagnostics".into()),
         display::DetailsRow::Value(format!(
-            "System: FB {}  zygote {}  dispd {}",
+            "System: FB {}  Rotate {}  zygote {}  dispd {}",
             pretty_value(framebuffer),
+            number_or_unknown(status.screen.rotate),
             pretty_value(zygote),
             pretty_value(dispd)
         )),
         display::DetailsRow::Value(format!(
             "Runtime: Wake {}  Date {}",
             pretty_value(if wake_lock_held { "yes" } else { "no" }),
-            date_time()
+            current_date
         )),
         display::DetailsRow::Value(format!(
             "Input: {} touch  {} key  Power {}",
@@ -2499,6 +2501,41 @@ mod tests {
         assert_eq!(action, PowerAction::None);
         assert_eq!(state.page, UiPage::Details);
         assert!(!state.take_sync_request());
+    }
+
+    #[test]
+    fn production_details_model_fits_before_the_dedicated_action_pane() {
+        let state = UiState::new();
+        let view = super::screen_view_model(&state, false);
+        let max_rows = (display::DETAILS_ACTION_HEADER_TOP
+            .saturating_sub(4 + 16 + display::CONTENT_TOP))
+            / display::DETAILS_LINE_STEP;
+
+        assert!(
+            view.details.rows.len() <= max_rows,
+            "production Details model has {} rows; the action pane allows at most {max_rows}",
+            view.details.rows.len()
+        );
+        assert!(view.details.rows.iter().any(|row| {
+            matches!(
+                row,
+                display::DetailsRow::Value(text) if text.starts_with("SD card ")
+            )
+        }));
+        assert!(view.details.rows.iter().any(|row| {
+            matches!(
+                row,
+                display::DetailsRow::Section(text) if text == "Diagnostics"
+            )
+        }));
+
+        for (index, _) in view.details.rows.iter().enumerate() {
+            let top = display::CONTENT_TOP + (index + 1) * display::DETAILS_LINE_STEP;
+            assert!(
+                top + 16 <= display::DETAILS_ACTION_HEADER_TOP - 4,
+                "production row {index} at y={top} intersects the action pane"
+            );
+        }
     }
 
     #[test]

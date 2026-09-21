@@ -1487,6 +1487,8 @@ mod tests {
         let png =
             rgb565_to_png(&frame, SCREEN_WIDTH, SCREEN_HEIGHT).expect("encode debug settings PNG");
         assert_png_golden("details-settings-debug", &png);
+    }
+
     #[test]
     fn pressed_action_renderer_changes_only_the_action_visual_state() {
         let view = screenshot_view();
