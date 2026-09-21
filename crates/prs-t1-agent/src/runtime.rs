@@ -1461,7 +1461,7 @@ struct UiState {
     library_empty: bool,
     last_sync_failure: Option<String>,
     last_activity: Instant,
-    last_idle_sync: Instant,
+    last_sync_completion: Instant,
 }
 
 impl UiState {
@@ -1497,7 +1497,7 @@ impl UiState {
             library_empty: false,
             last_sync_failure: None,
             last_activity: Instant::now(),
-            last_idle_sync: Instant::now(),
+            last_sync_completion: Instant::now(),
         }
     }
 
@@ -1529,7 +1529,6 @@ impl UiState {
     fn sync_started(&mut self) {
         self.sync_active = true;
         self.approval_url = None;
-        self.last_idle_sync = Instant::now();
         self.message = "Synchronizing…".into();
     }
 
@@ -1542,6 +1541,7 @@ impl UiState {
             SyncEvent::Finished(Ok(outcome)) => {
                 self.sync_active = false;
                 self.approval_url = None;
+                self.last_sync_completion = Instant::now();
                 self.last_sync_failure = None;
                 match outcome {
                     sync::SyncOutcome::Updated { .. } => {
@@ -1562,6 +1562,7 @@ impl UiState {
             SyncEvent::Finished(Err(error)) => {
                 self.sync_active = false;
                 self.approval_url = None;
+                self.last_sync_completion = Instant::now();
                 self.last_sync_failure = Some(error.clone());
                 self.message = "Synchronization failed".into();
                 eprintln!("standalone-test: synchronization failed: {error}");
@@ -1573,7 +1574,7 @@ impl UiState {
         !self.sync_active
             && !self.bundle_ready
             && matches!(self.page, UiPage::Home | UiPage::Details)
-            && self.last_idle_sync.elapsed() >= idle_sync_interval
+            && self.last_sync_completion.elapsed() >= idle_sync_interval
             && self.last_activity.elapsed() >= idle_sync_interval
     }
 
@@ -2210,7 +2211,7 @@ mod tests {
     fn idle_sync_uses_the_configured_quiet_period() {
         let mut state = UiState::new();
         let interval = Duration::from_secs(900);
-        state.last_idle_sync = Instant::now() - interval;
+        state.last_sync_completion = Instant::now() - interval;
         state.last_activity = Instant::now() - interval;
 
         assert!(state.should_start_idle_sync(interval));
@@ -2224,6 +2225,9 @@ mod tests {
         let mut state = UiState::new();
         let interval = Duration::from_secs(900);
         state.sync_started();
+        // Model an attempt that started at least one interval ago.
+        state.last_sync_completion = Instant::now() - interval;
+        state.last_activity = Instant::now() - interval;
         state.apply_sync_event(SyncEvent::Finished(Err("network loss".into())));
 
         assert!(!state.sync_active);
@@ -2231,7 +2235,7 @@ mod tests {
         assert_eq!(state.last_sync_failure.as_deref(), Some("network loss"));
         assert!(!state.should_start_idle_sync(interval));
 
-        state.last_idle_sync = Instant::now() - interval;
+        state.last_sync_completion = Instant::now() - interval;
         state.last_activity = Instant::now() - interval;
         state.page = UiPage::DisplayTest;
         assert!(!state.should_start_idle_sync(interval));
