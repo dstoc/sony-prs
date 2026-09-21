@@ -31,9 +31,10 @@ grep -Fq 'dhcp.wlan0.result' "$wifi_source"
 grep -Fq '"/data/system/wpa_supplicant"' "$wifi_source"
 grep -Fq '"/data/misc/wifi/sockets"' "$wifi_source"
 grep -Fq '"/dev/socket/wpa_"' "$wifi_source"
+grep -Fq '"/data/misc/wifi/sockets/wpa_ctrl_"' "$wifi_source"
 grep -Fq 'wifi.association_source' "$wifi_source"
 grep -Fq 'supplicant_crashed' "$wifi_source"
-! grep -Fq 'wpa_ctrl_wlan0' "$wifi_source"
+grep -Fq 'dhcp_service_is_bound' "$wifi_source"
 
 python3 - "$wifi_source" <<'PY'
 from pathlib import Path
@@ -54,14 +55,13 @@ assert stop_dhcp.index('set_property("ctl.stop", DHCP_SERVICE)') < stop_dhcp.ind
 )
 
 candidate_paths = [
+    "/dev/socket/wpa_",
+    "/data/misc/wifi/sockets/wpa_ctrl_",
     "/data/system/wpa_supplicant",
     "/data/misc/wifi/sockets",
     "/data/misc/wifi/wpa_supplicant",
-    "/dev/socket/wpa_",
 ]
-candidate_source = source[source.index("const WPA_CONTROL_SOCKET_DIRS"):source.index("const WPA_ANDROID_SOCKET_PREFIX")]
-assert all(path in candidate_source for path in candidate_paths[:3])
-assert "/dev/socket/wpa_" in source
+assert all(path in source for path in candidate_paths)
 PY
 
 echo 'PRS-T1 Wi-Fi shim and lifecycle contract checks passed'

@@ -140,27 +140,30 @@ report `stopped` or disappear, stop the supplicant, then unload the driver.
 The wait is bounded at 10 seconds. The command attempts all three cleanup
 steps even when one step fails.
 
-The PRS-T1 uses the Android 2.2 per-interface WPA control socket. The agent
-tries these paths in order:
+The PRS-T1's native init configuration exposes the WPA control socket at
+`/dev/socket/wpa_wlan0`. The agent tries these paths in order:
 
-1. `/data/system/wpa_supplicant/wlan0`
-2. `/data/misc/wifi/sockets/wlan0`
-3. `/data/misc/wifi/wpa_supplicant/wlan0`
-4. `/dev/socket/wpa_wlan0`
+1. `/dev/socket/wpa_wlan0`
+2. `/data/misc/wifi/sockets/wpa_ctrl_wlan0`
+3. `/data/system/wpa_supplicant/wlan0`
+4. `/data/misc/wifi/sockets/wlan0`
+5. `/data/misc/wifi/wpa_supplicant/wlan0`
 
-The first path matches the stock Android 2.2 layout. The other paths cover
-legacy Sony and Android init variants without reading the saved supplicant
-configuration. The `wpa_ctrl_*` name is a client-side socket name, not the
-supplicant's per-interface status endpoint. The agent uses a temporary client
-socket under `/data/local/tmp` and does not create, modify, or print Wi-Fi
-credentials.
+The first path is the device-confirmed endpoint. The second path is retained
+for the firmware-specific fallback observed during physical validation. The
+remaining paths cover Android 2.2 and other legacy layouts without reading the
+saved supplicant configuration. Although `wpa_ctrl_*` commonly names a client
+socket, this PRS-T1 firmware exposes its fallback server with that name. The
+agent uses unique temporary client sockets under `/data/local/tmp` and does
+not create, modify, or print Wi-Fi credentials.
 
 Diagnostics include `wifi.association_source` after a successful status read.
 Failure output distinguishes a missing control socket, permission failure,
 supplicant crash, unavailable supplicant, control read timeout, protocol error,
 and ordinary association timeout. All control paths are bounded probes; the
 agent does not fall back to interface state or DHCP as proof of WPA
-association.
+association. The DHCP wait accepts the device's `ok` result as well as
+`BOUND` and `bound`.
 
 Use `wifi-probe` for the complete physical sequence. It brings Wi-Fi up,
 performs the existing HTTPS `/health` probe, and shuts Wi-Fi down after both

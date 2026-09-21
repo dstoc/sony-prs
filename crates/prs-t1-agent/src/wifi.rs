@@ -5,6 +5,7 @@ use std::io;
 use std::os::unix::net::UnixDatagram;
 use std::path::Path;
 use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -12,6 +13,7 @@ use crate::status;
 
 pub const WIFI_HELPER: &str = "/data/local/tmp/prs-t1-wifi-helper";
 const WIFI_INTERFACE: &str = "wlan0";
+const WPA_DEVICE_SOCKET: &str = "/data/misc/wifi/sockets/wpa_ctrl_";
 const WPA_CONTROL_SOCKET_DIRS: &[&str] = &[
     "/data/system/wpa_supplicant",
     "/data/misc/wifi/sockets",
@@ -27,6 +29,7 @@ const DHCP_STOP_TIMEOUT: Duration = Duration::from_secs(10);
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
 const WPA_READ_TIMEOUT: Duration = Duration::from_secs(2);
 pub(crate) const STATUS_WPA_READ_TIMEOUT: Duration = Duration::from_millis(100);
+static WPA_CLIENT_SOCKET_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Debug, Clone, Copy)]
 pub enum Operation {
@@ -364,6 +367,10 @@ fn dhcp_service_is_stopped(state: &str) -> bool {
     state.is_empty() || state == "stopped"
 }
 
+fn dhcp_service_is_bound(state: &str) -> bool {
+    matches!(state, "BOUND" | "bound" | "ok" | "OK")
+}
+
 fn wait_for_association() -> Result<(), WifiFailure> {
     let deadline = Instant::now() + ASSOCIATION_TIMEOUT;
     let mut last_state = None;
@@ -491,7 +498,7 @@ fn wait_for_dhcp() -> Result<(), WifiFailure> {
                     );
                     last_result = Some(result.clone());
                 }
-                if result == "BOUND" {
+                if dhcp_service_is_bound(&result) {
                     return Ok(());
                 }
             }
@@ -626,11 +633,8 @@ fn read_association_status_internal(
 }
 
 fn read_wpa_status_from_path(remote: &str, timeout: Duration) -> Result<String, WpaControlError> {
-    let local = format!(
-        "{WPA_CLIENT_SOCKET}-{}-{}.sock",
-        std::process::id(),
-        remote.len()
-    );
+    let counter = WPA_CLIENT_SOCKET_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let local = format!("{WPA_CLIENT_SOCKET}-{}-{counter}.sock", std::process::id());
     let _ = fs::remove_file(&local);
 
     let result = (|| {
@@ -688,11 +692,15 @@ impl WpaControlError {
 }
 
 fn control_socket_candidates(interface: &str) -> Vec<String> {
-    let mut candidates = WPA_CONTROL_SOCKET_DIRS
-        .iter()
-        .map(|directory| format!("{directory}/{interface}"))
-        .collect::<Vec<_>>();
-    candidates.push(format!("{WPA_ANDROID_SOCKET_PREFIX}{interface}"));
+    let mut candidates = vec![
+        format!("{WPA_ANDROID_SOCKET_PREFIX}{interface}"),
+        format!("{WPA_DEVICE_SOCKET}{interface}"),
+    ];
+    candidates.extend(
+        WPA_CONTROL_SOCKET_DIRS
+            .iter()
+            .map(|directory| format!("{directory}/{interface}")),
+    );
     candidates
 }
 
@@ -764,8 +772,8 @@ fn reject_arguments(args: &[String], message: &str) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        association_timeout, control_socket_candidates, dhcp_service_is_stopped, parse_wpa_state,
-        WpaControlErrorKind,
+        association_timeout, control_socket_candidates, dhcp_service_is_bound,
+        dhcp_service_is_stopped, parse_wpa_state, WpaControlErrorKind,
     };
 
     #[test]
@@ -793,23 +801,32 @@ mod tests {
     }
 
     #[test]
+    fn accepts_device_and_standard_dhcp_success_values() {
+        assert!(dhcp_service_is_bound("ok"));
+        assert!(dhcp_service_is_bound("BOUND"));
+        assert!(dhcp_service_is_bound("bound"));
+        assert!(!dhcp_service_is_bound("failed"));
+    }
+
+    #[test]
     fn resolves_android_22_and_legacy_control_socket_paths() {
         assert_eq!(
             control_socket_candidates("wlan0"),
             vec![
+                "/dev/socket/wpa_wlan0",
+                "/data/misc/wifi/sockets/wpa_ctrl_wlan0",
                 "/data/system/wpa_supplicant/wlan0",
                 "/data/misc/wifi/sockets/wlan0",
                 "/data/misc/wifi/wpa_supplicant/wlan0",
-                "/dev/socket/wpa_wlan0",
             ]
         );
     }
 
     #[test]
-    fn does_not_treat_client_socket_name_as_supplicant_endpoint() {
+    fn retains_the_device_specific_control_socket_fallback() {
         assert!(control_socket_candidates("wlan0")
             .iter()
-            .all(|path| !path.ends_with("wpa_ctrl_wlan0")));
+            .any(|path| path == "/data/misc/wifi/sockets/wpa_ctrl_wlan0"));
     }
 
     #[test]

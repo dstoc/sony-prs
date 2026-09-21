@@ -236,11 +236,14 @@ starting `dhcpcd`. Shutdown waits up to 10 seconds for `init.svc.dhcpcd` to
 report `stopped` or disappear before it stops the supplicant and unloads the
 driver.
 
-The status resolver tries `/data/system/wpa_supplicant/wlan0` first, followed
-by `/data/misc/wifi/sockets/wlan0`, `/data/misc/wifi/wpa_supplicant/wlan0`,
-and `/dev/socket/wpa_wlan0`. These are server-side control paths. A
-`wpa_ctrl_*` path is a client-side socket name and is not used as the status
-endpoint. The agent reports the path that answered and classifies missing
-paths, permission failures, supplicant crashes, unavailable peers, read
-timeouts, protocol errors, and association timeouts. It does not read or
-rewrite the saved supplicant configuration.
+The status resolver tries `/dev/socket/wpa_wlan0` first, followed by the
+device-specific `/data/misc/wifi/sockets/wpa_ctrl_wlan0` fallback,
+`/data/system/wpa_supplicant/wlan0`, `/data/misc/wifi/sockets/wlan0`, and
+`/data/misc/wifi/wpa_supplicant/wlan0`. These are server-side control paths.
+Although `wpa_ctrl_*` commonly names a client-side socket, this PRS-T1
+firmware exposes its fallback server with that name. The agent uses unique
+temporary client sockets under `/data/local/tmp`, reports the path that
+answered, and classifies missing paths, permission failures, supplicant
+crashes, unavailable peers, read timeouts, protocol errors, and association
+timeouts. It does not read or rewrite the saved supplicant configuration. The
+DHCP wait accepts `ok`, `BOUND`, and `bound`.
