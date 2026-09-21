@@ -133,11 +133,34 @@ persist Wi-Fi credentials. They require the separately built
 
 `wifi-up` prints structured snapshots before startup and after DHCP reaches
 `BOUND`. During startup it prints each lifecycle stage, the WPA association
-state, the DHCP result, and the explicit 60-second association and 30-second
-DHCP limits. `wifi-down` is explicit and runs the required shutdown sequence:
-stop `dhcpcd`, wait for the service to report `stopped` or disappear, stop the
-supplicant, then unload the driver. The wait is bounded at 10 seconds. The
-command attempts all three cleanup steps even when one step fails.
+state, the resolved control-socket path, the DHCP result, and the explicit
+60-second association and 30-second DHCP limits. `wifi-down` is explicit and
+runs the required shutdown sequence: stop `dhcpcd`, wait for the service to
+report `stopped` or disappear, stop the supplicant, then unload the driver.
+The wait is bounded at 10 seconds. The command attempts all three cleanup
+steps even when one step fails.
+
+The PRS-T1 uses the Android 2.2 per-interface WPA control socket. The agent
+tries these paths in order:
+
+1. `/data/system/wpa_supplicant/wlan0`
+2. `/data/misc/wifi/sockets/wlan0`
+3. `/data/misc/wifi/wpa_supplicant/wlan0`
+4. `/dev/socket/wpa_wlan0`
+
+The first path matches the stock Android 2.2 layout. The other paths cover
+legacy Sony and Android init variants without reading the saved supplicant
+configuration. The `wpa_ctrl_*` name is a client-side socket name, not the
+supplicant's per-interface status endpoint. The agent uses a temporary client
+socket under `/data/local/tmp` and does not create, modify, or print Wi-Fi
+credentials.
+
+Diagnostics include `wifi.association_source` after a successful status read.
+Failure output distinguishes a missing control socket, permission failure,
+supplicant crash, unavailable supplicant, control read timeout, protocol error,
+and ordinary association timeout. All control paths are bounded probes; the
+agent does not fall back to interface state or DHCP as proof of WPA
+association.
 
 Use `wifi-probe` for the complete physical sequence. It brings Wi-Fi up,
 performs the existing HTTPS `/health` probe, and shuts Wi-Fi down after both

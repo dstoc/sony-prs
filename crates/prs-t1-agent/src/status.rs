@@ -55,6 +55,7 @@ pub struct WifiStatus {
     pub signal_dbm: Option<i32>,
     pub supplicant_state: Option<String>,
     pub association_state: Option<String>,
+    pub association_source: Option<String>,
     pub dhcp_result: Option<String>,
 }
 
@@ -147,18 +148,17 @@ pub fn collect() -> StatusSnapshot {
         gadget_functions: read_field("/sys/class/android_usb/android0", "functions")
             .or_else(|| properties.get("sys.usb.config").map(str::to_owned)),
     };
+    let association =
+        crate::wifi::read_association_status(&wifi_interface, crate::wifi::STATUS_WPA_READ_TIMEOUT)
+            .ok();
     let wifi = WifiStatus {
         interface_present: Path::new(&wifi_path).is_dir(),
         operstate: read_field(&wifi_path, "operstate"),
         carrier: read_bool_field(&wifi_path, "carrier"),
         signal_dbm: read_wireless_signal(&wifi_interface),
         supplicant_state: properties.get("init.svc.wpa_supplicant").map(str::to_owned),
-        association_state: crate::wifi::read_association_state(
-            &wifi_interface,
-            crate::wifi::STATUS_WPA_READ_TIMEOUT,
-        )
-        .ok()
-        .flatten(),
+        association_state: association.as_ref().and_then(|status| status.state.clone()),
+        association_source: association.map(|status| status.source),
         dhcp_result: properties.get("dhcp.wlan0.result").map(str::to_owned),
         interface: wifi_interface,
     };
@@ -256,6 +256,7 @@ pub fn print_status() {
     print_option("wifi.signal_dbm", status.wifi.signal_dbm);
     print_option("wifi.supplicant_state", status.wifi.supplicant_state);
     print_option("wifi.association_state", status.wifi.association_state);
+    print_option("wifi.association_source", status.wifi.association_source);
     print_option("wifi.dhcp_result", status.wifi.dhcp_result);
 
     print_option("adb.persist_enabled", status.adb.persist_enabled);

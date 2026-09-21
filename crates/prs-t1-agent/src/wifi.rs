@@ -12,7 +12,12 @@ use crate::status;
 
 pub const WIFI_HELPER: &str = "/data/local/tmp/prs-t1-wifi-helper";
 const WIFI_INTERFACE: &str = "wlan0";
-const WPA_CONTROL_SOCKET: &str = "/data/misc/wifi/sockets/wpa_ctrl_";
+const WPA_CONTROL_SOCKET_DIRS: &[&str] = &[
+    "/data/system/wpa_supplicant",
+    "/data/misc/wifi/sockets",
+    "/data/misc/wifi/wpa_supplicant",
+];
+const WPA_ANDROID_SOCKET_PREFIX: &str = "/dev/socket/wpa_";
 const WPA_CLIENT_SOCKET: &str = "/data/local/tmp/prs-t1-wpa";
 const DHCP_SERVICE: &str = "dhcpcd";
 const DHCP_SERVICE_STATE_PROPERTY: &str = "init.svc.dhcpcd";
@@ -33,6 +38,7 @@ pub enum Operation {
 #[derive(Debug)]
 struct WifiFailure {
     stage: &'static str,
+    kind: &'static str,
     detail: String,
 }
 
@@ -40,6 +46,15 @@ impl WifiFailure {
     fn new(stage: &'static str, detail: impl Into<String>) -> Self {
         Self {
             stage,
+            kind: "lifecycle_failed",
+            detail: detail.into(),
+        }
+    }
+
+    fn with_kind(stage: &'static str, kind: &'static str, detail: impl Into<String>) -> Self {
+        Self {
+            stage,
+            kind,
             detail: detail.into(),
         }
     }
@@ -52,6 +67,62 @@ impl fmt::Display for WifiFailure {
 }
 
 impl Error for WifiFailure {}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WpaControlErrorKind {
+    MissingSocket,
+    PermissionDenied,
+    SupplicantUnavailable,
+    ReadTimeout,
+    Protocol,
+}
+
+impl WpaControlErrorKind {
+    fn label(self) -> &'static str {
+        match self {
+            Self::MissingSocket => "control_socket_missing",
+            Self::PermissionDenied => "control_socket_permission_denied",
+            Self::SupplicantUnavailable => "supplicant_unavailable",
+            Self::ReadTimeout => "control_socket_read_timeout",
+            Self::Protocol => "control_socket_protocol_error",
+        }
+    }
+}
+
+#[derive(Debug)]
+struct WpaControlError {
+    kind: WpaControlErrorKind,
+    path: Option<String>,
+    detail: String,
+}
+
+impl WpaControlError {
+    fn new(kind: WpaControlErrorKind, path: Option<&str>, detail: impl Into<String>) -> Self {
+        Self {
+            kind,
+            path: path.map(str::to_owned),
+            detail: detail.into(),
+        }
+    }
+}
+
+impl fmt::Display for WpaControlError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "kind={}", self.kind.label())?;
+        if let Some(path) = &self.path {
+            write!(formatter, " path={path}")?;
+        }
+        write!(formatter, " detail={}", self.detail)
+    }
+}
+
+impl Error for WpaControlError {}
+
+#[derive(Debug)]
+pub(crate) struct AssociationStatus {
+    pub(crate) state: Option<String>,
+    pub(crate) source: String,
+}
 
 pub fn run(operation: Operation, args: Vec<String>) -> io::Result<()> {
     match operation {
@@ -296,11 +367,35 @@ fn dhcp_service_is_stopped(state: &str) -> bool {
 fn wait_for_association() -> Result<(), WifiFailure> {
     let deadline = Instant::now() + ASSOCIATION_TIMEOUT;
     let mut last_state = None;
-    let mut last_error;
+    let mut last_control_error;
+    let mut last_state_error;
+    let mut last_error_kind = None;
+    let mut last_source = None;
 
     loop {
-        match read_association_state(WIFI_INTERFACE, WPA_READ_TIMEOUT) {
-            Ok(Some(state)) => {
+        match read_association_status_internal(WIFI_INTERFACE, WPA_READ_TIMEOUT) {
+            Ok(status) => {
+                if last_source.as_deref() != Some(status.source.as_str()) {
+                    println!("wifi.association_source={}", status.source);
+                    last_source = Some(status.source.clone());
+                }
+                let Some(state) = status.state else {
+                    if last_state.is_some() {
+                        println!("wifi.association_state=unknown");
+                        last_state = None;
+                    }
+                    last_control_error = Some(WpaControlError::new(
+                        WpaControlErrorKind::Protocol,
+                        Some(&status.source),
+                        "WPA status did not include wpa_state",
+                    ));
+                    last_state_error = None;
+                    if Instant::now() >= deadline {
+                        return association_timeout(last_control_error, last_state_error);
+                    }
+                    thread::sleep(POLL_INTERVAL);
+                    continue;
+                };
                 if last_state.as_deref() != Some(state.as_str()) {
                     println!("wifi.association_state={state}");
                     last_state = Some(state.clone());
@@ -308,31 +403,74 @@ fn wait_for_association() -> Result<(), WifiFailure> {
                 if state == "COMPLETED" {
                     return Ok(());
                 }
-                last_error = Some(format!("WPA state is {state}"));
-            }
-            Ok(None) => {
-                if last_state.is_some() {
-                    println!("wifi.association_state=unknown");
-                    last_state = None;
-                }
-                last_error = Some("WPA status did not include wpa_state".into());
+                last_control_error = None;
+                last_state_error = Some((status.source, state));
             }
             Err(error) => {
                 if last_state.is_some() {
                     println!("wifi.association_state=unknown");
                     last_state = None;
                 }
-                last_error = Some(format!("could not read WPA status: {error}"));
+                if last_error_kind != Some(error.kind) {
+                    println!("wifi.association_error_kind={}", error.kind.label());
+                    if let Some(path) = &error.path {
+                        println!("wifi.association_error_path={path}");
+                    }
+                    last_error_kind = Some(error.kind);
+                }
+                if error.kind == WpaControlErrorKind::PermissionDenied {
+                    return Err(WifiFailure::with_kind(
+                        "association_control",
+                        error.kind.label(),
+                        error.to_string(),
+                    ));
+                }
+                if supplicant_is_stopped() {
+                    return Err(WifiFailure::with_kind(
+                        "association_control",
+                        "supplicant_crashed",
+                        format!("{error}; init.svc.wpa_supplicant=stopped"),
+                    ));
+                }
+                last_control_error = Some(error);
+                last_state_error = None;
             }
         }
         if Instant::now() >= deadline {
-            return Err(WifiFailure::new(
-                "association_timeout",
-                last_error.unwrap_or_else(|| "WPA association did not complete".into()),
-            ));
+            return association_timeout(last_control_error, last_state_error);
         }
         thread::sleep(POLL_INTERVAL);
     }
+}
+
+fn association_timeout(
+    last_control_error: Option<WpaControlError>,
+    last_state_error: Option<(String, String)>,
+) -> Result<(), WifiFailure> {
+    if let Some((source, state)) = last_state_error {
+        return Err(WifiFailure::with_kind(
+            "association_timeout",
+            "association_timeout",
+            format!("WPA state is {state} path={source}"),
+        ));
+    }
+    match last_control_error {
+        Some(error) => Err(WifiFailure::with_kind(
+            "association_timeout",
+            error.kind.label(),
+            error.to_string(),
+        )),
+        None => Err(WifiFailure::new(
+            "association_timeout",
+            "WPA association did not complete",
+        )),
+    }
+}
+
+fn supplicant_is_stopped() -> bool {
+    read_property("init.svc.wpa_supplicant")
+        .ok()
+        .is_some_and(|state| state == "stopped")
 }
 
 fn wait_for_dhcp() -> Result<(), WifiFailure> {
@@ -424,29 +562,138 @@ fn read_property(name: &str) -> io::Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
-pub(crate) fn read_association_state(
+pub(crate) fn read_association_status(
     interface: &str,
     timeout: Duration,
-) -> io::Result<Option<String>> {
-    read_wpa_status(interface, timeout).map(|response| parse_wpa_state(&response))
+) -> io::Result<AssociationStatus> {
+    read_association_status_internal(interface, timeout)
+        .map_err(|error| io::Error::new(io::ErrorKind::Other, error))
 }
 
-fn read_wpa_status(interface: &str, timeout: Duration) -> io::Result<String> {
-    let remote = format!("{WPA_CONTROL_SOCKET}{interface}");
-    let local = format!("{WPA_CLIENT_SOCKET}-{}.sock", std::process::id());
+fn read_association_status_internal(
+    interface: &str,
+    timeout: Duration,
+) -> Result<AssociationStatus, WpaControlError> {
+    let deadline = Instant::now() + timeout;
+    let per_path_timeout = timeout.min(Duration::from_millis(500));
+    let mut errors = Vec::new();
+
+    for remote in control_socket_candidates(interface) {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        match read_wpa_status_from_path(&remote, remaining.min(per_path_timeout)) {
+            Ok(response) => {
+                return Ok(AssociationStatus {
+                    state: parse_wpa_state(&response),
+                    source: remote,
+                });
+            }
+            Err(error) => {
+                if matches!(
+                    error.kind,
+                    WpaControlErrorKind::PermissionDenied | WpaControlErrorKind::Protocol
+                ) {
+                    return Err(error);
+                }
+                errors.push(error);
+            }
+        }
+    }
+
+    let kind = errors
+        .iter()
+        .map(|error| error.kind)
+        .find(|kind| *kind == WpaControlErrorKind::ReadTimeout)
+        .or_else(|| {
+            errors
+                .iter()
+                .map(|error| error.kind)
+                .find(|kind| *kind == WpaControlErrorKind::SupplicantUnavailable)
+        })
+        .unwrap_or(WpaControlErrorKind::MissingSocket);
+    let detail = if errors.is_empty() {
+        "no WPA control socket candidates were attempted".to_owned()
+    } else {
+        errors
+            .iter()
+            .map(|error| error.to_string())
+            .collect::<Vec<_>>()
+            .join("; ")
+    };
+    Err(WpaControlError::new(kind, None, detail))
+}
+
+fn read_wpa_status_from_path(remote: &str, timeout: Duration) -> Result<String, WpaControlError> {
+    let local = format!(
+        "{WPA_CLIENT_SOCKET}-{}-{}.sock",
+        std::process::id(),
+        remote.len()
+    );
     let _ = fs::remove_file(&local);
 
     let result = (|| {
-        let socket = UnixDatagram::bind(Path::new(&local))?;
-        socket.set_read_timeout(Some(timeout))?;
-        socket.connect(remote)?;
-        socket.send(b"STATUS")?;
+        let socket = UnixDatagram::bind(Path::new(&local)).map_err(|error| {
+            WpaControlError::from_io(error, WpaControlErrorKind::PermissionDenied, Some(&local))
+        })?;
+        socket.set_read_timeout(Some(timeout)).map_err(|error| {
+            WpaControlError::new(
+                WpaControlErrorKind::ReadTimeout,
+                Some(remote),
+                format!("could not set read timeout: {error}"),
+            )
+        })?;
+        socket.connect(remote).map_err(|error| {
+            WpaControlError::from_io(
+                error,
+                WpaControlErrorKind::SupplicantUnavailable,
+                Some(remote),
+            )
+        })?;
+        socket.send(b"STATUS").map_err(|error| {
+            WpaControlError::from_io(
+                error,
+                WpaControlErrorKind::SupplicantUnavailable,
+                Some(remote),
+            )
+        })?;
         let mut response = [0_u8; 4096];
-        let length = socket.recv(&mut response)?;
+        let length = socket.recv(&mut response).map_err(|error| {
+            WpaControlError::from_io(error, WpaControlErrorKind::ReadTimeout, Some(remote))
+        })?;
+        if length == 0 {
+            return Err(WpaControlError::new(
+                WpaControlErrorKind::Protocol,
+                Some(remote),
+                "WPA control socket returned an empty response",
+            ));
+        }
         Ok(String::from_utf8_lossy(&response[..length]).into_owned())
     })();
     let _ = fs::remove_file(&local);
     result
+}
+
+impl WpaControlError {
+    fn from_io(error: io::Error, default_kind: WpaControlErrorKind, path: Option<&str>) -> Self {
+        let kind = match error.kind() {
+            io::ErrorKind::NotFound => WpaControlErrorKind::MissingSocket,
+            io::ErrorKind::PermissionDenied => WpaControlErrorKind::PermissionDenied,
+            io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock => WpaControlErrorKind::ReadTimeout,
+            _ => default_kind,
+        };
+        Self::new(kind, path, error.to_string())
+    }
+}
+
+fn control_socket_candidates(interface: &str) -> Vec<String> {
+    let mut candidates = WPA_CONTROL_SOCKET_DIRS
+        .iter()
+        .map(|directory| format!("{directory}/{interface}"))
+        .collect::<Vec<_>>();
+    candidates.push(format!("{WPA_ANDROID_SOCKET_PREFIX}{interface}"));
+    candidates
 }
 
 fn parse_wpa_state(response: &str) -> Option<String> {
@@ -480,6 +727,10 @@ fn print_snapshot(label: &str) {
         snapshot.wifi.association_state.as_deref(),
     );
     print_optional(
+        &format!("wifi.{label}.association_source"),
+        snapshot.wifi.association_source.as_deref(),
+    );
+    print_optional(
         &format!("wifi.{label}.dhcp_result"),
         snapshot.wifi.dhcp_result.as_deref(),
     );
@@ -498,7 +749,7 @@ fn print_shutdown_step(step: &str, result: &Result<(), WifiFailure>) {
 
 fn print_failure(error: &WifiFailure) {
     println!("wifi.failure_stage={}", error.stage);
-    println!("wifi.failure_kind=lifecycle_failed");
+    println!("wifi.failure_kind={}", error.kind);
     println!("wifi.error={}", error.detail);
 }
 
@@ -512,7 +763,10 @@ fn reject_arguments(args: &[String], message: &str) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{dhcp_service_is_stopped, parse_wpa_state};
+    use super::{
+        association_timeout, control_socket_candidates, dhcp_service_is_stopped, parse_wpa_state,
+        WpaControlErrorKind,
+    };
 
     #[test]
     fn parses_only_the_wpa_state_field() {
@@ -536,5 +790,56 @@ mod tests {
     fn waits_for_active_dhcp_service_states() {
         assert!(!dhcp_service_is_stopped("running"));
         assert!(!dhcp_service_is_stopped("stopping"));
+    }
+
+    #[test]
+    fn resolves_android_22_and_legacy_control_socket_paths() {
+        assert_eq!(
+            control_socket_candidates("wlan0"),
+            vec![
+                "/data/system/wpa_supplicant/wlan0",
+                "/data/misc/wifi/sockets/wlan0",
+                "/data/misc/wifi/wpa_supplicant/wlan0",
+                "/dev/socket/wpa_wlan0",
+            ]
+        );
+    }
+
+    #[test]
+    fn does_not_treat_client_socket_name_as_supplicant_endpoint() {
+        assert!(control_socket_candidates("wlan0")
+            .iter()
+            .all(|path| !path.ends_with("wpa_ctrl_wlan0")));
+    }
+
+    #[test]
+    fn labels_control_socket_failure_classes() {
+        assert_eq!(
+            WpaControlErrorKind::MissingSocket.label(),
+            "control_socket_missing"
+        );
+        assert_eq!(
+            WpaControlErrorKind::PermissionDenied.label(),
+            "control_socket_permission_denied"
+        );
+        assert_eq!(
+            WpaControlErrorKind::SupplicantUnavailable.label(),
+            "supplicant_unavailable"
+        );
+    }
+
+    #[test]
+    fn keeps_association_timeout_distinct_from_control_socket_errors() {
+        let error = association_timeout(
+            None,
+            Some((
+                "/data/system/wpa_supplicant/wlan0".into(),
+                "ASSOCIATING".into(),
+            )),
+        )
+        .expect_err("an incomplete WPA state must time out");
+
+        assert_eq!(error.stage, "association_timeout");
+        assert_eq!(error.kind, "association_timeout");
     }
 }

@@ -230,7 +230,17 @@ adb shell chmod 755 /data/local/tmp/prs-t1-wifi-helper
 
 The helper accepts only `load-driver`, `unload-driver`, `start-supplicant`,
 and `stop-supplicant`. It does not receive a configuration path or any Wi-Fi
-credential. `wifi-up` polls the supplicant control socket for `wpa_state` and
-reads only the `dhcp.wlan0.result` property after starting `dhcpcd`. Shutdown
-waits up to 10 seconds for `init.svc.dhcpcd` to report `stopped` or disappear
-before it stops the supplicant and unloads the driver.
+credential. `wifi-up` polls the Android 2.2 per-interface supplicant control
+socket for `wpa_state` and reads only the `dhcp.wlan0.result` property after
+starting `dhcpcd`. Shutdown waits up to 10 seconds for `init.svc.dhcpcd` to
+report `stopped` or disappear before it stops the supplicant and unloads the
+driver.
+
+The status resolver tries `/data/system/wpa_supplicant/wlan0` first, followed
+by `/data/misc/wifi/sockets/wlan0`, `/data/misc/wifi/wpa_supplicant/wlan0`,
+and `/dev/socket/wpa_wlan0`. These are server-side control paths. A
+`wpa_ctrl_*` path is a client-side socket name and is not used as the status
+endpoint. The agent reports the path that answered and classifies missing
+paths, permission failures, supplicant crashes, unavailable peers, read
+timeouts, protocol errors, and association timeouts. It does not read or
+rewrite the saved supplicant configuration.

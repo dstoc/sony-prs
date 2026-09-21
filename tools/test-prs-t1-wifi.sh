@@ -28,6 +28,12 @@ grep -Fq 'ASSOCIATION_TIMEOUT: Duration = Duration::from_secs(60)' "$wifi_source
 grep -Fq 'DHCP_TIMEOUT: Duration = Duration::from_secs(30)' "$wifi_source"
 grep -Fq 'strip_prefix("wpa_state=")' "$wifi_source"
 grep -Fq 'dhcp.wlan0.result' "$wifi_source"
+grep -Fq '"/data/system/wpa_supplicant"' "$wifi_source"
+grep -Fq '"/data/misc/wifi/sockets"' "$wifi_source"
+grep -Fq '"/dev/socket/wpa_"' "$wifi_source"
+grep -Fq 'wifi.association_source' "$wifi_source"
+grep -Fq 'supplicant_crashed' "$wifi_source"
+! grep -Fq 'wpa_ctrl_wlan0' "$wifi_source"
 
 python3 - "$wifi_source" <<'PY'
 from pathlib import Path
@@ -46,6 +52,16 @@ assert shutdown.index('run_helper("stop-supplicant")') < shutdown.index(
 assert stop_dhcp.index('set_property("ctl.stop", DHCP_SERVICE)') < stop_dhcp.index(
     "wait_for_dhcp_service_stop()"
 )
+
+candidate_paths = [
+    "/data/system/wpa_supplicant",
+    "/data/misc/wifi/sockets",
+    "/data/misc/wifi/wpa_supplicant",
+    "/dev/socket/wpa_",
+]
+candidate_source = source[source.index("const WPA_CONTROL_SOCKET_DIRS"):source.index("const WPA_ANDROID_SOCKET_PREFIX")]
+assert all(path in candidate_source for path in candidate_paths[:3])
+assert "/dev/socket/wpa_" in source
 PY
 
 echo 'PRS-T1 Wi-Fi shim and lifecycle contract checks passed'
