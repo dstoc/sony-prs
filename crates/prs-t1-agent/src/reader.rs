@@ -8,9 +8,13 @@
 
 use crate::display::{self, CONTENT_TOP};
 use crate::framebuffer::{DisplayCanvas, DisplayRegion, NativeDisplay};
+use crate::qr::QrMatrix;
 use crate::refresh::{PageTone, RefreshPlan};
 use embedded_graphics::geometry::Point;
-use embedded_graphics::mono_font::{ascii::FONT_8X13, MonoTextStyle};
+use embedded_graphics::mono_font::{
+    ascii::{FONT_8X13, FONT_8X13_BOLD},
+    MonoTextStyle,
+};
 use embedded_graphics::pixelcolor::{Rgb565, RgbColor};
 use embedded_graphics::prelude::{Drawable, IntoStorage};
 use embedded_graphics::text::{Baseline, Text};
@@ -39,6 +43,80 @@ pub const DEFAULT_MONOSPACE_BOLD_ITALIC_FONT: &str =
     "/system/fonts/HelveticaMonospacedW1G-BdIt.otf";
 pub const PAGE_BOTTOM_MARGIN: u32 = 16;
 const GLYPH_CACHE_CAPACITY: usize = 256;
+const EXTERNAL_LINK_OVERLAY_WIDTH: usize = 360;
+const EXTERNAL_LINK_OVERLAY_HEIGHT: usize = 214;
+const EXTERNAL_LINK_OVERLAY_MARGIN: usize = 12;
+const EXTERNAL_LINK_QR_BOX_SIZE: usize = 176;
+const EXTERNAL_LINK_QR_QUIET_ZONE: usize = 4;
+
+/// The damage region used for the transient external-link overlay.
+pub(crate) fn external_link_overlay_region(width: u32, height: u32) -> DisplayRegion {
+    let width = width as usize;
+    let height = height as usize;
+    let overlay_width = EXTERNAL_LINK_OVERLAY_WIDTH.min(width);
+    let overlay_height =
+        EXTERNAL_LINK_OVERLAY_HEIGHT.min(height.saturating_sub(PAGE_BOTTOM_MARGIN as usize));
+    let right_margin = EXTERNAL_LINK_OVERLAY_MARGIN.min(width.saturating_sub(overlay_width));
+    let bottom = height
+        .saturating_sub(PAGE_BOTTOM_MARGIN as usize)
+        .min(height);
+    let top = bottom.saturating_sub(overlay_height);
+    DisplayRegion::new(
+        width
+            .saturating_sub(right_margin)
+            .saturating_sub(overlay_width) as u32,
+        top as u32,
+        overlay_width as u32,
+        overlay_height as u32,
+    )
+}
+
+fn truncated_url_lines(url: &str, chars_per_line: usize, max_lines: usize) -> Vec<String> {
+    if chars_per_line == 0 || max_lines == 0 {
+        return Vec::new();
+    }
+
+    let mut remaining = url.chars();
+    let mut lines = Vec::new();
+    for line_index in 0..max_lines {
+        let mut line = remaining.by_ref().take(chars_per_line).collect::<String>();
+        let has_more = remaining.next().is_some();
+        if has_more && line_index + 1 == max_lines {
+            let suffix = "...";
+            line = line
+                .chars()
+                .take(chars_per_line.saturating_sub(suffix.len()))
+                .collect();
+            line.push_str(suffix);
+        }
+        if line.is_empty() {
+            break;
+        }
+        lines.push(line);
+        if !has_more {
+            break;
+        }
+    }
+    lines
+}
+
+#[derive(Clone, Debug)]
+struct ExternalLinkOverlay {
+    url: String,
+    qr: QrMatrix,
+}
+
+impl ExternalLinkOverlay {
+    fn new(url: String) -> io::Result<Self> {
+        let qr = QrMatrix::encode(&url).map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("encode external URL as QR: {error}"),
+            )
+        })?;
+        Ok(Self { url, qr })
+    }
+}
 
 /// Runtime-selectable paths for the initial Markdown document and its fonts.
 ///
@@ -149,7 +227,7 @@ pub struct T1Reader {
     config: ReaderConfig,
     entry_point: PathBuf,
     library_root: PathBuf,
-    external_url_notice: Option<String>,
+    external_link_overlay: Option<ExternalLinkOverlay>,
     library_empty: bool,
 }
 
@@ -196,7 +274,7 @@ impl T1Reader {
             config: reload_config,
             entry_point: config.document,
             library_root: library_root.as_ref().to_owned(),
-            external_url_notice: None,
+            external_link_overlay: None,
             library_empty: false,
         })
     }
@@ -212,7 +290,7 @@ impl T1Reader {
             Ok(config) => config,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 self.library_empty = true;
-                self.external_url_notice = None;
+                self.external_link_overlay = None;
                 return Ok(());
             }
             Err(error) => return Err(error),
@@ -306,11 +384,18 @@ impl T1Reader {
         self.reader.back_event()
     }
 
-    /// Show an application-owned fallback for an external URL. The shared
-    /// reader reports the URL but deliberately does not know how to launch a
-    /// browser on the T1.
-    pub fn set_external_url_notice(&mut self, url: Option<String>) {
-        self.external_url_notice = url;
+    /// Show an application-owned QR overlay for an external URL. The shared
+    /// reader reports the URL but deliberately does not launch a browser or
+    /// perform network I/O on the T1.
+    pub fn set_external_link_overlay(&mut self, url: String) -> io::Result<()> {
+        self.external_link_overlay = Some(ExternalLinkOverlay::new(url)?);
+        Ok(())
+    }
+
+    /// Dismiss the transient external-link overlay before the next input is
+    /// handled. The caller uses the return value to request overlay damage.
+    pub fn clear_external_link_overlay(&mut self) -> bool {
+        self.external_link_overlay.take().is_some()
     }
 
     /// Build a complete packed RGB565 screen, including the T1 status bar and
@@ -348,43 +433,115 @@ impl T1Reader {
         self.renderer
             .render_at(page, &mut canvas, Point::new(0, CONTENT_TOP as i32))
             .expect("RGB565 DisplayCanvas drawing is infallible");
-        self.draw_external_url_notice(&mut canvas, width, height);
+        self.draw_external_link_overlay(&mut canvas, width, height);
         Ok(frame)
     }
 
-    fn draw_external_url_notice(
+    fn draw_external_link_overlay(
         &self,
         canvas: &mut DisplayCanvas<'_>,
         width: usize,
         height: usize,
     ) {
-        let Some(url) = self.external_url_notice.as_deref() else {
+        let Some(overlay) = self.external_link_overlay.as_ref() else {
             return;
         };
-        let notice_height = 24;
-        let notice_top = height.saturating_sub(notice_height);
+        let region = external_link_overlay_region(width as u32, height as u32);
+        let left = region.left as usize;
+        let top = region.top as usize;
+        let panel_width = region.width as usize;
+        let panel_height = region.height as usize;
+        if panel_width == 0 || panel_height == 0 {
+            return;
+        }
         canvas.fill_rect(
-            0,
-            notice_top,
-            width,
-            notice_height,
+            left,
+            top,
+            panel_width,
+            panel_height,
             Rgb565::WHITE.into_storage(),
         );
-
-        let available_chars = width.saturating_sub(16) / FONT_8X13.character_size.width as usize;
-        let mut label = String::from("External URL: ");
-        label.extend(
-            url.chars()
-                .take(available_chars.saturating_sub(label.len())),
+        canvas.stroke_rect(
+            left,
+            top,
+            panel_width,
+            panel_height,
+            Rgb565::BLACK.into_storage(),
         );
+
+        let qr_box_size = EXTERNAL_LINK_QR_BOX_SIZE
+            .min(panel_width.saturating_sub(EXTERNAL_LINK_OVERLAY_MARGIN * 2))
+            .min(panel_height.saturating_sub(EXTERNAL_LINK_OVERLAY_MARGIN * 2));
+        let module_count = overlay
+            .qr
+            .size()
+            .saturating_add(EXTERNAL_LINK_QR_QUIET_ZONE * 2);
+        let scale = qr_box_size.checked_div(module_count).unwrap_or(0);
+        if scale == 0 {
+            return;
+        }
+        let qr_size = module_count.saturating_mul(scale);
+        let qr_left = left
+            .saturating_add(panel_width)
+            .saturating_sub(EXTERNAL_LINK_OVERLAY_MARGIN)
+            .saturating_sub(qr_size);
+        let qr_top = top.saturating_add(panel_height.saturating_sub(qr_size) / 2);
+        for y in 0..overlay.qr.size() {
+            for x in 0..overlay.qr.size() {
+                if overlay.qr.is_dark(x, y) {
+                    canvas.fill_rect(
+                        qr_left.saturating_add((x + EXTERNAL_LINK_QR_QUIET_ZONE) * scale),
+                        qr_top.saturating_add((y + EXTERNAL_LINK_QR_QUIET_ZONE) * scale),
+                        scale,
+                        scale,
+                        Rgb565::BLACK.into_storage(),
+                    );
+                }
+            }
+        }
+
+        let text_left = left.saturating_add(EXTERNAL_LINK_OVERLAY_MARGIN);
+        let text_right = qr_left.saturating_sub(EXTERNAL_LINK_OVERLAY_MARGIN);
+        let text_width = text_right.saturating_sub(text_left);
+        let chars_per_line = text_width / FONT_8X13.character_size.width as usize;
         Text::with_baseline(
-            &label,
-            Point::new(8, notice_top as i32 + 5),
+            "External link",
+            Point::new(text_left as i32, top.saturating_add(14) as i32),
+            MonoTextStyle::new(&FONT_8X13_BOLD, Rgb565::BLACK),
+            Baseline::Top,
+        )
+        .draw(canvas)
+        .expect("RGB565 DisplayCanvas drawing is infallible");
+        Text::with_baseline(
+            "URL:",
+            Point::new(text_left as i32, top.saturating_add(36) as i32),
             MonoTextStyle::new(&FONT_8X13, Rgb565::BLACK),
             Baseline::Top,
         )
         .draw(canvas)
         .expect("RGB565 DisplayCanvas drawing is infallible");
+
+        let line_height = FONT_8X13.character_size.height as usize + 2;
+        let max_lines = panel_height
+            .saturating_sub(56)
+            .checked_div(line_height)
+            .unwrap_or(0);
+        for (index, line) in truncated_url_lines(&overlay.url, chars_per_line, max_lines)
+            .into_iter()
+            .enumerate()
+        {
+            Text::with_baseline(
+                &line,
+                Point::new(
+                    text_left as i32,
+                    top.saturating_add(54).saturating_add(index * line_height) as i32,
+                ),
+                MonoTextStyle::new(&FONT_8X13, Rgb565::BLACK),
+                Baseline::Top,
+            )
+            .draw(canvas)
+            .expect("RGB565 DisplayCanvas drawing is infallible");
+        }
     }
 
     /// Classify the current page for the T1 refresh policy.
@@ -723,6 +880,103 @@ mod tests {
             .expect("render reader error");
         let png = crate::display::rgb565_to_png(&frame, 600, 800).expect("encode reader PNG");
         assert_png_golden("reader-error-feedback", &png);
+        fs::remove_dir_all(root).expect("remove reader fixture root");
+    }
+
+    #[test]
+    fn external_link_overlay_matches_png_golden() {
+        const URL: &str = "https://example.com/reader";
+        let root = fixture_root(&format!("# Native reader\n\n[External link]({URL})\n"));
+        let mut reader =
+            T1Reader::open(fixture_config(&root), Viewport::new(600, 708)).expect("open fixture");
+        let link = reader
+            .reader
+            .current_page()
+            .expect("current page")
+            .hit_regions
+            .first()
+            .expect("external link hit region")
+            .bounds
+            .top_left;
+        let event = reader
+            .tap(Point::new(link.x, link.y + CONTENT_TOP as i32))
+            .expect("activate external link");
+        assert_eq!(event, ReaderEvent::ExternalUrl(URL.into()));
+        reader
+            .set_external_link_overlay(URL.into())
+            .expect("encode external URL QR");
+
+        let frame = reader
+            .render_frame("87%|UP|ON|ON||12:34", None, 600, 800)
+            .expect("render external-link overlay");
+        let png = crate::display::rgb565_to_png(&frame, 600, 800).expect("encode reader PNG");
+        assert_png_golden("reader-external-link", &png);
+        fs::remove_dir_all(root).expect("remove reader fixture root");
+    }
+
+    #[test]
+    fn external_link_overlay_is_replaced_and_cleared_without_navigation() {
+        const FIRST_URL: &str = "https://example.com/first";
+        const SECOND_URL: &str = "https://example.org/second";
+        let root = fixture_root(&format!(
+            "# Native reader\n\n[First]({FIRST_URL})\n\n[Second]({SECOND_URL})\n"
+        ));
+        let mut reader =
+            T1Reader::open(fixture_config(&root), Viewport::new(600, 708)).expect("open fixture");
+        let first_link = reader
+            .reader
+            .current_page()
+            .expect("current page")
+            .hit_regions[0]
+            .bounds
+            .top_left;
+        let first_event = reader
+            .tap(Point::new(first_link.x, first_link.y + CONTENT_TOP as i32))
+            .expect("activate first external link");
+        assert_eq!(first_event, ReaderEvent::ExternalUrl(FIRST_URL.into()));
+        reader
+            .set_external_link_overlay(FIRST_URL.into())
+            .expect("encode first external URL QR");
+        assert_eq!(
+            reader
+                .external_link_overlay
+                .as_ref()
+                .map(|overlay| overlay.url.as_str()),
+            Some(FIRST_URL)
+        );
+        assert_eq!(
+            reader
+                .external_link_overlay
+                .as_ref()
+                .map(|overlay| &overlay.qr),
+            Some(&QrMatrix::encode(FIRST_URL).expect("encode first URL for test"))
+        );
+
+        reader
+            .set_external_link_overlay(SECOND_URL.into())
+            .expect("replace external URL QR");
+        assert_eq!(
+            reader
+                .external_link_overlay
+                .as_ref()
+                .map(|overlay| overlay.url.as_str()),
+            Some(SECOND_URL)
+        );
+        assert_eq!(
+            reader
+                .external_link_overlay
+                .as_ref()
+                .map(|overlay| &overlay.qr),
+            Some(&QrMatrix::encode(SECOND_URL).expect("encode second URL for test"))
+        );
+        assert_eq!(
+            reader.reader.current_location().unwrap().document.as_ref(),
+            "index.md"
+        );
+        assert_eq!(reader.reader.history().len(), 1);
+
+        assert!(reader.clear_external_link_overlay());
+        assert!(!reader.clear_external_link_overlay());
         fs::remove_dir_all(root).expect("remove reader fixture root");
     }
 

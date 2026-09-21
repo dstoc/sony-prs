@@ -450,7 +450,9 @@ half. The page coordinate is translated from whole-screen input by removing the
 Internal links support anchors and root-relative Markdown files, including
 `#anchor`, `other.md`, and `other.md#anchor`. External URLs are reported by the
 shared reader and remain an application concern: the T1 runtime displays the
-activated URL in a bottom-of-screen notice and does not launch a browser.
+activated URL in a transient bottom-right overlay with URL text and a QR code.
+The overlay is dismissed by the next touch or physical button press. The agent
+does not launch a browser or make a network request for the external URL.
 
 On the Home reading surface, the hardware left and right keys (`KEY_LEFT` code
 105 and `KEY_RIGHT` code 106) perform one previous/next reader-page operation
@@ -611,9 +613,10 @@ button. A normal reboot is the supported way to restore zygote,
 - Startup opens one configured document; there is no file browser or persistent
   library UI. Local Markdown links and anchors can still navigate within the
   configured resource root.
-- External URLs produce a short T1-owned bottom notice and are not opened in a
-  browser. Task-list markers are not interactive. Specialist Markdown uses the
-  fallbacks in the [support matrix](../../docs/prs-t1/markdown-reader.md#markdown-support-matrix).
+- External URLs produce a transient T1-owned bottom-right text and QR overlay.
+  The overlay is not opened in a browser and does not make a network request.
+  Task-list markers are not interactive. Specialist Markdown uses the fallbacks
+  in the [support matrix](../../docs/prs-t1/markdown-reader.md#markdown-support-matrix).
 - The native ownership path is a broad zygote/system_server shutdown and needs
   root access. It is not an Android boot integration or a product-ready
   display-owner boundary.

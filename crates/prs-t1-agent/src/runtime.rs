@@ -158,6 +158,14 @@ pub fn run(path: &Path, suspend_mode: SuspendMode) -> io::Result<()> {
                 let Some(event) = source.reader.read_one()? else {
                     break;
                 };
+                if dismisses_external_link_overlay(source.kind, event) {
+                    if markdown_reader.clear_external_link_overlay() {
+                        redraw_area = Some(match redraw_area {
+                            Some(existing) => existing.merge(DirtyArea::ExternalLinkOverlay),
+                            None => DirtyArea::ExternalLinkOverlay,
+                        });
+                    }
+                }
                 let (dirty, event_action) = state.observe(source.kind, event);
                 let immediate_feedback = matches!(dirty, Some(DirtyArea::Action(_)));
                 if let Some(dirty) = dirty {
@@ -506,11 +514,14 @@ fn reader_event_dirty_area(event: &ReaderEvent, tone: PageTone) -> Option<DirtyA
         | ReaderEvent::Navigated { .. }
         | ReaderEvent::Back { .. }
         | ReaderEvent::Forward { .. } => Some(DirtyArea::PageTurn(tone)),
-        ReaderEvent::ExternalUrl(_) | ReaderEvent::Asset(_) | ReaderEvent::NoAction => {
-            Some(DirtyArea::Interaction)
-        }
+        ReaderEvent::ExternalUrl(_) => Some(DirtyArea::ExternalLinkOverlay),
+        ReaderEvent::Asset(_) | ReaderEvent::NoAction => Some(DirtyArea::Interaction),
         ReaderEvent::Opened { .. } => None,
     }
+}
+
+fn dismisses_external_link_overlay(source: InputSourceKind, event: RawEvent) -> bool {
+    source == InputSourceKind::Touch || event.event_type == EVENT_KEY
 }
 
 fn reader_event_message(event: &ReaderEvent) -> String {
@@ -568,7 +579,10 @@ fn apply_reader_result(
                 .unwrap_or(DirtyArea::Full);
             match event {
                 ReaderEvent::ExternalUrl(url) => {
-                    markdown_reader.set_external_url_notice(Some(url));
+                    if let Err(error) = markdown_reader.set_external_link_overlay(url) {
+                        state.set_error_feedback(format!("External link QR unavailable: {error}"));
+                        return DirtyArea::Full;
+                    }
                 }
                 ReaderEvent::NoAction => {}
                 ReaderEvent::Opened { .. }
@@ -576,13 +590,15 @@ fn apply_reader_result(
                 | ReaderEvent::Navigated { .. }
                 | ReaderEvent::Back { .. }
                 | ReaderEvent::Forward { .. }
-                | ReaderEvent::Asset(_) => markdown_reader.set_external_url_notice(None),
+                | ReaderEvent::Asset(_) => {
+                    markdown_reader.clear_external_link_overlay();
+                }
             }
             dirty
         }
         Err(error) => {
             state.set_error_feedback(format!("Reader error: {error}"));
-            markdown_reader.set_external_url_notice(None);
+            markdown_reader.clear_external_link_overlay();
             eprintln!("standalone-test: Markdown operation failed: {error}");
             DirtyArea::Full
         }
@@ -595,6 +611,7 @@ enum DirtyArea {
     Status,
     PageTurn(PageTone),
     Interaction,
+    ExternalLinkOverlay,
     Action(display::DetailsAction),
     Touch,
     Key,
@@ -612,6 +629,7 @@ impl DirtyArea {
             (Self::PageTurn(_), Self::Status) | (Self::Status, Self::PageTurn(_)) => Self::Full,
             (Self::PageTurn(tone), Self::Interaction)
             | (Self::Interaction, Self::PageTurn(tone)) => Self::PageTurn(tone),
+            (Self::ExternalLinkOverlay, Self::ExternalLinkOverlay) => Self::ExternalLinkOverlay,
             (Self::Action(left), Self::Action(right)) if left == right => Self::Action(left),
             (Self::Key, Self::Power) | (Self::Power, Self::Key) => Self::Power,
             (left, right) if left == right => left,
@@ -626,6 +644,7 @@ impl DirtyArea {
             Self::Status if page == UiPage::Home => RefreshReason::StatusBar,
             Self::Status
             | Self::Interaction
+            | Self::ExternalLinkOverlay
             | Self::Action(_)
             | Self::Touch
             | Self::Key
@@ -653,6 +672,7 @@ impl DirtyArea {
         let region = match self {
             Self::Full => DisplayRegion::full(width, height),
             Self::PageTurn(_) | Self::Interaction => content_region(),
+            Self::ExternalLinkOverlay => reader::external_link_overlay_region(width, height),
             Self::Status if page == UiPage::Home => {
                 DisplayRegion::new(0, 0, width, display::STATUS_BAR_HEIGHT as u32)
             }
@@ -2209,6 +2229,65 @@ mod tests {
         assert_eq!(dirty, Some(DirtyArea::Interaction));
         assert_eq!(state.take_reader_tap(), Some(Point::new(500, 156)));
         assert_eq!(state.page, UiPage::Home);
+    }
+
+    #[test]
+    fn external_link_overlay_uses_bounded_transient_damage() {
+        assert_eq!(
+            DirtyArea::ExternalLinkOverlay.reason(UiPage::Home),
+            RefreshReason::Transient
+        );
+        assert_eq!(
+            DirtyArea::ExternalLinkOverlay.region(600, 800, UiPage::Home),
+            super::reader::external_link_overlay_region(600, 800)
+        );
+        assert_eq!(
+            super::reader::external_link_overlay_region(600, 800),
+            super::DisplayRegion::new(228, 570, 360, 214)
+        );
+    }
+
+    #[test]
+    fn external_url_events_route_to_overlay_without_reader_navigation() {
+        let event = ReaderEvent::ExternalUrl("https://example.com/reader".into());
+        assert_eq!(
+            super::reader_event_dirty_area(&event, PageTone::Monochrome),
+            Some(DirtyArea::ExternalLinkOverlay)
+        );
+        assert_eq!(
+            super::reader_event_message(&event),
+            "External link: https://example.com/reader"
+        );
+    }
+
+    #[test]
+    fn next_touch_or_physical_button_event_dismisses_external_overlay_first() {
+        let touch = RawEvent {
+            event_type: EVENT_ABS,
+            code: ABS_MT_POSITION_X,
+            value: 400,
+            ..event(0, 0, 1_000_000)
+        };
+        let button = event(KEY_RIGHT, 1, 1_000_001);
+        let non_interaction = RawEvent {
+            event_type: EVENT_ABS,
+            code: ABS_MT_POSITION_Y,
+            value: 600,
+            ..event(0, 0, 1_000_002)
+        };
+
+        assert!(super::dismisses_external_link_overlay(
+            InputSourceKind::Touch,
+            touch
+        ));
+        assert!(super::dismisses_external_link_overlay(
+            InputSourceKind::Keys,
+            button
+        ));
+        assert!(!super::dismisses_external_link_overlay(
+            InputSourceKind::Keys,
+            non_interaction
+        ));
     }
 
     #[test]
