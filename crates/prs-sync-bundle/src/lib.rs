@@ -146,7 +146,7 @@ impl ValidatedBundle {
 
 /// Validates a complete uncompressed tar stream without extracting it.
 pub fn validate<R: Read>(reader: R) -> Result<ValidatedBundle, BundleError> {
-    process_archive(reader, None).map(|manifest| ValidatedBundle { manifest })
+    process_archive(reader, None, None).map(|manifest| ValidatedBundle { manifest })
 }
 
 /// Validates and extracts a complete bundle stream.
@@ -156,7 +156,28 @@ pub fn validate<R: Read>(reader: R) -> Result<ValidatedBundle, BundleError> {
 /// complete archive has passed validation. This keeps invalid or truncated
 /// input from becoming visible to readers of the destination.
 pub fn extract<R: Read>(reader: R, destination: impl AsRef<Path>) -> Result<Manifest, BundleError> {
-    let destination = destination.as_ref();
+    extract_internal(reader, destination.as_ref(), None)
+}
+
+/// Validates and extracts a complete bundle stream within a caller-provided
+/// staging-content limit.
+///
+/// The limit includes the raw `manifest.json` entry and every extracted file.
+/// Extraction remains private until the complete archive passes validation and
+/// the limit check.
+pub fn extract_with_size_limit<R: Read>(
+    reader: R,
+    destination: impl AsRef<Path>,
+    staging_limit: u64,
+) -> Result<Manifest, BundleError> {
+    extract_internal(reader, destination.as_ref(), Some(staging_limit))
+}
+
+fn extract_internal<R: Read>(
+    reader: R,
+    destination: &Path,
+    staging_limit: Option<u64>,
+) -> Result<Manifest, BundleError> {
     let parent = destination
         .parent()
         .filter(|path| !path.as_os_str().is_empty())
@@ -180,7 +201,7 @@ pub fn extract<R: Read>(reader: R, destination: impl AsRef<Path>) -> Result<Mani
         .prefix(".prs-sync-bundle-")
         .tempdir_in(parent)
         .map_err(BundleError::Io)?;
-    let manifest = process_archive(reader, Some(staging.path()))?;
+    let manifest = process_archive(reader, Some(staging.path()), staging_limit)?;
 
     if fs::symlink_metadata(destination).is_ok() {
         fs::remove_dir(destination).map_err(BundleError::Io)?;
@@ -240,6 +261,8 @@ pub enum BundleError {
     },
     /// The sum of manifest file sizes exceeds the bounded protocol limit.
     ExtractedSizeTooLarge { limit: u64 },
+    /// The raw manifest and extracted files exceed a caller-provided staging limit.
+    StagingSizeTooLarge { limit: u64 },
     /// The extraction target already contains data or is not a directory.
     DestinationExists(PathBuf),
     /// The destination parent is not a directory.
@@ -322,6 +345,9 @@ impl fmt::Display for BundleError {
             ),
             Self::ExtractedSizeTooLarge { limit } => {
                 write!(formatter, "extracted bundle size exceeds {limit} bytes")
+            }
+            Self::StagingSizeTooLarge { limit } => {
+                write!(formatter, "staged bundle size exceeds {limit} bytes")
             }
             Self::DestinationExists(path) => {
                 write!(
@@ -548,6 +574,7 @@ fn append_source<W: Write>(
 fn process_archive<R: Read>(
     reader: R,
     destination: Option<&Path>,
+    staging_limit: Option<u64>,
 ) -> Result<Manifest, BundleError> {
     let mut counted = CountingReader::new(reader, MAX_ARCHIVE_SIZE);
     let (manifest, expected, seen) = {
@@ -557,6 +584,7 @@ fn process_archive<R: Read>(
         let mut expected: HashMap<BundlePath, u64> = HashMap::new();
         let mut seen = HashMap::new();
         let mut extracted_size = 0u64;
+        let mut staged_size = 0u64;
 
         for entry_result in entries {
             let mut entry = entry_result.map_err(BundleError::Io)?;
@@ -583,6 +611,12 @@ fn process_archive<R: Read>(
                     });
                 }
                 let bytes = read_entry(&mut entry, &path)?;
+                if let Some(limit) = staging_limit {
+                    staged_size = bytes.len() as u64;
+                    if staged_size > limit {
+                        return Err(BundleError::StagingSizeTooLarge { limit });
+                    }
+                }
                 let parsed: Manifest = serde_json::from_slice(&bytes)?;
                 expected = validate_manifest(&parsed)?;
                 if let Some(destination) = destination {
@@ -608,6 +642,14 @@ fn process_archive<R: Read>(
                     expected: expected_size,
                     actual: declared_size,
                 });
+            }
+            if let Some(limit) = staging_limit {
+                staged_size = staged_size
+                    .checked_add(declared_size)
+                    .ok_or(BundleError::StagingSizeTooLarge { limit })?;
+                if staged_size > limit {
+                    return Err(BundleError::StagingSizeTooLarge { limit });
+                }
             }
             extracted_size = extracted_size.checked_add(declared_size).ok_or(
                 BundleError::ExtractedSizeTooLarge {
@@ -1256,6 +1298,25 @@ mod tests {
         let reader = ChunkedReader::new(archive, 7);
         extract(reader, &output).unwrap();
         assert_eq!(fs::read(output.join("index.md")).unwrap(), b"streamed");
+    }
+
+    #[test]
+    fn extraction_size_limit_counts_raw_manifest_bytes() {
+        let manifest = manifest_bytes(&[("index.md", 1)], "index.md");
+        let padded_manifest = [manifest.as_slice(), b"  \n"].concat();
+        let archive = tar_with_entries(&[
+            (MANIFEST_PATH, EntryType::Regular, &padded_manifest),
+            ("index.md", EntryType::Regular, b"x"),
+        ]);
+        let output_parent = temp_dir();
+        let output = output_parent.path().join("out");
+        let limit = manifest.len() as u64 + 1;
+
+        assert!(matches!(
+            extract_with_size_limit(Cursor::new(archive), &output, limit),
+            Err(BundleError::StagingSizeTooLarge { .. })
+        ));
+        assert!(!output.exists());
     }
 
     struct ChunkedReader {

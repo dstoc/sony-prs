@@ -6,7 +6,7 @@
 
 use crate::framebuffer::NativeDisplay;
 use crate::{display, network};
-use prs_sync_bundle::{extract, BundleError, MAX_BUNDLE_PATH_BYTES};
+use prs_sync_bundle::{extract_with_size_limit, BundleError, MAX_BUNDLE_PATH_BYTES};
 use prs_sync_protocol::{
     ApiError, ApiErrorCode, AuthorizationKind, AuthorizationStart, InboxManifestState,
     InboxRevision, Manifest, PollingSecretClaimOutcome, PollingSecretClaimRequest,
@@ -447,8 +447,6 @@ impl SyncClient {
         let current = self.config.library_root.join("current");
         let current_size = existing_library_size(&current)
             .map_err(|error| map_storage_error("could not inspect current library", error))?;
-        let extracted_size = manifest_storage_size(&manifest)?;
-
         let response = transport
             .request(Method::GET, "/api/v1/reader/bundle")?
             .bearer_auth(session.bearer_token.as_str())
@@ -474,7 +472,7 @@ impl SyncClient {
             ));
         }
         let archive_bound = content_length.unwrap_or(MAX_BUNDLE_SIZE);
-        let required = required_storage_bytes(current_size, archive_bound, extracted_size)?;
+        let required = required_storage_bytes(current_size, archive_bound, 0)?;
         if required > self.config.tmpfs_limit_bytes {
             return Err(SyncError::new(
                 "download",
@@ -498,11 +496,18 @@ impl SyncClient {
         archive_file.seek(SeekFrom::Start(0)).map_err(|error| {
             SyncError::local(format!("could not rewind bundle staging file: {error}"))
         })?;
+        let archive_size = archive_file
+            .metadata()
+            .map_err(|error| SyncError::local(format!("could not inspect staged bundle: {error}")))?
+            .len();
+        let staging_limit =
+            available_storage_bytes(self.config.tmpfs_limit_bytes, current_size, archive_size)?;
 
         let extracted = unique_path(&self.config.library_root, "prs-sync-library")
             .map_err(|error| map_storage_error("could not choose library staging path", error))?;
         let extracted_manifest =
-            extract(&mut archive_file, &extracted).map_err(map_bundle_error)?;
+            extract_with_size_limit(&mut archive_file, &extracted, staging_limit)
+                .map_err(map_bundle_error)?;
         if extracted_manifest != manifest {
             let _ = fs::remove_dir_all(&extracted);
             return Err(SyncError::new(
@@ -803,20 +808,6 @@ fn manifest_files_size(manifest: &Manifest) -> Result<u64, SyncError> {
     Ok(size)
 }
 
-fn manifest_storage_size(manifest: &Manifest) -> Result<u64, SyncError> {
-    let files_size = manifest_files_size(manifest)?;
-    let manifest_size = serde_json::to_vec(manifest)
-        .map_err(|error| SyncError::new("manifest", SyncState::InvalidBundle, error.to_string()))?
-        .len() as u64;
-    files_size.checked_add(manifest_size).ok_or_else(|| {
-        SyncError::new(
-            "manifest",
-            SyncState::TmpfsInsufficient,
-            "staged library size overflowed",
-        )
-    })
-}
-
 fn required_storage_bytes(
     current_size: u64,
     archive_size: u64,
@@ -832,6 +823,23 @@ fn required_storage_bytes(
                 "tmpfs requirement overflowed",
             )
         })
+}
+
+fn available_storage_bytes(
+    limit: u64,
+    current_size: u64,
+    archive_size: u64,
+) -> Result<u64, SyncError> {
+    let used = required_storage_bytes(current_size, archive_size, 0)?;
+    limit.checked_sub(used).ok_or_else(|| {
+        SyncError::new(
+            "download",
+            SyncState::TmpfsInsufficient,
+            format!(
+                "download requires at least {used} bytes but configured tmpfs limit is {limit}"
+            ),
+        )
+    })
 }
 
 fn validate_approval_url(
@@ -1059,6 +1067,7 @@ fn map_bundle_error(error: BundleError) -> SyncError {
     let detail = error.to_string();
     let state = match &error {
         BundleError::Io(error) if is_storage_capacity_error(error) => SyncState::TmpfsInsufficient,
+        BundleError::StagingSizeTooLarge { .. } => SyncState::TmpfsInsufficient,
         _ => SyncState::InvalidBundle,
     };
     SyncError::new("bundle", state, detail)
@@ -1131,6 +1140,7 @@ pub(crate) fn run_active(config: SyncConfig) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Cursor;
 
     #[test]
     fn endpoint_validation_keeps_api_base_path() {
@@ -1267,6 +1277,36 @@ mod tests {
             required_storage_bytes(u64::MAX, 1, 1).unwrap_err().state(),
             SyncState::TmpfsInsufficient
         );
+    }
+
+    #[test]
+    fn staging_capacity_failure_leaves_current_library_unchanged() {
+        let root = std::env::temp_dir().join(format!(
+            "prs-t1-sync-staging-limit-test-{}-{}",
+            std::process::id(),
+            TEMP_NAME_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let generation = root.join(".current-generation");
+        fs::create_dir(&generation).unwrap();
+        fs::write(generation.join("index.md"), b"current").unwrap();
+        publish_library(&root, &generation).unwrap();
+
+        let source = root.join("source-index.md");
+        fs::write(&source, b"candidate").unwrap();
+        let mut archive = Vec::new();
+        let manifest = prs_sync_bundle::BundleBuilder::new(&source)
+            .write(&mut archive)
+            .unwrap();
+        let limit = serde_json::to_vec(&manifest).unwrap().len() as u64;
+        let staging = root.join(".candidate-generation");
+
+        let error = extract_with_size_limit(Cursor::new(archive), &staging, limit).unwrap_err();
+
+        assert!(matches!(error, BundleError::StagingSizeTooLarge { .. }));
+        assert_eq!(fs::read(root.join("current/index.md")).unwrap(), b"current");
+        assert!(!staging.exists());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

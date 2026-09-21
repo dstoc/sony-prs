@@ -58,6 +58,8 @@ assert (
     '  prs-t1-agent wifi-probe HOSTNAME_OR_HTTPS_URL '
     '[--invalid-hostname] [--inject-network-loss STAGE]'
 ) in usage
+assert "Empty inboxes are a successful\\nsynchronization boundary" in source
+assert "recoverable synchronization failures" in source
 PY
 grep -Fq '  prs-t1-agent sync [HTTPS_ENDPOINT] [FRAMEBUFFER]' "$main_source"
 grep -Fq 'fixed 16 MiB encoded archive limit' "$agent_readme"
