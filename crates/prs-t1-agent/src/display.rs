@@ -31,9 +31,11 @@ pub const CONTENT_TOP: usize = 76;
 pub const CONTENT_LINE_STEP: usize = 25;
 pub const DETAILS_LINE_STEP: usize = 21;
 pub const DETAILS_ACTION_MARGIN: usize = 24;
-pub const DETAILS_DISPLAY_TEST_TOP: usize = 620;
-pub const DETAILS_REBOOT_TOP: usize = 664;
-pub const DETAILS_POWER_OFF_TOP: usize = 708;
+pub const DETAILS_SYNC_TOP: usize = 560;
+pub const DETAILS_RETURN_ENTRY_TOP: usize = 600;
+pub const DETAILS_DISPLAY_TEST_TOP: usize = 640;
+pub const DETAILS_REBOOT_TOP: usize = 680;
+pub const DETAILS_POWER_OFF_TOP: usize = 716;
 pub const DETAILS_BACK_TOP: usize = 752;
 pub const DETAILS_ACTION_HEIGHT: usize = 40;
 pub const SCREEN_WIDTH: usize = 600;
@@ -676,6 +678,8 @@ fn draw_details_actions(canvas: &mut DisplayCanvas<'_>) {
     let width = canvas.width();
     let button_width = width.saturating_sub(margin * 2);
     for (top, label) in [
+        (DETAILS_SYNC_TOP, "Sync now"),
+        (DETAILS_RETURN_ENTRY_TOP, "Return to entry point"),
         (DETAILS_DISPLAY_TEST_TOP, "Display test"),
         (DETAILS_REBOOT_TOP, "Reboot"),
         (DETAILS_POWER_OFF_TOP, "Power off"),

@@ -92,6 +92,12 @@ impl SyncConfig {
             tmpfs_limit_bytes,
         })
     }
+
+    pub(crate) fn for_runtime(framebuffer: &Path) -> Result<Self, SyncError> {
+        let mut config = Self::parse(&[])?;
+        config.framebuffer = framebuffer.to_owned();
+        Ok(config)
+    }
 }
 
 fn parse_endpoint(value: &str) -> Result<Url, SyncError> {
@@ -1118,17 +1124,20 @@ pub(crate) fn run_active(config: SyncConfig, display: &mut NativeDisplay) -> io:
             println!("sync.result=updated");
             println!("sync.revision={}", revision.value());
             println!("sync.entry_point={entry_point}");
-            Ok(())
+            Ok(SyncOutcome::Updated {
+                revision,
+                entry_point,
+            })
         }
         Ok(SyncOutcome::Cleared { revision }) => {
             println!("sync.result=cleared");
             println!("sync.revision={}", revision.value());
-            Ok(())
+            Ok(SyncOutcome::Cleared { revision })
         }
         Ok(SyncOutcome::Unchanged { revision }) => {
             println!("sync.result=unchanged");
             println!("sync.revision={}", revision.value());
-            Ok(())
+            Ok(SyncOutcome::Unchanged { revision })
         }
         Err(error) => {
             println!("sync.result=failure");

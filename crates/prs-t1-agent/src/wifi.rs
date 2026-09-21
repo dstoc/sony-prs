@@ -146,6 +146,12 @@ pub fn run(operation: Operation, args: Vec<String>) -> io::Result<()> {
 /// the duration of that attempt. Startup failures use the same cleanup path
 /// as the explicit Wi-Fi probe; an active sync always attempts shutdown.
 pub(crate) fn run_sync(config: crate::sync::SyncConfig) -> io::Result<()> {
+    run_sync_outcome(config).map(|_| ())
+}
+
+pub(crate) fn run_sync_outcome(
+    config: crate::sync::SyncConfig,
+) -> io::Result<crate::sync::SyncOutcome> {
     print_operation("sync");
     print_snapshot("before");
     print_timeouts();
@@ -164,17 +170,17 @@ pub(crate) fn run_sync(config: crate::sync::SyncConfig) -> io::Result<()> {
     print_snapshot("after");
 
     match (sync_result, shutdown_result) {
-        (Ok(()), Ok(())) => {
+        (Ok(outcome), Ok(())) => {
             println!("wifi.result=success");
             println!("wifi.sync_result=success");
-            Ok(())
+            Ok(outcome)
         }
         (Err(error), Ok(())) => {
             println!("wifi.result=failure");
             println!("wifi.sync_result=failure");
             Err(error)
         }
-        (Ok(()), Err(error)) => {
+        (Ok(_), Err(error)) => {
             print_failure(&error);
             Err(io::Error::other(error))
         }

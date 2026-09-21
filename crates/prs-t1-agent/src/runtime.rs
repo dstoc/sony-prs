@@ -1,7 +1,7 @@
 use crate::framebuffer::{DisplayRegion, NativeDisplay, WaveformMode};
 use crate::input::{EventReader, RawEvent};
 use crate::refresh::{PageTone, RefreshPolicy, RefreshReason};
-use crate::{display, input, reader};
+use crate::{display, input, reader, sync};
 use embedded_graphics::geometry::Point;
 use prs_markdown::reader::{ReaderError, ReaderEvent};
 use std::fs::OpenOptions;
@@ -10,6 +10,7 @@ use std::os::fd::AsRawFd;
 use std::os::raw::c_int;
 use std::path::Path;
 use std::process::{Child, ChildStdout, Command, Stdio};
+use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -39,6 +40,7 @@ const O_NONBLOCK: i32 = 0x800;
 const F_GETFL: c_int = 3;
 const F_SETFL: c_int = 4;
 const STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
+const IDLE_SYNC_INTERVAL: Duration = Duration::from_secs(15 * 60);
 
 unsafe extern "C" {
     fn fcntl(fd: c_int, command: c_int, ...) -> c_int;
@@ -99,11 +101,17 @@ pub fn run(path: &Path, suspend_mode: SuspendMode) -> io::Result<()> {
     let mut inputs =
         InputSet::open().map_err(|error| display_error("open input devices", error))?;
     let mut markdown_reader = reader::T1Reader::open(
-        reader::ReaderConfig::from_environment(),
+        reader::ReaderConfig::from_current_bundle().unwrap_or_else(|error| {
+            eprintln!(
+                "standalone-test: no current PRSync bundle ({error}); using configured reader"
+            );
+            reader::ReaderConfig::from_environment()
+        }),
         reader::viewport_for_display(display.width(), display.height()),
     )
     .map_err(|error| display_error("open development Markdown reader", error))?;
     let mut state = UiState::new();
+    let mut sync_worker = SyncWorker::new(path);
     let mut refresh_policy = RefreshPolicy::default();
     let mut adb_restart_pending = false;
 
@@ -155,6 +163,9 @@ pub fn run(path: &Path, suspend_mode: SuspendMode) -> io::Result<()> {
                         ReaderOperation::PreviousPage => markdown_reader.previous_page(),
                         ReaderOperation::NextPage => markdown_reader.next_page(),
                         ReaderOperation::Back => markdown_reader.back(),
+                        ReaderOperation::ReturnToEntryPoint => {
+                            markdown_reader.return_to_entry_point()
+                        }
                     };
                     let dirty = apply_reader_result(&mut state, &mut markdown_reader, result);
                     redraw_area = Some(match redraw_area {
@@ -170,6 +181,28 @@ pub fn run(path: &Path, suspend_mode: SuspendMode) -> io::Result<()> {
                         None => dirty,
                     });
                 }
+            }
+        }
+
+        if state.take_sync_request() {
+            if sync_worker.start() {
+                state.sync_started();
+                redraw_area = Some(DirtyArea::Full);
+            }
+        }
+        if state.should_start_idle_sync() && sync_worker.start() {
+            state.sync_started();
+            redraw_area = Some(DirtyArea::Full);
+        }
+        while let Some(event) = sync_worker.try_event() {
+            state.apply_sync_event(event);
+            redraw_area = Some(DirtyArea::Full);
+        }
+        if state.bundle_ready && state.is_idle() {
+            if markdown_reader.reload_current_bundle().is_ok() {
+                state.bundle_ready = false;
+                state.message = "New bundle ready".into();
+                redraw_area = Some(DirtyArea::Full);
             }
         }
 
@@ -636,6 +669,12 @@ fn screen_lines(state: &UiState, wake_lock_held: bool) -> Vec<String> {
             pretty_value(&uppercase_or_unknown(
                 status.usb.gadget_functions.as_deref()
             ))
+        ),
+        "Synchronization".into(),
+        format!("Sync {}", if state.sync_active { "active" } else { "idle" }),
+        format!(
+            "Failure {}",
+            state.last_sync_failure.as_deref().unwrap_or("none")
         ),
         format!(
             "ADB process {}  Service {}",
@@ -1194,6 +1233,64 @@ enum ReaderOperation {
     PreviousPage,
     NextPage,
     Back,
+    ReturnToEntryPoint,
+}
+
+enum SyncCommand {
+    Run,
+}
+
+enum SyncEvent {
+    Finished(Result<sync::SyncOutcome, String>),
+}
+
+struct SyncWorker {
+    commands: Sender<SyncCommand>,
+    events: Receiver<SyncEvent>,
+    busy: bool,
+}
+
+impl SyncWorker {
+    fn new(framebuffer: &Path) -> Self {
+        let (command_sender, command_receiver) = mpsc::channel();
+        let (event_sender, event_receiver) = mpsc::channel();
+        let thread_framebuffer = framebuffer.to_owned();
+        thread::spawn(move || {
+            while let Ok(SyncCommand::Run) = command_receiver.recv() {
+                let result = sync::SyncConfig::for_runtime(&thread_framebuffer)
+                    .map_err(|error| error.to_string())
+                    .and_then(|config| {
+                        crate::wifi::run_sync_outcome(config).map_err(|error| error.to_string())
+                    });
+                if event_sender.send(SyncEvent::Finished(result)).is_err() {
+                    break;
+                }
+            }
+        });
+        Self {
+            commands: command_sender,
+            events: event_receiver,
+            busy: false,
+        }
+    }
+
+    fn start(&mut self) -> bool {
+        if self.busy || self.commands.send(SyncCommand::Run).is_err() {
+            return false;
+        }
+        self.busy = true;
+        true
+    }
+
+    fn try_event(&mut self) -> Option<SyncEvent> {
+        match self.events.try_recv() {
+            Ok(event) => {
+                self.busy = false;
+                Some(event)
+            }
+            Err(TryRecvError::Empty | TryRecvError::Disconnected) => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1226,6 +1323,12 @@ struct UiState {
     ignore_power_until: Option<Instant>,
     status: crate::status::StatusSnapshot,
     last_status_refresh: Instant,
+    sync_active: bool,
+    sync_requested: bool,
+    pub(crate) bundle_ready: bool,
+    last_sync_failure: Option<String>,
+    last_activity: Instant,
+    last_idle_sync: Instant,
 }
 
 impl UiState {
@@ -1253,6 +1356,12 @@ impl UiState {
             ignore_power_until: None,
             status: crate::status::collect(),
             last_status_refresh: Instant::now(),
+            sync_active: false,
+            sync_requested: false,
+            bundle_ready: false,
+            last_sync_failure: None,
+            last_activity: Instant::now(),
+            last_idle_sync: Instant::now(),
         }
     }
 
@@ -1277,11 +1386,59 @@ impl UiState {
         self.reader_operation.take()
     }
 
+    fn take_sync_request(&mut self) -> bool {
+        std::mem::take(&mut self.sync_requested)
+    }
+
+    fn sync_started(&mut self) {
+        self.sync_active = true;
+        self.last_idle_sync = Instant::now();
+        self.message = "Synchronizing…".into();
+    }
+
+    fn apply_sync_event(&mut self, event: SyncEvent) {
+        self.sync_active = false;
+        match event {
+            SyncEvent::Finished(Ok(outcome)) => {
+                self.last_sync_failure = None;
+                match outcome {
+                    sync::SyncOutcome::Updated { .. } => {
+                        self.bundle_ready = true;
+                        self.message = "Synchronization complete".into();
+                    }
+                    sync::SyncOutcome::Cleared { .. } => {
+                        self.message = "Library cleared".into();
+                    }
+                    sync::SyncOutcome::Unchanged { .. } => {
+                        self.message = "Already current".into();
+                    }
+                }
+            }
+            SyncEvent::Finished(Err(error)) => {
+                self.last_sync_failure = Some(error.clone());
+                self.message = "Synchronization failed".into();
+                eprintln!("standalone-test: synchronization failed: {error}");
+            }
+        }
+    }
+
+    fn should_start_idle_sync(&self) -> bool {
+        !self.sync_active
+            && self.page == UiPage::Home
+            && self.last_idle_sync.elapsed() >= IDLE_SYNC_INTERVAL
+            && self.last_activity.elapsed() >= IDLE_SYNC_INTERVAL
+    }
+
+    fn is_idle(&self) -> bool {
+        self.last_activity.elapsed() >= Duration::from_secs(2)
+    }
+
     fn observe(
         &mut self,
         source: InputSourceKind,
         event: RawEvent,
     ) -> (Option<DirtyArea>, PowerAction) {
+        self.last_activity = Instant::now();
         if source == InputSourceKind::Touch {
             self.last_touch = Some(event);
             if event.event_type == EVENT_ABS {
@@ -1371,7 +1528,9 @@ impl UiState {
                     self.message = match operation {
                         ReaderOperation::PreviousPage => "Previous page".into(),
                         ReaderOperation::NextPage => "Next page".into(),
-                        ReaderOperation::Back => unreachable!(),
+                        ReaderOperation::Back | ReaderOperation::ReturnToEntryPoint => {
+                            unreachable!()
+                        }
                     };
                     return (Some(DirtyArea::Full), PowerAction::None);
                 }
@@ -1521,6 +1680,22 @@ impl UiState {
             && self.touch_x
                 < (display::SCREEN_WIDTH.saturating_sub(display::DETAILS_ACTION_MARGIN)) as i32;
         if !within_action_x {
+            return PowerAction::None;
+        }
+
+        let within_sync_row = y >= display::DETAILS_SYNC_TOP as i32
+            && y < (display::DETAILS_SYNC_TOP + display::DETAILS_ACTION_HEIGHT) as i32;
+        if within_sync_row {
+            self.sync_requested = true;
+            self.message = "Sync requested".into();
+            return PowerAction::None;
+        }
+
+        let within_entry_point_row = y >= display::DETAILS_RETURN_ENTRY_TOP as i32
+            && y < (display::DETAILS_RETURN_ENTRY_TOP + display::DETAILS_ACTION_HEIGHT) as i32;
+        if within_entry_point_row {
+            self.reader_operation = Some(ReaderOperation::ReturnToEntryPoint);
+            self.message = "Returning to entry point".into();
             return PowerAction::None;
         }
 
@@ -1824,6 +1999,25 @@ mod tests {
         assert_eq!(action, super::PowerAction::None);
         assert_eq!(dirty, Some(DirtyArea::Full));
         assert_eq!(state.page, UiPage::DisplayTest);
+    }
+
+    #[test]
+    fn details_sync_and_entry_point_actions_are_available() {
+        let mut state = UiState::new();
+        state.page = UiPage::Details;
+        state.touch_down = true;
+        state.touch_x = 100;
+        state.touch_y = super::display::DETAILS_SYNC_TOP as i32 + 10;
+        state.observe(InputSourceKind::Touch, event(BTN_TOUCH, 0, 1_000_000));
+        assert!(state.take_sync_request());
+
+        state.touch_down = true;
+        state.touch_y = super::display::DETAILS_RETURN_ENTRY_TOP as i32 + 10;
+        state.observe(InputSourceKind::Touch, event(BTN_TOUCH, 0, 1_000_001));
+        assert_eq!(
+            state.take_reader_operation(),
+            Some(ReaderOperation::ReturnToEntryPoint)
+        );
     }
 
     #[test]

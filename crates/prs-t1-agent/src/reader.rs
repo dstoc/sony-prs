@@ -84,6 +84,43 @@ impl ReaderConfig {
             regular_font,
         }
     }
+
+    /// Build a reader configuration from the atomically published bundle.
+    ///
+    /// The manifest is the only bundle metadata the UI needs.  Keeping this
+    /// lookup in the T1 adapter means the Markdown crate remains unaware of
+    /// PRSync, revisions, or transport details.
+    pub fn from_current_bundle() -> io::Result<Self> {
+        let library_root =
+            environment_path("PRS_T1_LIBRARY_ROOT", crate::sync::DEFAULT_LIBRARY_ROOT);
+        Self::from_library_root(library_root)
+    }
+
+    pub fn from_library_root(library_root: impl AsRef<Path>) -> io::Result<Self> {
+        let library_root = library_root.as_ref();
+        let current = library_root.join("current");
+        let manifest_path = current.join("manifest.json");
+        let manifest = fs::read_to_string(&manifest_path).map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!(
+                    "read current bundle manifest {}: {error}",
+                    manifest_path.display()
+                ),
+            )
+        })?;
+        let manifest: prs_sync_protocol::Manifest =
+            serde_json::from_str(&manifest).map_err(|error| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("parse current bundle manifest: {error}"),
+                )
+            })?;
+        let mut config = Self::from_environment();
+        config.document_root = current;
+        config.document = PathBuf::from(manifest.entry_point.as_str());
+        Ok(config)
+    }
 }
 
 /// The page viewport available below the T1 status bar and its breathing room.
@@ -98,6 +135,7 @@ pub fn viewport_for_display(width: u32, height: u32) -> Viewport {
 pub struct T1Reader {
     reader: Reader<FileSystemResourceProvider, FontdueTextEngine, ComrakParser>,
     renderer: EmbeddedGraphicsRenderer<FontdueTextEngine>,
+    entry_point: PathBuf,
     external_url_notice: Option<String>,
 }
 
@@ -129,8 +167,38 @@ impl T1Reader {
         Ok(Self {
             reader,
             renderer: EmbeddedGraphicsRenderer::new(engine),
+            entry_point: config.document,
             external_url_notice: None,
         })
+    }
+
+    /// Reopen the current bundle after an atomic publication.
+    ///
+    /// The filesystem provider canonicalizes the generation behind `current`,
+    /// so an active reader keeps using its old complete generation until this
+    /// method is called at an idle boundary.
+    pub fn reload_current_bundle(&mut self) -> io::Result<()> {
+        let previous = self.reader.current_location().cloned();
+        let viewport = self.reader.viewport();
+        let mut replacement = Self::open(ReaderConfig::from_current_bundle()?, viewport)?;
+        if let Some(location) = previous {
+            if replacement
+                .reader
+                .open_document(Path::new(location.document.as_ref()))
+                .is_ok()
+            {
+                if let Some(anchor) = location.anchor.as_deref() {
+                    let _ = replacement.reader.navigate_to_anchor(anchor);
+                }
+            }
+        }
+        *self = replacement;
+        Ok(())
+    }
+
+    /// Return to the entry point of the currently open bundle.
+    pub fn return_to_entry_point(&mut self) -> Result<ReaderEvent, ReaderError> {
+        self.reader.open_document(&self.entry_point)
     }
 
     /// Translate a whole-screen point into the page-space coordinates expected
@@ -541,6 +609,54 @@ mod tests {
             None
         );
 
+        fs::remove_dir_all(root).expect("remove reader fixture root");
+    }
+
+    #[test]
+    fn current_bundle_manifest_selects_its_entry_point() {
+        use std::os::unix::fs::symlink;
+
+        let root = env::temp_dir().join(format!(
+            "prs-t1-current-bundle-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("test clock should be after the Unix epoch")
+                .as_nanos()
+        ));
+        let generation = root.join(".generation");
+        fs::create_dir_all(&generation).expect("create bundle generation");
+        fs::write(generation.join("chapter.md"), "# Chapter").expect("write entry point");
+        fs::write(
+            generation.join("manifest.json"),
+            r#"{"protocol_version":{"major":1,"minor":0},"bundle_format_version":1,"entry_point":"chapter.md","files":[{"path":"chapter.md","size":9}]}"#,
+        )
+        .expect("write bundle manifest");
+        symlink(".generation", root.join("current")).expect("publish current symlink");
+
+        let config = ReaderConfig::from_library_root(&root).expect("read current bundle");
+        assert_eq!(config.document_root, root.join("current"));
+        assert_eq!(config.document, PathBuf::from("chapter.md"));
+        fs::remove_dir_all(root).expect("remove bundle fixture");
+    }
+
+    #[test]
+    fn return_to_entry_point_clears_linked_document_navigation() {
+        let root = fixture_root("# Entry\n\n[Chapter](chapter.md)");
+        fs::write(root.join("chapter.md"), "# Chapter").expect("write linked document");
+        let mut reader =
+            T1Reader::open(fixture_config(&root), Viewport::new(240, 120)).expect("open fixture");
+        reader
+            .reader
+            .follow_document("chapter.md")
+            .expect("follow linked document");
+        let event = reader
+            .return_to_entry_point()
+            .expect("return to entry point");
+        assert!(matches!(event, ReaderEvent::Opened { .. }));
+        assert_eq!(
+            reader.reader.current_location().unwrap().document.as_ref(),
+            "index.md"
+        );
         fs::remove_dir_all(root).expect("remove reader fixture root");
     }
 }
