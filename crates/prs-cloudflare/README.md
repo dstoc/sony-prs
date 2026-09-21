@@ -150,7 +150,7 @@ hostname in `PRS_APPROVAL_BASE_URL`. Configure a secret named
 to generate and install it without writing the value to the repository:
 
 ```sh
-tools/prs-cloudflare-configure-approval.sh --production
+../../tools/prs-cloudflare-configure-approval.sh --production
 ```
 
 The command runs `wrangler secret put PRS_CSRF_SECRET --env production` with a

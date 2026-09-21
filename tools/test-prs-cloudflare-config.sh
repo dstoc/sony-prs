@@ -173,6 +173,11 @@ for expected in \
     fi
 done
 
+if ! grep -Fq -- '../../tools/prs-cloudflare-configure-approval.sh --production' "$readme"; then
+    echo "Worker README must use the repository-relative approval secret setup path" >&2
+    exit 1
+fi
+
 for expected in \
     '--confirm-production' \
     'wrangler d1 create prs-reader-db' \
