@@ -217,6 +217,12 @@ pub(crate) async fn run_sync_outcome_async(
     config: crate::sync::SyncConfig,
     progress: crate::sync::SyncProgress,
 ) -> io::Result<crate::sync::SyncOutcome> {
+    run_sync_client_outcome_async(crate::sync::new_client(config, progress)).await
+}
+
+pub(crate) async fn run_sync_client_outcome_async(
+    client: crate::sync::SyncClientHandle,
+) -> io::Result<crate::sync::SyncOutcome> {
     print_operation("sync");
     print_snapshot("before");
     print_timeouts();
@@ -229,7 +235,7 @@ pub(crate) async fn run_sync_outcome_async(
         };
     }
     print_snapshot("ready");
-    let sync_result = crate::sync::run_active_outcome_async(config, progress).await;
+    let sync_result = crate::sync::run_active_client_outcome_async(client).await;
     let shutdown_result = shutdown_async().await;
     print_snapshot("after");
 

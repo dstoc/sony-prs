@@ -41,7 +41,6 @@ const O_NONBLOCK: i32 = 0x800;
 const F_GETFL: c_int = 3;
 const F_SETFL: c_int = 4;
 const STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
-const IDLE_SYNC_INTERVAL: Duration = Duration::from_secs(15 * 60);
 
 unsafe extern "C" {
     fn fcntl(fd: c_int, command: c_int, ...) -> c_int;
@@ -114,6 +113,9 @@ pub fn run(path: &Path, suspend_mode: SuspendMode) -> io::Result<()> {
     let mut state = UiState::new();
     let mut sync_task =
         SyncTask::new(path).map_err(|error| display_error("create sync runtime", error))?;
+    if sync_task.start() {
+        state.sync_started();
+    }
     let mut refresh_policy = RefreshPolicy::default();
     let mut adb_restart_pending = false;
 
@@ -193,7 +195,7 @@ pub fn run(path: &Path, suspend_mode: SuspendMode) -> io::Result<()> {
                 redraw_area = Some(DirtyArea::Full);
             }
         }
-        if state.should_start_idle_sync() && sync_task.start() {
+        if state.should_start_idle_sync(sync_task.idle_sync_interval()) && sync_task.start() {
             state.sync_started();
             redraw_area = Some(DirtyArea::Full);
         }
@@ -1320,6 +1322,7 @@ type SyncFuture = Pin<Box<dyn Future<Output = io::Result<sync::SyncOutcome>>>>;
 
 struct SyncTask {
     config: sync::SyncConfig,
+    client: sync::SyncClientHandle,
     runtime: tokio::runtime::Runtime,
     progress: sync::SyncProgress,
     future: Option<SyncFuture>,
@@ -1330,14 +1333,17 @@ struct SyncTask {
 impl SyncTask {
     fn new(framebuffer: &Path) -> io::Result<Self> {
         let config = sync::SyncConfig::for_runtime(framebuffer).map_err(io::Error::other)?;
+        let progress = sync::new_progress();
+        let client = sync::new_client(config.clone(), progress.clone());
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .map_err(|error| io::Error::other(format!("could not create sync runtime: {error}")))?;
         Ok(Self {
             config,
+            client,
             runtime,
-            progress: sync::new_progress(),
+            progress,
             future: None,
             completion: None,
             busy: false,
@@ -1348,11 +1354,12 @@ impl SyncTask {
         if self.busy {
             return false;
         }
-        self.progress = sync::new_progress();
+        self.progress.borrow_mut().clear();
         self.completion = None;
-        self.future = Some(Box::pin(crate::wifi::run_sync_outcome_async(
-            self.config.clone(),
-            self.progress.clone(),
+        // Keep the client across attempts so the read-only authorization
+        // session and conditional manifest snapshot remain boot-scoped.
+        self.future = Some(Box::pin(crate::wifi::run_sync_client_outcome_async(
+            self.client.clone(),
         )));
         self.busy = true;
         true
@@ -1387,6 +1394,10 @@ impl SyncTask {
 
     fn library_root(&self) -> &Path {
         self.config.library_root()
+    }
+
+    fn idle_sync_interval(&self) -> Duration {
+        self.config.idle_sync_interval()
     }
 
     fn cancel(&mut self) -> io::Result<()> {
@@ -1558,12 +1569,12 @@ impl UiState {
         }
     }
 
-    fn should_start_idle_sync(&self) -> bool {
+    fn should_start_idle_sync(&self, idle_sync_interval: Duration) -> bool {
         !self.sync_active
             && !self.bundle_ready
-            && self.page == UiPage::Home
-            && self.last_idle_sync.elapsed() >= IDLE_SYNC_INTERVAL
-            && self.last_activity.elapsed() >= IDLE_SYNC_INTERVAL
+            && matches!(self.page, UiPage::Home | UiPage::Details)
+            && self.last_idle_sync.elapsed() >= idle_sync_interval
+            && self.last_activity.elapsed() >= idle_sync_interval
     }
 
     fn is_idle(&self) -> bool {
@@ -2193,6 +2204,37 @@ mod tests {
             state.take_reader_operation(),
             Some(ReaderOperation::ReturnToEntryPoint)
         );
+    }
+
+    #[test]
+    fn idle_sync_uses_the_configured_quiet_period() {
+        let mut state = UiState::new();
+        let interval = Duration::from_secs(900);
+        state.last_idle_sync = Instant::now() - interval;
+        state.last_activity = Instant::now() - interval;
+
+        assert!(state.should_start_idle_sync(interval));
+
+        state.page = UiPage::Details;
+        assert!(state.should_start_idle_sync(interval));
+    }
+
+    #[test]
+    fn idle_sync_waits_after_failure_and_skips_display_test() {
+        let mut state = UiState::new();
+        let interval = Duration::from_secs(900);
+        state.sync_started();
+        state.apply_sync_event(SyncEvent::Finished(Err("network loss".into())));
+
+        assert!(!state.sync_active);
+        assert!(!state.bundle_ready);
+        assert_eq!(state.last_sync_failure.as_deref(), Some("network loss"));
+        assert!(!state.should_start_idle_sync(interval));
+
+        state.last_idle_sync = Instant::now() - interval;
+        state.last_activity = Instant::now() - interval;
+        state.page = UiPage::DisplayTest;
+        assert!(!state.should_start_idle_sync(interval));
     }
 
     #[test]

@@ -105,11 +105,12 @@ assert "RuntimeBuilder::new_current_thread()" in run_sync
 
 async_sync = source[source.index("pub(crate) async fn run_sync_outcome_async"):source.index("pub(crate) async fn shutdown_after_sync_cancellation_async")]
 assert async_sync.index("bring_up_async().await") < async_sync.index(
-    "run_active_outcome_async(config, progress).await"
+    "run_active_client_outcome_async(client).await"
 )
-assert async_sync.index("run_active_outcome_async(config, progress).await") < async_sync.index(
+assert async_sync.index("run_active_client_outcome_async(client).await") < async_sync.index(
     "shutdown_async().await"
 )
+assert "run_sync_client_outcome_async(crate::sync::new_client(config, progress))" in async_sync
 
 standalone = source[source.index("pub(crate) fn run_sync_outcome"):source.index("pub(crate) async fn run_sync_outcome_async")]
 assert standalone.count("drop(future)") == 2

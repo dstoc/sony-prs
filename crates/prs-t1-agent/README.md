@@ -78,7 +78,7 @@ different device.
 | `wifi-probe HOSTNAME_OR_HTTPS_URL [--invalid-hostname] [--inject-network-loss STAGE]` | Controls Wi-Fi and network | Runs `wifi-up`, runs the HTTPS network probe, and always attempts `wifi-down`. The diagnostic-only fault stage is `dns`, `tls`, or `response`. |
 | `render-test [FRAMEBUFFER] [SECONDS] [WAVEFORM] [WAIT\|NOWAIT]` | Writes framebuffer | Draws a centered 200x120 RGB565 marker, requests a bounded EPDC update, captures the mapping, waits, and restores the original rectangle. Defaults to 3 seconds, `GC16`, and `WAIT`. |
 | `display-test [FRAMEBUFFER] [SECONDS] [WAVEFORM]` | Writes framebuffer | Draws a full-screen grayscale calibration pattern with fill/text swatches, gradients, a grayscale ramp, and 1-, 2-, 4-, and 8-pixel lines. Defaults to 60 seconds and `GC16`; it leaves the pattern visible and does not restore the previous framebuffer. |
-| `standalone-test [FRAMEBUFFER] [standby\|mem]` | Owns framebuffer/input | Runs the long-lived native shell after `zygote` and `system_server` have stopped. The default suspend mode is T1 EINK `standby`. |
+| `standalone-test [FRAMEBUFFER] [standby\|mem]` | Owns framebuffer/input | Runs the long-lived native shell after `zygote` and `system_server` have stopped. It starts one synchronization attempt after boot, schedules one asynchronous attempt after each configured idle period, and exposes **Sync now** in Details / Settings. The default suspend mode is T1 EINK `standby`. |
 | `launch-standalone [FRAMEBUFFER] [standby\|mem]` | Stops Android framework | Root `su` entry point. It detaches into a new session, stops zygote, waits for the framework to exit, and enters `standalone-test`. |
 
 Only `render-test`, `display-test`, `standalone-test`, `launch-standalone`,
@@ -113,7 +113,13 @@ and atomically updates the `current` symlink. It attempts to disable
 Wi-Fi after success and after every failure.
 
 The `sync` command does not persist authorization secrets or the downloaded
-archive. It reports recoverable failures with `sync.failure_kind`, including
+archive. The long-lived native shell keeps the read-only session in RAM for the
+powered-on boot session. A later idle or manual attempt reuses that session
+until the server expiry or a session rejection requires authorization again.
+Each attempt enables Wi-Fi before authorization, keeps it enabled through the
+complete attempt, and disables it after success or failure. The scheduler
+does not retry a failed attempt until a later trigger. It reports recoverable
+failures with `sync.failure_kind`, including
 `network_loss`, `authorization_failure`, `authorization_expired`,
 `session_rejected`, `stale_object`, `invalid_bundle`, and
 `tmpfs_insufficient`. An empty inbox reports `sync.result=cleared` and removes
@@ -124,6 +130,13 @@ On the PRS-T1, the sync command opens the framebuffer before it starts Wi-Fi
 and keeps that same `NativeDisplay` through synchronization and Wi-Fi shutdown.
 This is a vendor driver/HAL lifecycle constraint. It is not an authorization
 or TLS requirement.
+
+The native shell starts its boot attempt after it opens the display and input
+devices. It polls the cooperative synchronization task during the normal UI
+loop, so reading remains responsive while Wi-Fi is active. A successful
+replacement is handed to the reader at an idle boundary. A failed attempt
+leaves the current local bundle in place and records the structured failure in
+Details / Settings.
 
 ## Build and deploy
 
@@ -399,6 +412,7 @@ The default configuration is:
 | `PRS_T1_SYNC_URL` | `https://prs-reader.dstoc.workers.dev` | HTTPS base URL for the PRSync Worker. |
 | `PRS_T1_LIBRARY_ROOT` | `/mnt/prs-reader` | Absolute tmpfs root for bundle staging and the atomic `current` symlink. |
 | `PRS_T1_TMPFS_LIMIT_BYTES` | `50331648` | Device-specific bound for the current library, streamed archive, and extraction staging. |
+| `PRS_T1_IDLE_SYNC_INTERVAL_SECONDS` | `900` | Minimum quiet period before an automatic asynchronous synchronization attempt. A failed attempt waits for a later trigger. |
 | `PRS_T1_FRAMEBUFFER` | `/dev/graphics/fb0` | Framebuffer used by `sync` when no path argument is supplied. |
 | `PRS_T1_FONT` | `/system/fonts/DroidSans.ttf` | Required regular TrueType face. |
 | `PRS_T1_FONT_BOLD` | regular face | Optional bold face. |
