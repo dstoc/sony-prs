@@ -4,12 +4,14 @@ mod display;
 mod framebuffer;
 mod input;
 mod network;
+mod qr;
 mod reader;
 mod refresh;
 mod runtime;
 #[cfg(any(target_arch = "arm", test))]
 mod soft_float;
 mod status;
+mod sync;
 mod tls;
 mod wifi;
 
@@ -109,6 +111,7 @@ fn run() -> io::Result<()> {
             Ok(())
         }
         Some("network-probe") => network::run(args.collect()),
+        Some("sync") => sync::run(args.collect()),
         Some("wifi-up") => wifi::run(wifi::Operation::Up, args.collect()),
         Some("wifi-down") => wifi::run(wifi::Operation::Down, args.collect()),
         Some("wifi-probe") => wifi::run(wifi::Operation::Probe, args.collect()),
@@ -235,6 +238,7 @@ fn probe(device: &Path) {
 
 fn print_usage() {
     println!("  prs-t1-agent network-probe HOSTNAME_OR_HTTPS_URL [--invalid-hostname] [--inject-network-loss STAGE]");
+    println!("  prs-t1-agent sync [HTTPS_ENDPOINT] [FRAMEBUFFER]");
     println!("  prs-t1-agent wifi-up | wifi-down");
     println!("  prs-t1-agent wifi-probe HOSTNAME_OR_HTTPS_URL [--invalid-hostname] [--inject-network-loss STAGE]");
     println!(

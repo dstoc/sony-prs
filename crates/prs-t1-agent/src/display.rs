@@ -1,4 +1,5 @@
 use crate::framebuffer::{DisplayCanvas, DisplayRegion, NativeDisplay, WaveformMode};
+use crate::qr::QrMatrix;
 use embedded_graphics::mono_font::{
     ascii::{FONT_10X20, FONT_8X13, FONT_8X13_BOLD},
     MonoTextStyle,
@@ -63,6 +64,88 @@ pub fn draw_screen(
         wait_for_completion,
         force_refresh,
     )
+}
+
+/// Render the short-lived reader authorization screen.
+///
+/// Only the public approval URL reaches this renderer. The polling secret and
+/// the eventual reader bearer token stay inside the synchronization client.
+pub fn draw_authorization_qr(
+    display: &mut NativeDisplay,
+    approval_url: &str,
+) -> std::io::Result<()> {
+    let frame = render_authorization_qr(
+        display.width() as usize,
+        display.height() as usize,
+        approval_url,
+    )?;
+    display.draw_frame_with_waveform(
+        &frame,
+        DisplayRegion::full(display.width(), display.height()),
+        WaveformMode::Gc16,
+        true,
+        true,
+    )
+}
+
+pub(crate) fn render_authorization_qr(
+    width: usize,
+    height: usize,
+    approval_url: &str,
+) -> std::io::Result<Vec<u8>> {
+    let qr = QrMatrix::encode(approval_url).map_err(|error| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, error.to_string())
+    })?;
+    let mut frame = vec![0u8; width.saturating_mul(height).saturating_mul(2)];
+    let mut canvas = DisplayCanvas::new(&mut frame, width, height, width.saturating_mul(2), 0, 0);
+    canvas.fill(WHITE);
+    draw_text_centered_font(
+        &mut canvas,
+        22,
+        "Scan to authorize",
+        &FONT_10X20,
+        Rgb565::BLACK,
+    );
+
+    let quiet_zone = 4usize;
+    let footer_height = 58usize;
+    let available_width = width.saturating_sub(32);
+    let available_height = height.saturating_sub(92 + footer_height);
+    let module_count = qr.size().saturating_add(quiet_zone * 2);
+    let scale = available_width
+        .min(available_height)
+        .checked_div(module_count)
+        .unwrap_or(0);
+    if scale == 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "display is too small for the authorization QR code",
+        ));
+    }
+    let qr_size = module_count.saturating_mul(scale);
+    let left = width.saturating_sub(qr_size) / 2;
+    let top = 82usize;
+    for y in 0..qr.size() {
+        for x in 0..qr.size() {
+            if !qr.is_dark(x, y) {
+                continue;
+            }
+            canvas.fill_rect(
+                left.saturating_add((x + quiet_zone) * scale),
+                top.saturating_add((y + quiet_zone) * scale),
+                scale,
+                scale,
+                BLACK,
+            );
+        }
+    }
+    draw_text_centered(
+        &mut canvas,
+        height.saturating_sub(48),
+        "Approve on your trusted device",
+        Rgb565::BLACK,
+    );
+    Ok(frame)
 }
 
 /// Render and present a bounded grayscale calibration pattern.
@@ -717,7 +800,7 @@ impl DrawTarget for DisplayCanvas<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::{gray565, render_display_test, standby_screen};
+    use super::{gray565, render_authorization_qr, render_display_test, standby_screen};
 
     fn pixel(frame: &[u8], width: usize, x: usize, y: usize) -> u16 {
         let offset = (y * width + x) * 2;
@@ -739,6 +822,17 @@ mod tests {
             &image[header_offset..header_offset + 2],
             &0u16.to_ne_bytes()
         );
+    }
+
+    #[test]
+    fn authorization_qr_is_a_full_frame_with_dark_modules() {
+        let frame =
+            render_authorization_qr(600, 800, "https://reader.example/a/request-1").unwrap();
+
+        assert_eq!(frame.len(), 600 * 800 * 2);
+        assert!(frame
+            .chunks(2)
+            .any(|pixel| pixel != 0xff_ffu16.to_ne_bytes()));
     }
 
     #[test]

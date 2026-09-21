@@ -141,6 +141,46 @@ pub fn run(operation: Operation, args: Vec<String>) -> io::Result<()> {
     }
 }
 
+/// Run one authorization/synchronization attempt with Wi-Fi enabled only for
+/// the duration of that attempt. Startup failures use the same cleanup path
+/// as the explicit Wi-Fi probe; an active sync always attempts shutdown.
+pub(crate) fn run_sync(config: crate::sync::SyncConfig) -> io::Result<()> {
+    print_operation("sync");
+    print_snapshot("before");
+    print_timeouts();
+
+    if let Err(error) = bring_up() {
+        return finish_failed_startup(error);
+    }
+    print_snapshot("ready");
+    let sync_result = crate::sync::run_active(config);
+    let shutdown_result = shutdown();
+    print_snapshot("after");
+
+    match (sync_result, shutdown_result) {
+        (Ok(()), Ok(())) => {
+            println!("wifi.result=success");
+            println!("wifi.sync_result=success");
+            Ok(())
+        }
+        (Err(error), Ok(())) => {
+            println!("wifi.result=failure");
+            println!("wifi.sync_result=failure");
+            Err(error)
+        }
+        (Ok(()), Err(error)) => {
+            print_failure(&error);
+            Err(io::Error::other(error))
+        }
+        (Err(sync_error), Err(shutdown_error)) => {
+            print_failure(&shutdown_error);
+            Err(io::Error::other(format!(
+                "sync failed: {sync_error}; Wi-Fi shutdown failed: {shutdown_error}"
+            )))
+        }
+    }
+}
+
 fn run_up() -> io::Result<()> {
     print_operation("up");
     print_snapshot("before");

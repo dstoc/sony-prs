@@ -346,26 +346,29 @@ async fn probe(config: &ProbeConfig) -> Result<HealthResponse, ProbeFailure> {
         Client::builder()
             .tls_backend_rustls()
             .tls_backend_preconfigured(invalid_hostname_tls_config()?)
+            .connect_timeout(CONNECT_TIMEOUT)
+            .timeout(REQUEST_TIMEOUT)
+            .read_timeout(RESPONSE_TIMEOUT)
+            .redirect(Policy::none())
+            .user_agent(concat!("prs-t1-agent/", env!("CARGO_PKG_VERSION")))
+            .resolve_to_addrs(request_host, &addresses)
+            .build()
+            .map_err(ProbeFailure::request)?
     } else if config.fault == Some(NetworkFault::Tls) {
         Client::builder()
             .tls_backend_rustls()
             .tls_backend_preconfigured(injected_tls_config()?)
+            .connect_timeout(CONNECT_TIMEOUT)
+            .timeout(REQUEST_TIMEOUT)
+            .read_timeout(RESPONSE_TIMEOUT)
+            .redirect(Policy::none())
+            .user_agent(concat!("prs-t1-agent/", env!("CARGO_PKG_VERSION")))
+            .resolve_to_addrs(request_host, &addresses)
+            .build()
+            .map_err(ProbeFailure::request)?
     } else {
-        Client::builder()
-            .tls_backend_rustls()
-            .tls_certs_only(trusted_certificates()?)
-    }
-    .connect_timeout(CONNECT_TIMEOUT)
-    .timeout(REQUEST_TIMEOUT)
-    .read_timeout(RESPONSE_TIMEOUT)
-    .redirect(Policy::none())
-    .user_agent(concat!("prs-t1-agent/", env!("CARGO_PKG_VERSION")))
-    // Pin the request to the addresses reported above. The negative test
-    // keeps the production hostname for SNI and changes only the name
-    // passed to the certificate verifier.
-    .resolve_to_addrs(request_host, &addresses)
-    .build()
-    .map_err(ProbeFailure::request)?;
+        build_https_client(request_host, &addresses).map_err(ProbeFailure::runtime)?
+    };
     let response = timeout(REQUEST_TIMEOUT, client.get(url).send())
         .await
         .map_err(|_| ProbeFailure::request_timeout("HTTPS request exceeded 20 seconds"))?
@@ -402,6 +405,69 @@ async fn resolve_host(host: &str, port: u16) -> Result<Vec<SocketAddr>, ProbeFai
         Ok(lookup.iter().collect())
     })
     .await
+}
+
+/// Resolve a host once so the HTTPS client can pin its connections to the
+/// result. The T1 uses one current-thread runtime for both DNS and requests.
+pub(crate) async fn resolve_host_addresses(
+    host: &str,
+    port: u16,
+) -> Result<Vec<SocketAddr>, String> {
+    // Hickory performs DNS over Tokio I/O. The current-thread runtime keeps
+    // the probe single-threaded, which is required by the T1 bootstrap target.
+    let mut builder = match TokioResolver::builder_tokio() {
+        Ok(builder) => builder,
+        Err(_) => TokioResolver::builder_with_config(
+            ResolverConfig::udp_and_tcp(&GOOGLE),
+            TokioRuntimeProvider::default(),
+        ),
+    };
+    builder.options_mut().timeout = DNS_TIMEOUT;
+    builder.options_mut().attempts = 1;
+    let resolver = builder
+        .build()
+        .map_err(|error| format!("could not create resolver: {error}"))?;
+    let host_for_error = host.to_owned();
+    let query_host = host.to_owned();
+    match timeout(DNS_TIMEOUT, async move {
+        let lookup = resolver
+            .lookup_ip(query_host.as_str())
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok::<Vec<IpAddr>, String>(lookup.iter().collect::<Vec<_>>())
+    })
+    .await
+    {
+        Ok(Ok(addresses)) if addresses.is_empty() => Err(format!(
+            "{host_for_error}:{port}: resolver returned no addresses"
+        )),
+        Ok(Ok(addresses)) => Ok(addresses
+            .into_iter()
+            .map(|address| SocketAddr::new(address, port))
+            .collect()),
+        Ok(Err(error)) => Err(format!("{host_for_error}:{port}: {error}")),
+        Err(_) => Err(format!(
+            "{host_for_error}:{port}: resolver did not return within {} seconds",
+            DNS_TIMEOUT.as_secs()
+        )),
+    }
+}
+
+/// Build the normal pinned HTTPS client used by both the network probe and
+/// the PRSync client. Redirects are disabled because an approval or reader
+/// token must never be forwarded to another origin.
+pub(crate) fn build_https_client(host: &str, addresses: &[SocketAddr]) -> Result<Client, String> {
+    Client::builder()
+        .tls_backend_rustls()
+        .tls_certs_only(trusted_certificates().map_err(|error| error.to_string())?)
+        .connect_timeout(CONNECT_TIMEOUT)
+        .timeout(REQUEST_TIMEOUT)
+        .read_timeout(RESPONSE_TIMEOUT)
+        .redirect(Policy::none())
+        .user_agent(concat!("prs-t1-agent/", env!("CARGO_PKG_VERSION")))
+        .resolve_to_addrs(host, addresses)
+        .build()
+        .map_err(|error| error.to_string())
 }
 
 async fn resolve_host_with_timeout<F, Fut>(

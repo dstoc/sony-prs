@@ -72,6 +72,7 @@ different device.
 | `events [EVENT_DEVICE] [SECONDS]` | Read-only | Logs a finite raw evdev stream. It defaults to `/dev/input/event1` for 10 seconds and never calls `EVIOCGRAB`. |
 | `capture [FRAMEBUFFER]` | Read-only | Maps the visible RGB565 framebuffer with read access and emits an 8-bit grayscale PGM to stdout. |
 | `network-probe HOSTNAME_OR_HTTPS_URL [--invalid-hostname] [--inject-network-loss STAGE]` | Read-only | Resolves the supplied host and performs a bounded HTTPS `GET /health` with rustls certificate and hostname validation. The optional negative test must fail hostname validation. The diagnostic-only fault stage is `dns`, `tls`, or `response`. |
+| `sync [HTTPS_ENDPOINT] [FRAMEBUFFER]` | Controls Wi-Fi, display, and tmpfs | Enables Wi-Fi for one reader authorization and synchronization attempt, shows only the public approval URL as a QR code, polls for the read-only boot session, streams and validates the current tar bundle, and disables Wi-Fi on every exit path. |
 | `wifi-up` | Controls Wi-Fi | Loads the legacy driver, starts the supplicant, waits for WPA `COMPLETED`, starts DHCP, and waits for `dhcp.wlan0.result=BOUND`. |
 | `wifi-down` | Controls Wi-Fi | Stops `dhcpcd`, waits up to 10 seconds for its service to stop or disappear, then stops the supplicant and unloads the Wi-Fi driver. |
 | `wifi-probe HOSTNAME_OR_HTTPS_URL [--invalid-hostname] [--inject-network-loss STAGE]` | Controls Wi-Fi and network | Runs `wifi-up`, runs the HTTPS network probe, and always attempts `wifi-down`. The diagnostic-only fault stage is `dns`, `tls`, or `response`. |
@@ -81,12 +82,38 @@ different device.
 | `launch-standalone [FRAMEBUFFER] [standby\|mem]` | Stops Android framework | Root `su` entry point. It detaches into a new session, stops zygote, waits for the framework to exit, and enters `standalone-test`. |
 
 Only `render-test`, `display-test`, `standalone-test`, `launch-standalone`,
-`wifi-up`, `wifi-down`, and `wifi-probe` mutate device state. `render-test` is bounded and restores the bytes it changes,
+`sync`, `wifi-up`, `wifi-down`, and `wifi-probe` mutate device state. `sync`
+holds polling and reader credentials only in RAM. It validates the untrusted
+bundle before atomically replacing `PRS_T1_LIBRARY_ROOT/current`; an empty
+inbox, authorization failure, network loss, stale object, invalid bundle, or
+tmpfs-capacity failure leaves the current library unchanged. `render-test` is bounded and restores the bytes it changes,
 but it still requires a reader-side recovery route and physical observation of
 the panel. `display-test` is bounded but leaves its full-screen pattern visible
 when it exits. Use `capture` during its wait to record the framebuffer and use a
 physical camera to compare the panel output. The command does not stop Android
 display services, so another display owner can repaint the screen.
+
+### PRSync reader synchronization
+
+Run `sync` from the native display-owner session:
+
+```sh
+PRS_T1_DOCUMENT_ROOT=/mnt/prs-reader/current \
+  /data/local/tmp/prs-t1-agent sync
+```
+
+The command starts Wi-Fi, creates a reader authorization request, and shows
+the public approval URL as a QR code. The polling secret and read-only session
+token remain in process memory. After approval, the client fetches the
+manifest, streams the uncompressed tar into the configured tmpfs, validates
+the archive with `prs-sync-bundle`, and atomically updates the `current`
+symlink. It attempts to disable Wi-Fi after success and after every failure.
+
+The `sync` command does not persist authorization secrets or the downloaded
+archive. It reports recoverable failures with `sync.failure_kind`, including
+`network_loss`, `authorization_failure`, `authorization_expired`,
+`session_rejected`, `empty_inbox`, `stale_object`, `invalid_bundle`, and
+`tmpfs_insufficient`. A failed attempt does not replace the current library.
 
 ## Build and deploy
 
@@ -359,6 +386,10 @@ The default configuration is:
 | --- | --- | --- |
 | `PRS_T1_DOCUMENT_ROOT` | `/mnt/sdcard` | Root for Markdown and relative resources. |
 | `PRS_T1_DOCUMENT` | `index.md` | Root-relative document opened at startup. |
+| `PRS_T1_SYNC_URL` | `https://prs-reader.dstoc.workers.dev` | HTTPS base URL for the PRSync Worker. |
+| `PRS_T1_LIBRARY_ROOT` | `/mnt/prs-reader` | Absolute tmpfs root for bundle staging and the atomic `current` symlink. |
+| `PRS_T1_TMPFS_LIMIT_BYTES` | `50331648` | Device-specific bound for the current library, streamed archive, and extraction staging. |
+| `PRS_T1_FRAMEBUFFER` | `/dev/graphics/fb0` | Framebuffer used by `sync` when no path argument is supplied. |
 | `PRS_T1_FONT` | `/system/fonts/DroidSans.ttf` | Required regular TrueType face. |
 | `PRS_T1_FONT_BOLD` | regular face | Optional bold face. |
 | `PRS_T1_FONT_ITALIC` | regular face | Optional italic face. |
