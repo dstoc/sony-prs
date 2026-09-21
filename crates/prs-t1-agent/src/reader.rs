@@ -76,11 +76,11 @@ fn truncated_url_lines(url: &str, chars_per_line: usize, max_lines: usize) -> Ve
         return Vec::new();
     }
 
-    let mut remaining = url.chars();
+    let mut remaining = url.chars().peekable();
     let mut lines = Vec::new();
     for line_index in 0..max_lines {
         let mut line = remaining.by_ref().take(chars_per_line).collect::<String>();
-        let has_more = remaining.next().is_some();
+        let has_more = remaining.peek().is_some();
         if has_more && line_index + 1 == max_lines {
             let suffix = "...";
             line = line
@@ -863,6 +863,14 @@ mod tests {
         let png = crate::display::rgb565_to_png(&frame, 600, 800).expect("encode reader PNG");
         assert_png_golden("reader-normal", &png);
         fs::remove_dir_all(root).expect("remove reader fixture root");
+    }
+
+    #[test]
+    fn truncated_url_lines_preserve_characters_between_wrapped_lines() {
+        assert_eq!(
+            truncated_url_lines("https://example.com/reader", 10, 3),
+            vec!["https://ex", "ample.com/", "reader"]
+        );
     }
 
     #[test]
