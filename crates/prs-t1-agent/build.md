@@ -143,14 +143,20 @@ adb shell /data/local/tmp/prs-t1-agent network-probe "$PROBE_HOST" \
 ```
 
 The first command must report `result=success` and
-`tls_validation=passed`. The second command is a safe negative test. It must
-report `tls_validation=failed_as_expected` and `result=success`. The probe
-reports success for this command only when rustls reports that the certificate
-name does not match the tested hostname. Connection failure, timeout, DNS
+`tls_validation=passed`. The second command is a safe negative test. It
+resolves the production hostname and pins the TCP connection to those
+addresses. It keeps the production hostname for SNI, then asks rustls's normal
+WebPki verifier to check the certificate against the reserved
+`invalid.prs-t1.invalid` name. It must report
+`tls_validation=failed_as_expected`, `failure_stage=tls`,
+`failure_kind=tls_hostname_validation_failed`, and `result=success`. The
+probe reports success for this command only when the trusted certificate
+chain fails the intended hostname check. Connection failure, timeout, DNS
 failure, certificate expiry, an unknown issuer, and other TLS failures remain
-probe failures. The probe does not require an authorization request, bearer
-token, Cloudflare secret, or Wi-Fi credential. It does not change the device
-network configuration.
+probe failures. The output identifies the production SNI as `sni_hostname`
+and the deliberate verifier identity as `tested_hostname`. The probe does not
+require an authorization request, bearer token, Cloudflare secret, or Wi-Fi
+credential. It does not change the device network configuration.
 
 Before rerunning the physical validation, confirm that the rooted device
 exposes readable `/dev/random` and `/dev/urandom` nodes. The probe performs its

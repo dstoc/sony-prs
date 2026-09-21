@@ -8,6 +8,7 @@ use std::fmt;
 use std::future::Future;
 use std::io;
 use std::net::{IpAddr, SocketAddr};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::runtime::Builder as RuntimeBuilder;
 use tokio::time::timeout;
@@ -84,11 +85,6 @@ impl ProbeConfig {
     fn health_url(&self) -> Result<Url, ProbeFailure> {
         let mut url = self.endpoint.clone();
         url.set_path("/health");
-        if self.invalid_hostname {
-            url.set_host(Some(NEGATIVE_HOSTNAME)).map_err(|error| {
-                ProbeFailure::configuration(format!("could not construct negative URL: {error}"))
-            })?;
-        }
         Ok(url)
     }
 }
@@ -133,6 +129,14 @@ impl ProbeFailure {
         }
     }
 
+    fn tls_configuration(detail: impl Into<String>) -> Self {
+        Self {
+            stage: "tls",
+            kind: "configuration_failed",
+            detail: detail.into(),
+        }
+    }
+
     fn dns(detail: impl Into<String>) -> Self {
         Self {
             stage: "dns",
@@ -151,17 +155,17 @@ impl ProbeFailure {
 
     fn request(error: reqwest::Error) -> Self {
         let hostname_validation_failure = is_expected_hostname_validation_failure(&error);
-        let kind = if error.is_timeout() {
-            "timeout"
+        let (stage, kind) = if error.is_timeout() {
+            ("https", "timeout")
         } else if hostname_validation_failure {
-            "tls_hostname_validation_failed"
+            ("tls", "tls_hostname_validation_failed")
         } else if error.is_connect() {
-            "connect_failed"
+            ("https", "connect_failed")
         } else {
-            "request_failed"
+            ("https", "request_failed")
         };
         Self {
-            stage: "https",
+            stage,
             kind,
             detail: error.to_string(),
         }
@@ -230,7 +234,7 @@ pub fn run(args: Vec<String>) -> io::Result<()> {
             print_success(&config, &response);
             Ok(())
         }
-        Err(error) if config.invalid_hostname && error.kind == "tls_hostname_validation_failed" => {
+        Err(error) if is_expected_negative_failure(&config, &error) => {
             print_expected_negative(&config, &error);
             Ok(())
         }
@@ -257,19 +261,26 @@ async fn probe(config: &ProbeConfig) -> Result<HealthResponse, ProbeFailure> {
     let request_host = url
         .host_str()
         .ok_or_else(|| ProbeFailure::configuration("health URL has no hostname"))?;
-    let client = Client::builder()
-        .tls_backend_rustls()
-        .tls_certs_only(trusted_certificates()?)
-        .connect_timeout(CONNECT_TIMEOUT)
-        .timeout(REQUEST_TIMEOUT)
-        .read_timeout(RESPONSE_TIMEOUT)
-        .redirect(Policy::none())
-        .user_agent(concat!("prs-t1-agent/", env!("CARGO_PKG_VERSION")))
-        // Pin the request to the addresses reported above. The negative test
-        // changes only the name used for SNI and certificate validation.
-        .resolve_to_addrs(request_host, &addresses)
-        .build()
-        .map_err(ProbeFailure::request)?;
+    let client = if config.invalid_hostname {
+        Client::builder()
+            .tls_backend_rustls()
+            .tls_backend_preconfigured(invalid_hostname_tls_config()?)
+    } else {
+        Client::builder()
+            .tls_backend_rustls()
+            .tls_certs_only(trusted_certificates()?)
+    }
+    .connect_timeout(CONNECT_TIMEOUT)
+    .timeout(REQUEST_TIMEOUT)
+    .read_timeout(RESPONSE_TIMEOUT)
+    .redirect(Policy::none())
+    .user_agent(concat!("prs-t1-agent/", env!("CARGO_PKG_VERSION")))
+    // Pin the request to the addresses reported above. The negative test
+    // keeps the production hostname for SNI and changes only the name
+    // passed to the certificate verifier.
+    .resolve_to_addrs(request_host, &addresses)
+    .build()
+    .map_err(ProbeFailure::request)?;
     let response = timeout(REQUEST_TIMEOUT, client.get(url).send())
         .await
         .map_err(|_| ProbeFailure::request_timeout("HTTPS request exceeded 20 seconds"))?
@@ -344,7 +355,9 @@ fn source_chain_has_hostname_mismatch(error: &(dyn StdError + 'static)) -> bool 
     let mut current = Some(error);
     while let Some(error) = current {
         if let Some(tls_error) = error.downcast_ref::<rustls::Error>() {
-            return is_hostname_mismatch(tls_error);
+            if is_hostname_mismatch(tls_error) {
+                return true;
+            }
         }
         if let Some(io_error) = error.downcast_ref::<io::Error>() {
             if let Some(inner) = io_error.get_ref() {
@@ -366,6 +379,94 @@ fn is_hostname_mismatch(error: &rustls::Error) -> bool {
                 | rustls::CertificateError::NotValidForNameContext { .. }
         )
     )
+}
+
+#[derive(Debug)]
+struct InvalidHostnameVerifier {
+    inner: Arc<rustls::client::WebPkiServerVerifier>,
+    expected_name: rustls::pki_types::ServerName<'static>,
+}
+
+impl rustls::client::danger::ServerCertVerifier for InvalidHostnameVerifier {
+    fn verify_server_cert(
+        &self,
+        end_entity: &rustls::pki_types::CertificateDer<'_>,
+        intermediates: &[rustls::pki_types::CertificateDer<'_>],
+        _server_name: &rustls::pki_types::ServerName<'_>,
+        ocsp_response: &[u8],
+        now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        self.inner.verify_server_cert(
+            end_entity,
+            intermediates,
+            &self.expected_name,
+            ocsp_response,
+            now,
+        )
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        self.inner.verify_tls12_signature(message, cert, dss)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        self.inner.verify_tls13_signature(message, cert, dss)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        self.inner.supported_verify_schemes()
+    }
+}
+
+fn invalid_hostname_tls_config() -> Result<rustls::ClientConfig, ProbeFailure> {
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let mut roots = rustls::RootCertStore::empty();
+    for certificate in webpki_root_certs::TLS_SERVER_ROOT_CERTS {
+        roots.add(certificate.clone()).map_err(|error| {
+            ProbeFailure::tls_configuration(format!("invalid bundled root certificate: {error}"))
+        })?;
+    }
+    let verifier = rustls::client::WebPkiServerVerifier::builder_with_provider(
+        Arc::new(roots),
+        provider.clone(),
+    )
+    .build()
+    .map_err(|error| {
+        ProbeFailure::tls_configuration(format!("could not build certificate verifier: {error}"))
+    })?;
+    let expected_name = rustls::pki_types::ServerName::try_from(NEGATIVE_HOSTNAME.to_owned())
+        .map_err(|error| {
+            ProbeFailure::tls_configuration(format!(
+                "invalid negative-test hostname {NEGATIVE_HOSTNAME:?}: {error}"
+            ))
+        })?;
+
+    // The dangerous builder is required to substitute the expected name. The
+    // wrapper delegates chain, trust-root, validity, and signature checks to
+    // WebPki; it never accepts an invalid certificate.
+    Ok(rustls::ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .map_err(|error| {
+            ProbeFailure::tls_configuration(format!(
+                "could not configure TLS protocol versions: {error}"
+            ))
+        })?
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(InvalidHostnameVerifier {
+            inner: verifier,
+            expected_name,
+        }))
+        .with_no_client_auth())
 }
 
 fn trusted_certificates() -> Result<Vec<reqwest::Certificate>, ProbeFailure> {
@@ -458,12 +559,17 @@ fn print_expected_negative(config: &ProbeConfig, error: &ProbeFailure) {
     println!("endpoint_host={source_host}");
     println!("endpoint_path=/health");
     println!("mode=hostname_negative");
+    println!("sni_hostname={source_host}");
     println!("tested_hostname={NEGATIVE_HOSTNAME}");
     println!("tls_validation=failed_as_expected");
     println!("failure_stage={}", error.stage);
     println!("failure_kind={}", error.kind);
     println!("error={}", escape_bytes(error.detail.as_bytes()));
     println!("result=success");
+}
+
+fn is_expected_negative_failure(config: &ProbeConfig, error: &ProbeFailure) -> bool {
+    config.invalid_hostname && error.kind == "tls_hostname_validation_failed"
 }
 
 fn print_failure(error: &ProbeFailure) {
@@ -529,7 +635,7 @@ mod tests {
     }
 
     #[test]
-    fn negative_mode_replaces_only_the_tls_hostname() {
+    fn negative_mode_keeps_the_production_endpoint_for_sni() {
         let config = ProbeConfig::parse(&[
             "https://reader.example.test:8443/service".into(),
             "--invalid-hostname".into(),
@@ -537,8 +643,42 @@ mod tests {
         .unwrap();
 
         let url = config.health_url().unwrap();
-        assert_eq!(url.as_str(), "https://invalid.prs-t1.invalid:8443/health");
+        assert_eq!(url.as_str(), "https://reader.example.test:8443/health");
+        assert_eq!(NEGATIVE_HOSTNAME, "invalid.prs-t1.invalid");
         assert!(config.invalid_hostname);
+    }
+
+    #[test]
+    fn negative_tls_config_builds_from_bundled_roots() {
+        let _config = invalid_hostname_tls_config().unwrap();
+    }
+
+    #[test]
+    fn negative_mode_accepts_only_hostname_validation_failures() {
+        let config = ProbeConfig::parse(&[
+            "https://reader.example.test".into(),
+            "--invalid-hostname".into(),
+        ])
+        .unwrap();
+        let expected = ProbeFailure {
+            stage: "tls",
+            kind: "tls_hostname_validation_failed",
+            detail: "certificate name mismatch".into(),
+        };
+        let connect = ProbeFailure {
+            stage: "https",
+            kind: "connect_failed",
+            detail: "connection refused".into(),
+        };
+        let expired = ProbeFailure {
+            stage: "tls",
+            kind: "request_failed",
+            detail: "certificate expired".into(),
+        };
+
+        assert!(is_expected_negative_failure(&config, &expected));
+        assert!(!is_expected_negative_failure(&config, &connect));
+        assert!(!is_expected_negative_failure(&config, &expired));
     }
 
     #[test]

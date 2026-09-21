@@ -200,24 +200,28 @@ timeout, TLS failures, non-2xx responses, and oversized responses produce
 structured failure fields and a non-zero exit status. Resources are owned by
 the single command and are released when it exits.
 
-Run the safe negative test after a normal probe. It routes the reserved invalid
-hostname to the already-resolved production addresses, so the TLS server name
-and hostname check are wrong while the TCP destination remains reachable. The
-request must fail because the certificate is not valid for the tested
-hostname. The command reports `tls_validation=failed_as_expected` and exits 0
-only for that rustls hostname-mismatch result. Connection failure, timeout,
-DNS failure, and other certificate errors such as expiry or an unknown issuer
-produce a non-zero exit status.
+Run the safe negative test after a normal probe. It resolves the production
+hostname and pins the TCP connection to those addresses. It keeps the
+production hostname for SNI, then asks rustls's normal WebPki verifier to check
+the certificate against the reserved `invalid.prs-t1.invalid` name. This makes
+the request reach the real TLS peer while preserving certificate-chain,
+trust-root, and hostname validation. The command reports
+`tls_validation=failed_as_expected`, `failure_stage=tls`, and
+`failure_kind=tls_hostname_validation_failed`, then exits 0. Connection
+failure, timeout, DNS failure, and other certificate errors such as expiry or
+an unknown issuer produce a non-zero exit status. The output identifies the
+production SNI as `sni_hostname` and the deliberate verifier identity as
+`tested_hostname`.
 
 ```sh
 adb shell /data/local/tmp/prs-t1-agent network-probe "$PROBE_HOST" \
   --invalid-hostname
 ```
 
-Do not use an IP address as a substitute for the production hostname in the
-normal test. The production hostname is required for SNI and certificate
-hostname validation. Save the complete stdout and the command exit status in
-the #99 hardware test record.
+Do not use an IP address as a substitute for the production hostname in either
+test. The production hostname is required for SNI and for the real peer
+selection. Save the complete stdout and the command exit status in the #99
+hardware test record.
 
 To run the display calibration pattern, keep Android active for a bounded
 framebuffer probe:
