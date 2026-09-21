@@ -9,7 +9,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::framebuffer::NativeDisplay;
 use crate::status;
 use tokio::net::UnixDatagram as TokioUnixDatagram;
 use tokio::runtime::Builder as RuntimeBuilder;
@@ -168,7 +167,19 @@ pub(crate) fn run_sync_outcome(
         if let Some(crate::sync::SyncProgressEvent::ApprovalUrl(url)) =
             crate::sync::take_progress(&progress)
         {
-            crate::display::draw_authorization_qr(&mut display, &url)?;
+            if let Err(render_error) = crate::display::draw_authorization_qr(&mut display, &url) {
+                drop(future);
+                let cleanup = runtime.block_on(shutdown_after_sync_cancellation_async());
+                return match cleanup {
+                    Ok(()) => Err(render_error),
+                    Err(cleanup_error) => Err(io::Error::new(
+                        render_error.kind(),
+                        format!(
+                            "display render failed: {render_error}; Wi-Fi cleanup failed: {cleanup_error}"
+                        ),
+                    )),
+                };
+            }
         }
         let result = runtime.block_on(async {
             tokio::select! {
@@ -179,7 +190,22 @@ pub(crate) fn run_sync_outcome(
         if let Some(crate::sync::SyncProgressEvent::ApprovalUrl(url)) =
             crate::sync::take_progress(&progress)
         {
-            crate::display::draw_authorization_qr(&mut display, &url)?;
+            if let Err(render_error) = crate::display::draw_authorization_qr(&mut display, &url) {
+                if result.is_some() {
+                    return Err(render_error);
+                }
+                drop(future);
+                let cleanup = runtime.block_on(shutdown_after_sync_cancellation_async());
+                return match cleanup {
+                    Ok(()) => Err(render_error),
+                    Err(cleanup_error) => Err(io::Error::new(
+                        render_error.kind(),
+                        format!(
+                            "display render failed: {render_error}; Wi-Fi cleanup failed: {cleanup_error}"
+                        ),
+                    )),
+                };
+            }
         }
         if let Some(result) = result {
             return result;
@@ -227,6 +253,18 @@ pub(crate) async fn run_sync_outcome_async(
             Err(io::Error::other(format!(
                 "sync failed: {sync_error}; Wi-Fi shutdown failed: {shutdown_error}"
             )))
+        }
+    }
+}
+
+pub(crate) async fn shutdown_after_sync_cancellation_async() -> io::Result<()> {
+    let result = shutdown_async().await;
+    print_snapshot("after_cancellation_cleanup");
+    match result {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            print_failure(&error);
+            Err(io::Error::other(error))
         }
     }
 }

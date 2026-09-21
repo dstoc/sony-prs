@@ -5,6 +5,8 @@ repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 helper_source="$repo_root/crates/prs-t1-agent/tools/wifi-helper.c"
 helper_build="$repo_root/crates/prs-t1-agent/tools/build-wifi-helper.sh"
 wifi_source="$repo_root/crates/prs-t1-agent/src/wifi.rs"
+runtime_source="$repo_root/crates/prs-t1-agent/src/runtime.rs"
+display_source="$repo_root/crates/prs-t1-agent/src/display.rs"
 network_source="$repo_root/crates/prs-t1-agent/src/network.rs"
 network_readme="$repo_root/crates/prs-t1-agent/README.md"
 main_source="$repo_root/crates/prs-t1-agent/src/main.rs"
@@ -64,11 +66,13 @@ PY
 grep -Fq '  prs-t1-agent sync [HTTPS_ENDPOINT] [FRAMEBUFFER]' "$main_source"
 grep -Fq 'fixed 16 MiB encoded archive limit' "$agent_readme"
 
-python3 - "$wifi_source" <<'PY'
+python3 - "$wifi_source" "$runtime_source" "$display_source" <<'PY'
 from pathlib import Path
 import sys
 
 source = Path(sys.argv[1]).read_text()
+runtime = Path(sys.argv[2]).read_text()
+display = Path(sys.argv[3]).read_text()
 shutdown = source[source.index("fn shutdown()"):source.index("fn stop_dhcp()")]
 stop_dhcp = source[source.index("fn stop_dhcp()"):source.index("fn wait_for_dhcp_service_stop()")]
 
@@ -91,24 +95,41 @@ candidate_paths = [
 ]
 assert all(path in source for path in candidate_paths)
 
-run_sync = source[source.index("pub(crate) fn run_sync"):source.index("fn run_up")]
-display_open = run_sync.index("NativeDisplay::open(config.framebuffer_path())")
-bring_up = run_sync.index("if let Err(error) = bring_up()")
-active_sync = run_sync.index("crate::sync::run_active(config, &mut display)")
-shutdown = run_sync.index("let shutdown_result = shutdown()")
-display_drops = [
-    offset for offset in range(len(run_sync)) if run_sync.startswith("drop(display)", offset)
-]
-assert len(display_drops) == 2
-startup_drop, active_drop = display_drops
-assert display_open < bring_up < startup_drop < active_sync < shutdown < active_drop
+run_sync = source[source.index("pub(crate) fn run_sync"):source.index("pub(crate) async fn run_sync_outcome_async")]
+display_open = run_sync.index("NativeDisplay::open(config.framebuffer())")
+future_start = run_sync.index("run_sync_outcome_async(config, progress.clone())")
+assert display_open < future_start
 assert run_sync.count("NativeDisplay::open(") == 1
+assert "status::ensure_native_ownership()?" in run_sync
+assert "RuntimeBuilder::new_current_thread()" in run_sync
 
-sync_source = Path(sys.argv[1].replace("src/wifi.rs", "src/sync.rs")).read_text()
-run_active = sync_source[sync_source.index("pub(crate) fn run_active"):sync_source.index("#[cfg(test)]")]
-assert "display: &mut NativeDisplay" in run_active
-assert "NativeDisplay::open(" not in run_active
-assert "client.synchronize(&transport, display)" in run_active
+async_sync = source[source.index("pub(crate) async fn run_sync_outcome_async"):source.index("pub(crate) async fn shutdown_after_sync_cancellation_async")]
+assert async_sync.index("bring_up_async().await") < async_sync.index(
+    "run_active_outcome_async(config, progress).await"
+)
+assert async_sync.index("run_active_outcome_async(config, progress).await") < async_sync.index(
+    "shutdown_async().await"
+)
+
+standalone = source[source.index("pub(crate) fn run_sync_outcome"):source.index("pub(crate) async fn run_sync_outcome_async")]
+assert standalone.count("drop(future)") == 2
+assert standalone.count("shutdown_after_sync_cancellation_async()") == 2
+
+assert "shutdown_after_sync_cancellation_async()" in runtime
+assert "sync_task.cancel()" in runtime
+assert "display render failed" in runtime
+
+expected_tops = {
+    "DETAILS_SYNC_TOP": 560,
+    "DETAILS_RETURN_ENTRY_TOP": 600,
+    "DETAILS_DISPLAY_TEST_TOP": 640,
+    "DETAILS_REBOOT_TOP": 680,
+    "DETAILS_POWER_OFF_TOP": 720,
+    "DETAILS_BACK_TOP": 760,
+}
+for name, value in expected_tops.items():
+    assert f"pub const {name}: usize = {value};" in display
+assert "details_action_tap_boundaries_are_disjoint" in runtime
 PY
 
 python3 - "$main_source" <<'PY'

@@ -129,6 +129,7 @@ pub fn run(path: &Path, suspend_mode: SuspendMode) -> io::Result<()> {
         wake_lock.is_held(),
         DirtyArea::Full,
         &mut refresh_policy,
+        None,
     )
     .map_err(|error| display_error("initial redraw", error))?;
 
@@ -238,6 +239,7 @@ pub fn run(path: &Path, suspend_mode: SuspendMode) -> io::Result<()> {
                 &mut markdown_reader,
                 suspend_mode,
                 &mut refresh_policy,
+                &mut sync_task,
             )
             .map(|()| {
                 adb_restart_pending = true;
@@ -258,6 +260,7 @@ pub fn run(path: &Path, suspend_mode: SuspendMode) -> io::Result<()> {
                     wake_lock.is_held(),
                     DirtyArea::Full,
                     &mut refresh_policy,
+                    Some(&mut sync_task),
                 )
                 .map_err(|error| display_error("reboot redraw", error))?;
                 match action {
@@ -275,6 +278,7 @@ pub fn run(path: &Path, suspend_mode: SuspendMode) -> io::Result<()> {
                     wake_lock.is_held(),
                     area,
                     &mut refresh_policy,
+                    Some(&mut sync_task),
                 )
                 .map_err(|error| display_error("input redraw", error))?;
             }
@@ -358,6 +362,7 @@ fn redraw(
     wake_lock_held: bool,
     area: DirtyArea,
     refresh_policy: &mut RefreshPolicy,
+    sync_task: Option<&mut SyncTask>,
 ) -> io::Result<()> {
     let lines = screen_lines(state, wake_lock_held);
     let reason = area.reason(state.page);
@@ -384,11 +389,14 @@ fn redraw(
         if result.is_ok() {
             refresh_policy.record_success(reason, plan);
         }
-        return result;
+        return finish_redraw(result, sync_task);
     }
     if state.sync_active {
         if let Some(approval_url) = state.approval_url.as_deref() {
-            return display::draw_authorization_qr(display, approval_url);
+            return finish_redraw(
+                display::draw_authorization_qr(display, approval_url),
+                sync_task,
+            );
         }
     }
     if state.page == UiPage::Home {
@@ -404,7 +412,7 @@ fn redraw(
             if result.is_ok() {
                 refresh_policy.record_success(reason, plan);
             }
-            return result;
+            return finish_redraw(result, sync_task);
         }
         let status_line = lines.first().map(String::as_str).unwrap_or_default();
         let result = markdown_reader.draw(
@@ -417,7 +425,7 @@ fn redraw(
         if result.is_ok() {
             refresh_policy.record_success(reason, plan);
         }
-        return result;
+        return finish_redraw(result, sync_task);
     }
     let result = display::draw_screen(
         display,
@@ -430,7 +438,23 @@ fn redraw(
     if result.is_ok() {
         refresh_policy.record_success(reason, plan);
     }
-    result
+    finish_redraw(result, sync_task)
+}
+
+fn finish_redraw(result: io::Result<()>, sync_task: Option<&mut SyncTask>) -> io::Result<()> {
+    let Err(render_error) = result else {
+        return Ok(());
+    };
+    let Some(sync_task) = sync_task else {
+        return Err(render_error);
+    };
+    match sync_task.cancel() {
+        Ok(()) => Err(render_error),
+        Err(cleanup_error) => Err(io::Error::new(
+            render_error.kind(),
+            format!("display render failed: {render_error}; Wi-Fi cleanup failed: {cleanup_error}"),
+        )),
+    }
 }
 
 fn reader_event_dirty_area(event: &ReaderEvent, tone: PageTone) -> Option<DirtyArea> {
@@ -817,6 +841,7 @@ fn sleep_cycle(
     markdown_reader: &mut reader::T1Reader,
     suspend_mode: SuspendMode,
     refresh_policy: &mut RefreshPolicy,
+    sync_task: &mut SyncTask,
 ) -> io::Result<()> {
     state.mode = "SLEEPING";
     state.message = match suspend_mode {
@@ -832,6 +857,7 @@ fn sleep_cycle(
         wake_lock.is_held(),
         DirtyArea::Full,
         refresh_policy,
+        Some(&mut *sync_task),
     )
     .map_err(|error| display_error("pre-suspend redraw", error))?;
     let standby_lines = screen_lines(state, wake_lock.is_held());
@@ -896,6 +922,7 @@ fn sleep_cycle(
         wake_lock.is_held(),
         DirtyArea::Full,
         refresh_policy,
+        Some(&mut *sync_task),
     )
     .map_err(|error| display_error("post-resume redraw", error))
 }
@@ -1360,6 +1387,18 @@ impl SyncTask {
 
     fn library_root(&self) -> &Path {
         self.config.library_root()
+    }
+
+    fn cancel(&mut self) -> io::Result<()> {
+        let active = self.future.take().is_some();
+        self.completion = None;
+        self.busy = false;
+        if active {
+            self.runtime
+                .block_on(crate::wifi::shutdown_after_sync_cancellation_async())
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -2082,6 +2121,44 @@ mod tests {
         let (_, action) = state.observe(InputSourceKind::Touch, event(BTN_TOUCH, 0, 4_000_000));
         assert_eq!(action, super::PowerAction::None);
         assert_eq!(state.page, UiPage::Details);
+    }
+
+    #[test]
+    fn details_action_tap_boundaries_are_disjoint() {
+        let tap = |y: usize| {
+            let mut state = UiState::new();
+            state.page = UiPage::Details;
+            state.touch_down = true;
+            state.touch_x = 100;
+            state.touch_y = y as i32;
+            let (_, action) = state.observe(InputSourceKind::Touch, event(BTN_TOUCH, 0, 1_000_000));
+            (action, state.page)
+        };
+
+        assert_eq!(
+            tap(display::DETAILS_REBOOT_TOP),
+            (super::PowerAction::Reboot, UiPage::Details)
+        );
+        assert_eq!(
+            tap(display::DETAILS_REBOOT_TOP + display::DETAILS_ACTION_HEIGHT - 1),
+            (super::PowerAction::Reboot, UiPage::Details)
+        );
+        assert_eq!(
+            tap(display::DETAILS_POWER_OFF_TOP),
+            (super::PowerAction::PowerOff, UiPage::Details)
+        );
+        assert_eq!(
+            tap(display::DETAILS_POWER_OFF_TOP + display::DETAILS_ACTION_HEIGHT - 1),
+            (super::PowerAction::PowerOff, UiPage::Details)
+        );
+        assert_eq!(
+            tap(display::DETAILS_BACK_TOP),
+            (super::PowerAction::None, UiPage::Home)
+        );
+        assert_eq!(
+            tap(display::DETAILS_BACK_TOP + display::DETAILS_ACTION_HEIGHT - 1),
+            (super::PowerAction::None, UiPage::Home)
+        );
     }
 
     #[test]

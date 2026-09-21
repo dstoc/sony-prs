@@ -35,8 +35,8 @@ pub const DETAILS_SYNC_TOP: usize = 560;
 pub const DETAILS_RETURN_ENTRY_TOP: usize = 600;
 pub const DETAILS_DISPLAY_TEST_TOP: usize = 640;
 pub const DETAILS_REBOOT_TOP: usize = 680;
-pub const DETAILS_POWER_OFF_TOP: usize = 716;
-pub const DETAILS_BACK_TOP: usize = 752;
+pub const DETAILS_POWER_OFF_TOP: usize = 720;
+pub const DETAILS_BACK_TOP: usize = 760;
 pub const DETAILS_ACTION_HEIGHT: usize = 40;
 pub const SCREEN_WIDTH: usize = 600;
 

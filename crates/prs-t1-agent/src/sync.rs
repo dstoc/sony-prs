@@ -42,10 +42,6 @@ pub(crate) struct SyncConfig {
 }
 
 impl SyncConfig {
-    pub(crate) fn framebuffer_path(&self) -> &Path {
-        &self.framebuffer
-    }
-
     fn parse(args: &[String]) -> Result<Self, SyncError> {
         if args.len() > 2 {
             return Err(SyncError::configuration(
