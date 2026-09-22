@@ -26,8 +26,13 @@ The build uses these pinned versions:
 - `wasm-bindgen` crate and `wasm-bindgen-cli` 0.2.128.
 - Python 3 with the standard-library `http.server` for local serving.
 
-The browser page uses plain HTML, CSS, and an ES module. It does not use npm,
+The browser page uses plain HTML, CSS, and ES modules. It does not use npm,
 Vite, Webpack, React, or another frontend build system.
+
+The simulator uses the shared prs-markdown reader with an in-memory demo
+document. Rust owns hit testing, page turns, link navigation, and reader
+history. main.js only maps browser Pointer Events to the logical 600 by 800
+surface and forwards control or keyboard commands to the WASM adapter.
 
 ## Clean build
 
@@ -64,15 +69,16 @@ Serve the assembled page from its output directory:
 python3 -m http.server 8000 --directory target/reader-web
 ```
 
-Open <http://127.0.0.1:8000/> in a browser. The page renders the default
-Markdown document through the shared Rust renderer. The canvas bitmap remains
-600 × 800 logical pixels; CSS scales the canvas to fit the available window.
-Use a static server because the browser loads the generated ES module and WASM
-file through HTTP.
+Open <http://127.0.0.1:8000/> in a browser. Use the canvas, Previous, Next,
+Home, and Back controls. The keyboard shortcuts are Left Arrow, Right Arrow,
+Home, Backspace, or Alt+Left for Back. Use a static server because the browser
+loads the generated ES module and WASM file through HTTP.
 
-`ReaderSimulator::render_frame()` returns RGBA bytes in row-major order. The
-JavaScript bridge creates `ImageData` from those bytes and calls
-`CanvasRenderingContext2D.putImageData()` without changing the logical surface.
+The canvas backing store stays at 600 by 800 while CSS may scale its display
+size. Pointer coordinates are mapped through getBoundingClientRect() before
+they enter Rust, so display scaling does not change hit testing. Rust owns the
+reader's links, page turns, and history; JavaScript only translates browser
+events and copies the rendered framebuffer.
 
 ## Output layout
 
@@ -81,6 +87,7 @@ target/reader-web/
 ├── index.html
 ├── directory-library.js
 ├── main.js
+├── input.mjs
 ├── style.css
 └── pkg/
     ├── prs_reader_web.js

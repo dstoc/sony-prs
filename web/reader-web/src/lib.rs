@@ -4,13 +4,16 @@ use embedded_graphics::pixelcolor::{Rgb888, RgbColor};
 use embedded_graphics::prelude::Pixel;
 use js_sys::{Array, Object, Reflect, Uint8Array};
 use prs_markdown::parse::ComrakParser;
+use prs_markdown::navigation::{DocumentId, DocumentLocation, NavigationTarget};
+use prs_markdown::reader::{Reader, ReaderError, ReaderEvent};
 use prs_markdown::render::EmbeddedGraphicsRenderer;
 use prs_markdown::resources::ResourceError;
 use prs_markdown::typography::{FontConfig, FontdueTextEngine};
 use prs_markdown::{
-    BrowserResourceProvider, Reader, ReaderError, ReaderEvent, ReaderStyle, ResourceProvider,
+    BrowserResourceProvider as DirectoryResourceProvider, Reader, ReaderStyle, ResourceProvider,
     ResourceTarget, Viewport, T1_VIEWPORT,
 };
+use std::collections::BTreeMap;
 use std::convert::Infallible;
 use std::path::{Path, PathBuf};
 use wasm_bindgen::prelude::*;
@@ -24,7 +27,7 @@ use wasm_bindgen::JsCast;
 /// readers.
 #[wasm_bindgen]
 pub struct BrowserReader {
-    reader: Reader<BrowserResourceProvider>,
+    reader: Reader<DirectoryResourceProvider>,
 }
 
 /// Build and open a reader from the files returned by `directory-library.js`.
@@ -35,7 +38,7 @@ pub struct BrowserReader {
 #[wasm_bindgen]
 pub fn load_directory(files: Array, entry_point: String) -> Result<BrowserReader, JsValue> {
     let files = parse_files(files)?;
-    let provider = BrowserResourceProvider::new(Path::new(&entry_point), files)
+    let provider = DirectoryResourceProvider::new(Path::new(&entry_point), files)
         .map_err(|error| structured_error("resource", error))?;
     let mut reader = Reader::new(
         provider,
@@ -244,82 +247,339 @@ pub fn logical_height() -> u32 {
     T1_VIEWPORT.height
 }
 
-/// An in-memory resource provider for the browser's current Markdown page.
-///
-/// The reader still resolves and opens a logical entry-point path, just as the
-/// filesystem provider does for the native reader. Browser resource loading
-/// can replace this provider in a later simulator issue without changing the
-/// shared reader or renderer.
+/// A small in-memory provider keeps the browser simulator focused on the same
+/// reader and navigation code as the native application.
 #[derive(Clone, Debug)]
-struct BrowserResources {
-    source: String,
+struct DemoResourceProvider {
+    documents: BTreeMap<String, String>,
+    entry_point: PathBuf,
 }
 
-impl BrowserResources {
-    fn entry_point() -> &'static Path {
-        Path::new(ENTRY_POINT)
-    }
+impl DemoResourceProvider {
+    fn demo() -> Self {
+        let mut documents = BTreeMap::new();
+        documents.insert(
+            ENTRY_POINT.to_owned(),
+            r#"# PRS-T1 browser reader
 
-    fn unsupported(path: &Path) -> ResourceError {
-        ResourceError::new(format!(
-            "browser simulator has no resource at {}",
-            path.display()
-        ))
-    }
-}
+This page uses the shared Markdown reader. The browser supplies input events;
+Rust owns hit testing, page turns, and document navigation.
 
-impl ResourceProvider for BrowserResources {
-    fn document_path(&self) -> &Path {
-        Self::entry_point()
-    }
+Try the [linked chapter](chapter.md#interactive) or open an [external link](https://example.com/prs-t1).
 
-    fn entry_point(&self) -> &Path {
-        Self::entry_point()
-    }
+## Input
 
-    fn read_text(&self, path: &Path) -> Result<String, ResourceError> {
-        if path == Self::entry_point() {
-            Ok(self.source.clone())
-        } else {
-            Err(Self::unsupported(path))
+Use the Previous and Next controls, the Home and Back controls, or the keyboard
+shortcuts. A blank tap on the right half advances one page. A blank tap on the
+left half goes back one page.
+
+The canvas is always a logical 600 by 800 reader surface. CSS can scale it
+without changing the coordinates used by the reader.
+
+## More reading
+
+This extra content gives the simulator several pages so the Previous and Next
+controls exercise real shared pagination rather than only reporting a boundary.
+
+The native reader and the browser reader use the same page-space coordinates.
+Only the platform event adapter changes between the two environments.
+
+Reader state remains in Rust while the browser redraws the returned framebuffer.
+The JavaScript layer does not inspect links or decide where a page turn goes.
+
+The logical surface stays stable when the surrounding page is narrow or wide.
+Try resizing the browser window and activating the same visible link again.
+
+This paragraph continues the demo document so the page boundary is easy to
+reach with a pointer, keyboard shortcut, or visible control button.
+
+The first page contains the link targets. Later pages contain ordinary text so
+blank-area taps can be used to verify the page-turn behavior.
+
+The reader does not use the browser location bar as a navigation state. The
+current document and page remain owned by the Rust reader session.
+
+The controls call the same page-event methods that a native input adapter uses.
+They do not maintain a second browser-side page counter.
+
+The Back action is history-aware. It restores the document and reading cursor
+that the shared reader saved when a link was activated.
+
+The Home action follows the entry location through the shared navigation path.
+It is not a special browser-only reset.
+
+Resize the page again after reading this section. The logical coordinates do
+not change when the canvas is rendered at a different CSS width.
+"#
+            .to_owned(),
+        );
+        documents.insert(
+            "chapter.md".to_owned(),
+            r#"# Linked chapter
+
+## Interactive
+
+This page was opened through a semantic Markdown link. Use Back to return to
+the exact page and reading position where the link was activated.
+
+The Home control returns to the entry document through the shared reader
+history. The browser does not reimplement these navigation rules.
+
+[Return to the entry page](index.md)
+"#
+            .to_owned(),
+        );
+        Self {
+            documents,
+            entry_point: PathBuf::from(ENTRY_POINT),
         }
     }
 
+    fn key(path: &Path) -> String {
+        path.to_string_lossy().replace('\\', "/")
+    }
+
+    fn normalize_path(path: &str) -> String {
+        let mut parts = Vec::new();
+        for part in path.split('/') {
+            match part {
+                "" | "." => {}
+                ".." => {
+                    parts.pop();
+                }
+                part => parts.push(part),
+            }
+        }
+        parts.join("/")
+    }
+
+    fn is_external(reference: &str) -> bool {
+        reference.starts_with("//")
+            || reference.find(':').is_some_and(|colon| {
+                colon > 0
+                    && reference[..colon]
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+            })
+    }
+}
+
+impl ResourceProvider for DemoResourceProvider {
+    fn document_path(&self) -> &Path {
+        &self.entry_point
+    }
+
+    fn entry_point(&self) -> &Path {
+        &self.entry_point
+    }
+
+    fn read_text(&self, path: &Path) -> Result<String, ResourceError> {
+        let key = Self::key(path);
+        self.documents
+            .get(&key)
+            .cloned()
+            .ok_or_else(|| ResourceError::new(format!("browser demo document not found: {key}")))
+    }
+
     fn read_binary(&self, path: &Path) -> Result<Vec<u8>, ResourceError> {
-        Err(Self::unsupported(path))
+        Err(ResourceError::new(format!(
+            "browser demo has no binary resource: {}",
+            path.display()
+        )))
     }
 
     fn resolve_reference(&self, reference: &str) -> Result<ResourceTarget, ResourceError> {
-        resolve_reference(reference)
+        self.resolve_reference_from(&self.entry_point, reference)
     }
 
     fn resolve_reference_from(
         &self,
-        _containing_document: &Path,
+        containing_document: &Path,
         reference: &str,
     ) -> Result<ResourceTarget, ResourceError> {
-        resolve_reference(reference)
+        if Self::is_external(reference) {
+            return Ok(ResourceTarget::External(reference.to_owned()));
+        }
+
+        let (path, anchor) = reference
+            .split_once('#')
+            .map_or((reference, None), |(path, anchor)| (path, Some(anchor)));
+        if path.is_empty() {
+            return anchor.map_or_else(
+                || Ok(ResourceTarget::Document(containing_document.to_owned())),
+                |anchor| Ok(ResourceTarget::Anchor(anchor.to_owned())),
+            );
+        }
+
+        let directory = containing_document
+            .parent()
+            .map(|parent| parent.to_string_lossy())
+            .filter(|parent| !parent.is_empty())
+            .map_or_else(String::new, |parent| parent.into_owned());
+        let joined = if directory.is_empty() {
+            path.to_owned()
+        } else {
+            format!("{directory}/{path}")
+        };
+        let resolved = PathBuf::from(Self::normalize_path(&joined));
+        let markdown = resolved.extension().is_some_and(|extension| {
+            extension.eq_ignore_ascii_case("md") || extension.eq_ignore_ascii_case("markdown")
+        });
+
+        if markdown {
+            Ok(match anchor {
+                Some(anchor) => ResourceTarget::DocumentAnchor {
+                    document: resolved,
+                    anchor: anchor.to_owned(),
+                },
+                None => ResourceTarget::Document(resolved),
+            })
+        } else {
+            Ok(ResourceTarget::Asset(resolved))
+        }
     }
 }
 
-fn resolve_reference(reference: &str) -> Result<ResourceTarget, ResourceError> {
-    if reference.starts_with("http://") || reference.starts_with("https://") {
-        return Ok(ResourceTarget::External(reference.to_owned()));
-    }
+/// A browser-owned reader that delegates parsing, layout, navigation, hit
+/// testing, and rasterization to the shared prs-markdown implementation.
+#[wasm_bindgen]
+pub struct ReaderSimulator {
+    reader: Reader<DemoResourceProvider, FontdueTextEngine, ComrakParser>,
+    renderer: EmbeddedGraphicsRenderer<FontdueTextEngine>,
+    framebuffer: RgbaFramebuffer,
+    feedback: String,
+}
 
-    let (path, anchor) = reference.split_once('#').unwrap_or((reference, ""));
-    if path.is_empty() {
-        return Ok(ResourceTarget::Anchor(anchor.to_owned()));
-    }
+#[wasm_bindgen]
+impl ReaderSimulator {
+    #[wasm_bindgen(constructor)]
+    pub fn new() -> Result<ReaderSimulator, JsValue> {
+        let fonts = FontConfig::from_faces_with_monospace(
+            notosans::REGULAR_TTF,
+            notosans::BOLD_TTF,
+            notosans::ITALIC_TTF,
+            notosans::BOLD_ITALIC_TTF,
+            notosans::REGULAR_TTF,
+            notosans::BOLD_TTF,
+            notosans::ITALIC_TTF,
+            notosans::BOLD_ITALIC_TTF,
+        );
+        let engine = FontdueTextEngine::new(fonts, GLYPH_CACHE_CAPACITY)
+            .map_err(|error| JsValue::from_str(&format!("load browser reader fonts: {error}")))?;
+        let provider = DemoResourceProvider::demo();
+        let mut reader = Reader::with_components(
+            provider,
+            ComrakParser::default(),
+            engine.clone(),
+            ReaderStyle::default(),
+            T1_VIEWPORT,
+        );
+        reader
+            .open()
+            .map_err(|error| JsValue::from_str(&format!("open browser reader: {error}")))?;
 
-    let path = PathBuf::from(path);
-    if anchor.is_empty() {
-        Ok(ResourceTarget::Document(path))
-    } else {
-        Ok(ResourceTarget::DocumentAnchor {
-            document: path,
-            anchor: anchor.to_owned(),
+        Ok(Self {
+            reader,
+            renderer: EmbeddedGraphicsRenderer::new(engine),
+            framebuffer: RgbaFramebuffer::new(Size::new(T1_VIEWPORT.width, T1_VIEWPORT.height)),
+            feedback: "Ready. Use a link, a control, or a keyboard shortcut.".to_owned(),
         })
+    }
+
+    /// Render the current page and return tightly packed RGBA bytes.
+    ///
+    /// The returned array always contains 600 * 800 * 4 bytes. JavaScript
+    /// may copy it into an ImageData object; CSS can scale the canvas without
+    /// changing these logical dimensions.
+    pub fn render_frame(&mut self) -> Result<Vec<u8>, JsValue> {
+        self.framebuffer
+            .clear(Rgb888::WHITE)
+            .expect("framebuffer clear cannot fail");
+        self.reader
+            .render_current_page(&mut self.renderer, &mut self.framebuffer)
+            .map_err(|error| JsValue::from_str(&format!("render browser reader: {error}")))?;
+        Ok(self.framebuffer.pixels().to_vec())
+    }
+
+    /// Activate a logical screen point. Blank taps retain the native reader's
+    /// conventional left/right page-turn behavior.
+    pub fn pointer_up(&mut self, x: f64, y: f64) -> String {
+        if !x.is_finite()
+            || !y.is_finite()
+            || x < 0.0
+            || x >= f64::from(T1_VIEWPORT.width)
+            || y < 0.0
+            || y >= f64::from(T1_VIEWPORT.height)
+        {
+            self.feedback = "No reader action.".to_owned();
+            return self.feedback.clone();
+        }
+
+        let point = Point::new(x.floor() as i32, y.floor() as i32);
+        let result = self.reader.activate_at(point);
+        let result = match result {
+            Ok(ReaderEvent::NoAction) => {
+                if point.x >= self.reader.viewport().width as i32 / 2 {
+                    self.reader.next_page_event()
+                } else {
+                    self.reader.previous_page_event()
+                }
+            }
+            result => result,
+        };
+        self.apply_result(result)
+    }
+
+    pub fn previous(&mut self) -> String {
+        let result = self.reader.previous_page_event();
+        self.apply_result(result)
+    }
+
+    pub fn next(&mut self) -> String {
+        let result = self.reader.next_page_event();
+        self.apply_result(result)
+    }
+
+    pub fn back(&mut self) -> String {
+        let result = self.reader.back_event();
+        self.apply_result(result)
+    }
+
+    pub fn home(&mut self) -> String {
+        let result = self
+            .reader
+            .activate(NavigationTarget::Location(DocumentLocation::new(
+                DocumentId::from(ENTRY_POINT),
+                None,
+            )));
+        self.apply_result(result)
+    }
+
+    pub fn current_page(&self) -> u32 {
+        self.reader.current_page_number().unwrap_or_default() as u32
+    }
+
+    pub fn page_count(&self) -> u32 {
+        self.reader.page_count() as u32
+    }
+
+    pub fn feedback(&self) -> String {
+        self.feedback.clone()
+    }
+
+    fn apply_result(&mut self, result: Result<ReaderEvent, ReaderError>) -> String {
+        self.feedback = match result {
+            Ok(ReaderEvent::ExternalUrl(url)) => format!("External link: {url}"),
+            Ok(ReaderEvent::Asset(path)) => format!("Asset link: {}", path.display()),
+            Ok(ReaderEvent::NoAction) => "No reader action.".to_owned(),
+            Ok(ReaderEvent::Opened { .. }) => "Opened the entry document.".to_owned(),
+            Ok(ReaderEvent::PageChanged { .. }) => "Page changed.".to_owned(),
+            Ok(ReaderEvent::Navigated { .. }) => "Followed the reader link.".to_owned(),
+            Ok(ReaderEvent::Back { .. }) => "Returned through reader history.".to_owned(),
+            Ok(ReaderEvent::Forward { .. }) => "Moved forward through reader history.".to_owned(),
+            Err(error) => format!("Reader error: {error}"),
+        };
+        self.feedback.clone()
     }
 }
 
@@ -399,71 +659,9 @@ impl DrawTarget for RgbaFramebuffer {
     }
 }
 
-/// A browser-owned reader that delegates parsing, layout, pagination, and
-/// rasterization to the shared `prs-markdown` implementation.
-#[wasm_bindgen]
-pub struct ReaderSimulator {
-    reader: Reader<BrowserResources, FontdueTextEngine, ComrakParser>,
-    renderer: EmbeddedGraphicsRenderer<FontdueTextEngine>,
-    framebuffer: RgbaFramebuffer,
-}
-
-#[wasm_bindgen]
-impl ReaderSimulator {
-    #[wasm_bindgen(constructor)]
-    pub fn new(markdown: String) -> Result<ReaderSimulator, JsValue> {
-        let fonts = FontConfig::from_faces_with_monospace(
-            notosans::REGULAR_TTF,
-            notosans::BOLD_TTF,
-            notosans::ITALIC_TTF,
-            notosans::BOLD_ITALIC_TTF,
-            notosans::REGULAR_TTF,
-            notosans::BOLD_TTF,
-            notosans::ITALIC_TTF,
-            notosans::BOLD_ITALIC_TTF,
-        );
-        let engine = FontdueTextEngine::new(fonts, GLYPH_CACHE_CAPACITY)
-            .map_err(|error| JsValue::from_str(&format!("load browser reader fonts: {error}")))?;
-        let provider = BrowserResources { source: markdown };
-        let mut reader = Reader::with_components(
-            provider,
-            ComrakParser::default(),
-            engine.clone(),
-            ReaderStyle::default(),
-            T1_VIEWPORT,
-        );
-        reader
-            .open()
-            .map_err(|error| JsValue::from_str(&format!("open browser reader: {error}")))?;
-
-        Ok(Self {
-            reader,
-            renderer: EmbeddedGraphicsRenderer::new(engine),
-            framebuffer: RgbaFramebuffer::new(Size::new(T1_VIEWPORT.width, T1_VIEWPORT.height)),
-        })
-    }
-
-    /// Render the current page and return tightly packed RGBA bytes.
-    ///
-    /// The returned array always contains `600 * 800 * 4` bytes. JavaScript
-    /// may copy it into an `ImageData` object; CSS can scale the canvas without
-    /// changing these logical dimensions.
-    pub fn render_frame(&mut self) -> Result<Vec<u8>, JsValue> {
-        self.framebuffer
-            .clear(Rgb888::WHITE)
-            .expect("framebuffer clear cannot fail");
-        self.reader
-            .render_current_page(&mut self.renderer, &mut self.framebuffer)
-            .map_err(|error| JsValue::from_str(&format!("render browser reader: {error}")))?;
-        Ok(self.framebuffer.pixels().to_vec())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    const SAMPLE_MARKDOWN: &str = "# Browser reader\n\nThe shared renderer owns this page.\n";
 
     #[test]
     fn framebuffer_writes_rgba_pixels_and_discards_out_of_bounds_pixels() {
@@ -480,8 +678,8 @@ mod tests {
 
     #[test]
     fn simulator_renders_a_deterministic_600_by_800_frame() {
-        let mut first = ReaderSimulator::new(SAMPLE_MARKDOWN.to_owned()).expect("open reader");
-        let mut second = ReaderSimulator::new(SAMPLE_MARKDOWN.to_owned()).expect("open reader");
+        let mut first = ReaderSimulator::new().expect("open reader");
+        let mut second = ReaderSimulator::new().expect("open reader");
 
         let first_frame = first.render_frame().expect("render reader");
         let second_frame = second.render_frame().expect("render reader");
@@ -493,5 +691,41 @@ mod tests {
         assert!(first_frame
             .chunks_exact(4)
             .any(|pixel| pixel != [u8::MAX; 4]));
+    }
+
+    #[test]
+    fn browser_reader_exposes_shared_links_and_history() {
+        let mut app = ReaderSimulator::new().expect("demo reader opens");
+        assert!(app.reader.page_count() > 1);
+        let link = app
+            .reader
+            .current_page()
+            .expect("entry page")
+            .hit_regions
+            .first()
+            .expect("entry page link")
+            .bounds
+            .top_left;
+
+        app.pointer_up(f64::from(link.x + 1), f64::from(link.y + 1));
+        assert_eq!(
+            app.reader
+                .current_location()
+                .map(|location| location.document.as_ref()),
+            Some("chapter.md")
+        );
+        assert!(app.reader.can_go_back());
+
+        app.back();
+        assert_eq!(
+            app.reader
+                .current_location()
+                .map(|location| location.document.as_ref()),
+            Some(ENTRY_POINT)
+        );
+        app.next();
+        assert_eq!(app.reader.current_page_index(), Some(1));
+        app.previous();
+        assert_eq!(app.reader.current_page_index(), Some(0));
     }
 }

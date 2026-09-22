@@ -14,7 +14,7 @@ body {
 
 main {
   max-width: 42rem;
-  margin: 10vh auto;
+  margin: 0 auto;
   padding: 2rem;
   border: 1px solid #c9c1b4;
   background: #fffdf8;
@@ -34,23 +34,27 @@ h1,
 
 .reader-frame {
   width: min(100%, 600px);
+  margin: 1.5rem auto 1rem;
   max-height: calc(100vh - 12rem);
   aspect-ratio: 3 / 4;
   display: grid;
   place-items: center;
   overflow: hidden;
+  border: 1px solid #aaa196;
   background: #e5e1d9;
   box-shadow: 0 0.25rem 1rem rgb(36 34 30 / 18%);
 }
 
 canvas {
   display: block;
-  width: auto;
+  width: 100%;
   height: auto;
   max-width: 100%;
   max-height: 100%;
   object-fit: contain;
   image-rendering: pixelated;
+  touch-action: none;
+  cursor: pointer;
 }
 
 .eyebrow {
@@ -64,6 +68,7 @@ canvas {
 
 label {
   display: block;
+  width: min(100%, 600px);
   margin-top: 1.25rem;
   font-weight: 700;
 }
@@ -78,19 +83,49 @@ button {
 }
 
 input {
-  width: 100%;
+  width: min(100%, 600px);
   border: 1px solid #aaa092;
   background: #fff;
 }
 
 button {
+  min-width: 5.5rem;
   border: 1px solid #594b3b;
+  border-radius: 0.25rem;
   background: #594b3b;
   color: #fffdf8;
   cursor: pointer;
 }
 
+button:hover,
+button:focus-visible {
+  background: #6e5b42;
+}
+
 button:disabled {
   cursor: wait;
   opacity: 0.55;
+}
+
+.reader-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  justify-content: center;
+}
+
+.reader-controls button {
+  background: #f4f1ea;
+  color: #24221e;
+}
+
+.reader-controls button:hover,
+.reader-controls button:focus-visible {
+  background: #e4dccf;
+}
+
+.help {
+  margin-bottom: 0;
+  color: #5b554d;
+  font-size: 0.9rem;
 }
