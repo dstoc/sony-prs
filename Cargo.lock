@@ -1380,8 +1380,8 @@ name = "prs-reader-web"
 version = "0.1.0"
 dependencies = [
  "embedded-graphics",
- "notosans",
  "js-sys",
+ "notosans",
  "prs-markdown",
  "wasm-bindgen",
 ]
