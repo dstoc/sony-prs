@@ -1886,7 +1886,12 @@ fn draw_modern_choice(
     else {
         return;
     };
-    draw_text(canvas, 24, region.top as usize + 14, label);
+    draw_text(
+        canvas,
+        region.left as usize,
+        region.top as usize + 14,
+        label,
+    );
     draw_value_box(canvas, region, value, pressed_action == Some(action));
 }
 
@@ -1903,7 +1908,12 @@ fn draw_modern_toggle(
     else {
         return;
     };
-    draw_text(canvas, 24, region.top as usize + 14, label);
+    draw_text(
+        canvas,
+        region.left as usize,
+        region.top as usize + 14,
+        label,
+    );
     draw_value_box(
         canvas,
         region,
@@ -2542,10 +2552,27 @@ mod tests {
     ) {
         let control = details_action_region_for_page(page, action, width, height)
             .expect("setting row has a control region");
-        let label_bounds = text_bounds(24, control.top as usize + 14, label, false);
+        let label_bounds = text_bounds(
+            control.left as usize,
+            control.top as usize + 14,
+            label,
+            false,
+        );
         let value_box = super::details_value_box_region(control);
         let value_bounds = centered_text_bounds(value_box, value, true);
 
+        assert_region_contains(control, label_bounds, "setting label");
+        assert_eq!(
+            details_action_at_for_page(
+                page,
+                label_bounds.left as i32 + 1,
+                label_bounds.top as i32 + 1,
+                width,
+                height,
+            ),
+            Some(action),
+            "{label} label must be inside its {action:?} hit region at {width}x{height}"
+        );
         assert_region_contains(value_box, value_bounds, "setting value");
         assert!(
             !regions_overlap(label_bounds, value_box),
