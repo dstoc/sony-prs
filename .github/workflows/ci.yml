@@ -102,6 +102,9 @@ jobs:
       - name: Test restricted publishing command contract
         run: python3 tools/test-prs-cloudflare-publishing.py
 
+      - name: Test Cloudflare deployment change gate
+        run: python3 tools/test-prs-cloudflare-deploy-gate.py
+
       - name: Test Cloudflare D1 migrations
         run: python3 tools/test-prs-cloudflare-migrations.py
 

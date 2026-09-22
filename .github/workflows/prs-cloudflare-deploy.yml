@@ -10,6 +10,7 @@ on:
       - main
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -21,10 +22,80 @@ env:
   WRANGLER_VERSION: "4.135.0"
 
 jobs:
-  deploy:
-    name: Build and deploy production Worker
+  change-gate:
+    name: Check for Cloudflare deploy-relevant changes
     if: >-
       ${{ github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository }}
+    runs-on: ubuntu-24.04
+    outputs:
+      deploy: ${{ steps.change-detection.outputs.deploy }}
+    steps:
+      - name: Check out the tested main commit and history
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+
+      - name: Find the previous successful main CI commit
+        id: previous-ci
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TESTED_SHA: ${{ github.event.workflow_run.head_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          base_sha=''
+          if candidate_shas=$(
+            gh api --paginate \
+              -H 'Accept: application/vnd.github+json' \
+              "/repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?branch=main&status=completed&per_page=100" \
+              --jq '.workflow_runs[] | select(.conclusion == "success") | .head_sha'
+          ); then
+            while IFS= read -r candidate; do
+              [[ "$candidate" == "$TESTED_SHA" ]] && continue
+              if git merge-base --is-ancestor "$candidate" "$TESTED_SHA"; then
+                base_sha="$candidate"
+                break
+              fi
+            done < <(printf '%s\n' "$candidate_shas")
+          else
+            printf '%s\n' 'could not query prior CI runs; the gate will deploy conservatively'
+          fi
+          printf 'base_sha=%s\n' "$base_sha" >> "$GITHUB_OUTPUT"
+          if [[ -n "$base_sha" ]]; then
+            printf 'previous_successful_ci_sha=%s\n' "$base_sha"
+          else
+            printf '%s\n' 'previous_successful_ci_sha=unknown; the gate will deploy conservatively'
+          fi
+
+      - name: Detect Cloudflare deploy-relevant changes
+        id: change-detection
+        env:
+          BASE_SHA: ${{ steps.previous-ci.outputs.base_sha }}
+          TESTED_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          gate_args=(
+            --repo-root "$GITHUB_WORKSPACE"
+            --head "$TESTED_SHA"
+            --github-output "$GITHUB_OUTPUT"
+            --summary "$GITHUB_STEP_SUMMARY"
+          )
+          if [[ -n "$BASE_SHA" ]]; then
+            gate_args+=(--base "$BASE_SHA")
+          fi
+          python3 tools/prs-cloudflare-deploy-gate.py "${gate_args[@]}"
+
+  deploy:
+    name: Build and deploy production Worker
+    needs: change-gate
+    if: >-
+      ${{ needs.change-gate.result == 'success' &&
+      needs.change-gate.outputs.deploy == 'true' &&
+      github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'push' &&
       github.event.workflow_run.head_branch == 'main' &&
       github.event.workflow_run.head_repository.full_name == github.repository }}

@@ -90,6 +90,22 @@ secret in Cloudflare Worker secret storage. Do not add it to the GitHub
 environment, repository variables, Wrangler configuration, logs, or
 artifacts. The deployment readiness check fails until the binding exists.
 
+Before the protected deployment job, the workflow checks the exact
+`workflow_run.head_sha` against the nearest earlier successful `CI` run on
+`main`. It checks out the tested commit with full history and compares the
+range between those two commits. This includes all commits in a normal push
+and the complete result of a merge commit. The gate derives local package
+paths by walking the path dependencies of `crates/prs-cloudflare/Cargo.toml`.
+It also watches the root Cargo manifests, Cloudflare configuration and
+migration files, deployment scripts, build-pin script, deployment workflow,
+CI workflow, and related Cloudflare contract documentation and tests.
+
+The gate logs every changed path and its `deploy=true|false` decision. A
+commit with no deploy-relevant changes writes `No Cloudflare deploy-relevant
+changes for <sha>` to the Actions summary and skips the protected job. If the
+previous successful run cannot be found or the history cannot be proven to be
+ancestral, the gate deploys conservatively.
+
 The job installs the pinned `worker-build` and Wrangler versions, builds the
 Worker, and runs:
 

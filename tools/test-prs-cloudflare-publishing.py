@@ -22,6 +22,7 @@ WRANGLER_CONFIG = REPO_ROOT / "crates" / "prs-cloudflare" / "wrangler.toml"
 DEPLOYMENT_WORKFLOW = (
     REPO_ROOT / ".github" / "workflows" / "prs-cloudflare-deploy.yml"
 )
+DEPLOYMENT_GATE = TOOLS / "prs-cloudflare-deploy-gate.py"
 
 
 FAKE_WRANGLER = r'''#!/usr/bin/env python3
@@ -534,6 +535,7 @@ def assert_deployment_workflow_contract() -> None:
     workflow = DEPLOYMENT_WORKFLOW.read_text(encoding="utf-8")
     required_phrases = (
         "workflow_run:",
+        "actions: read",
         "- CI",
         "- completed",
         "github.event.workflow_run.conclusion == 'success'",
@@ -541,6 +543,13 @@ def assert_deployment_workflow_contract() -> None:
         "github.event.workflow_run.head_branch == 'main'",
         "github.event.workflow_run.head_repository.full_name == github.repository",
         "ref: ${{ github.event.workflow_run.head_sha }}",
+        "fetch-depth: 0",
+        "change-gate:",
+        "python3 tools/prs-cloudflare-deploy-gate.py",
+        "needs: change-gate",
+        "needs.change-gate.outputs.deploy == 'true'",
+        "gh api --paginate",
+        "actions/workflows/ci.yml/runs?branch=main&status=completed",
         "environment:",
         "name: production",
         "CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}",
@@ -556,6 +565,11 @@ def assert_deployment_workflow_contract() -> None:
     )
     for required in required_phrases:
         assert required in workflow, f"deployment workflow is missing: {required}"
+    assert workflow.count("ref: ${{ github.event.workflow_run.head_sha }}") == 2
+
+    gate = DEPLOYMENT_GATE.read_text(encoding="utf-8")
+    assert "No Cloudflare deploy-relevant changes" in gate
+    assert "deploy={'true' if deploy else 'false'}" in gate
 
     assert "pull_request" not in workflow
     assert "wrangler d1" not in workflow
