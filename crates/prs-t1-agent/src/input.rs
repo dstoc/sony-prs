@@ -160,6 +160,8 @@ pub fn event_code_name(event_type: u16, code: u16) -> &'static str {
         (1, 102) => "KEY_HOME",
         (1, 105) => "KEY_LEFT",
         (1, 106) => "KEY_RIGHT",
+        (1, 158) => "KEY_BACK",
+        (1, 357) => "KEY_MENU",
         (1, 115) => "KEY_VOLUME_UP",
         (1, 116) => "KEY_POWER",
         (1, 330) => "BTN_TOUCH",
@@ -236,7 +238,10 @@ mod tests {
     #[test]
     fn names_t1_key_and_touch_codes() {
         assert_eq!(super::event_type_name(1), "KEY");
+        assert_eq!(super::event_code_name(1, 102), "KEY_HOME");
         assert_eq!(super::event_code_name(1, 105), "KEY_LEFT");
+        assert_eq!(super::event_code_name(1, 158), "KEY_BACK");
+        assert_eq!(super::event_code_name(1, 357), "KEY_MENU");
         assert_eq!(super::event_code_name(1, 116), "KEY_POWER");
         assert_eq!(super::event_type_name(3), "ABS");
         assert_eq!(super::event_code_name(3, 0), "ABS_X");

@@ -454,14 +454,17 @@ activated URL in a transient bottom-right overlay with URL text and a QR code.
 The overlay is dismissed by the next touch or physical button press. The agent
 does not launch a browser or make a network request for the external URL.
 
-On the Home reading surface, the hardware left and right keys (`KEY_LEFT` code
-105 and `KEY_RIGHT` code 106) perform one previous/next reader-page operation
-per physical press. Repeat events are ignored. A short physical menu press
-performs the reader's Back operation, restoring the previous document/anchor and
-page after an internal link. A menu hold of at least one second retains its
-existing full GC16 redraw behavior. Page controls and reader Back are ignored
-while Details / Settings is open, so they cannot trigger document navigation
-from the power/settings UI.
+On the reader, the hardware left and right keys (`KEY_LEFT` code 105 and
+`KEY_RIGHT` code 106) perform one previous/next reader-page operation per
+physical press. Repeat events are ignored, and these keys do nothing outside
+the reader. Home (`KEY_HOME` code 102) returns from Details / Settings or
+Display Test to the current reading position; from the reader it navigates to
+the current bundle's entry point. Back (`KEY_BACK` code 158) walks the native
+view history before delegating to reader history. A short physical menu press
+opens Details / Settings only from the reader. A menu hold of at least one
+second retains its existing full GC16 redraw behavior, and the completed hold
+consumes its release. UI history remains separate from document/page/cursor
+history, and transient overlays are not history entries.
 
 Tap the status bar to open **Details / Settings**. The details page groups the
 live snapshot under:
@@ -493,11 +496,10 @@ uses the status bar's operational state area as **Syncing**; successful and
 unchanged syncs return to the normal status bar without a feedback message.
 
 The physical menu button is event0 code 357 (`Unknown` in the old kernel). On
-the Home reading surface, a short press invokes reader Back and a hold of at
-least one second requests a full GC16 redraw with the EPDC's
-`UPDATE_MODE_FULL` flag. On Details / Settings, menu navigation does not invoke
-reader Back. A short power press sleeps; a press of at least two seconds
-requests reboot.
+the reader, a short press opens Details / Settings. Outside the reader, a
+short press is a no-op. A hold of at least one second requests a full GC16
+redraw with the EPDC's `UPDATE_MODE_FULL` flag. A short power press sleeps; a
+press of at least two seconds requests reboot.
 
 ## Display and refresh model
 

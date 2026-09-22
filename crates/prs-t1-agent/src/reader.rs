@@ -19,6 +19,7 @@ use embedded_graphics::pixelcolor::{Rgb565, RgbColor};
 use embedded_graphics::prelude::{Drawable, IntoStorage};
 use embedded_graphics::text::{Baseline, Text};
 use prs_markdown::geometry::Viewport;
+use prs_markdown::navigation::{DocumentId, DocumentLocation, NavigationTarget};
 use prs_markdown::pagination::{DisplayCommand, PageLayout};
 use prs_markdown::parse::ComrakParser;
 use prs_markdown::reader::{Reader, ReaderError, ReaderEvent};
@@ -319,12 +320,17 @@ impl T1Reader {
         self.library_empty
     }
 
-    /// Return to the entry point of the currently open bundle.
+    /// Return to the entry point of the currently open bundle through reader
+    /// history, preserving the location that the caller left.
     pub fn return_to_entry_point(&mut self) -> Result<ReaderEvent, ReaderError> {
         if self.library_empty {
             return Err(ReaderError::NoDocumentOpen);
         }
-        self.reader.open_document(&self.entry_point)
+        let document = DocumentId::from(self.entry_point.to_string_lossy().into_owned());
+        self.reader
+            .activate(NavigationTarget::Location(DocumentLocation::new(
+                document, None,
+            )))
     }
 
     /// Translate a whole-screen point into the page-space coordinates expected
@@ -1217,23 +1223,33 @@ mod tests {
     }
 
     #[test]
-    fn return_to_entry_point_clears_linked_document_navigation() {
+    fn return_to_entry_point_keeps_linked_document_navigation_in_history() {
         let root = fixture_root("# Entry\n\n[Chapter](chapter.md)");
-        fs::write(root.join("chapter.md"), "# Chapter").expect("write linked document");
+        fs::write(root.join("chapter.md"), "# Chapter\n\nline\n".repeat(80))
+            .expect("write linked document");
         let mut reader =
             T1Reader::open(fixture_config(&root), Viewport::new(240, 120)).expect("open fixture");
         reader
             .reader
             .follow_document("chapter.md")
             .expect("follow linked document");
+        assert!(reader.reader.next_page().expect("advance chapter page"));
+        assert_eq!(reader.reader.current_page_index(), Some(1));
         let event = reader
             .return_to_entry_point()
             .expect("return to entry point");
-        assert!(matches!(event, ReaderEvent::Opened { .. }));
+        assert!(matches!(event, ReaderEvent::Navigated { .. }));
         assert_eq!(
             reader.reader.current_location().unwrap().document.as_ref(),
             "index.md"
         );
+        let event = reader.reader.back_event().expect("return to chapter");
+        assert!(matches!(event, ReaderEvent::Back { .. }));
+        assert_eq!(
+            reader.reader.current_location().unwrap().document.as_ref(),
+            "chapter.md"
+        );
+        assert_eq!(reader.reader.current_page_index(), Some(1));
         fs::remove_dir_all(root).expect("remove reader fixture root");
     }
 }

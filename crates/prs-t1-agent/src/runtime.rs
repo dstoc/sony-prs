@@ -29,9 +29,12 @@ const BTN_TOUCH: u16 = 330;
 const KEY_POWER: u16 = 116;
 const KEY_LEFT: u16 = 105;
 const KEY_RIGHT: u16 = 106;
+const KEY_HOME: u16 = 102;
+const KEY_BACK: u16 = 158;
 // The first key device (/dev/input/event0) reports the physical menu button
 // as "Unknown" code 357 (the diagnostic label is E0 Unknown C357).
 const KEY_MENU: u16 = 357;
+const UI_HISTORY_LIMIT: usize = 8;
 const LONG_PRESS_MICROS: u64 = 2_000_000;
 const MENU_HOLD_MICROS: u64 = 1_000_000;
 const WAKE_LOCK_NAME: &str = "prs-t1-native-test";
@@ -1611,6 +1614,7 @@ enum Feedback {
 
 struct UiState {
     page: UiPage,
+    ui_history: Vec<UiPage>,
     mode: &'static str,
     feedback: Option<Feedback>,
     debug_messages: bool,
@@ -1651,6 +1655,7 @@ impl UiState {
     fn new() -> Self {
         Self {
             page: UiPage::Home,
+            ui_history: Vec::new(),
             mode: "ACTIVE",
             feedback: None,
             debug_messages: false,
@@ -1707,6 +1712,63 @@ impl UiState {
 
     fn take_reader_operation(&mut self) -> Option<ReaderOperation> {
         self.reader_operation.take()
+    }
+
+    fn open_ui_page(&mut self, page: UiPage, message: &'static str) {
+        if self.page == page {
+            return;
+        }
+        self.ui_history.push(self.page);
+        if self.ui_history.len() > UI_HISTORY_LIMIT {
+            self.ui_history.remove(0);
+        }
+        self.page = page;
+        self.set_debug_feedback(message);
+    }
+
+    fn return_to_reader(&mut self, message: &'static str) {
+        self.page = UiPage::Home;
+        self.ui_history.clear();
+        self.set_debug_feedback(message);
+    }
+
+    fn home_button(&mut self) -> Option<DirtyArea> {
+        if self.page == UiPage::Home {
+            self.ui_history.clear();
+            self.reader_operation = Some(ReaderOperation::ReturnToEntryPoint);
+            self.set_debug_feedback("Reader entry point");
+            None
+        } else {
+            self.return_to_reader("Returned to reading");
+            Some(DirtyArea::Full)
+        }
+    }
+
+    fn back_button(&mut self) -> Option<DirtyArea> {
+        match self.page {
+            UiPage::Home => {
+                self.reader_operation = Some(ReaderOperation::Back);
+                self.set_debug_feedback("Reader back");
+                None
+            }
+            UiPage::Details | UiPage::DisplayTest => {
+                let previous = self.ui_history.pop().unwrap_or(match self.page {
+                    UiPage::Details => UiPage::Home,
+                    UiPage::DisplayTest => UiPage::Details,
+                    UiPage::Home => unreachable!(),
+                });
+                self.page = previous;
+                if self.page == UiPage::Home {
+                    self.ui_history.clear();
+                }
+                self.set_debug_feedback(match self.page {
+                    UiPage::Home => "Returned to reading",
+                    UiPage::Details => "Returned to Details / Settings",
+                    UiPage::DisplayTest => unreachable!(),
+                });
+                Some(DirtyArea::Full)
+            }
+        }
     }
 
     fn take_sync_trigger(&mut self) -> Option<SyncTrigger> {
@@ -1975,22 +2037,46 @@ impl UiState {
                 let (dirty, action) = self.observe_menu(event);
                 return finish(dirty, action);
             }
-            if source == InputSourceKind::Keys && self.page == UiPage::Home && event.value == 1 {
-                let operation = match event.code {
-                    KEY_LEFT => Some(ReaderOperation::PreviousPage),
-                    KEY_RIGHT => Some(ReaderOperation::NextPage),
-                    _ => None,
-                };
-                if let Some(operation) = operation {
-                    self.reader_operation = Some(operation);
-                    self.set_debug_feedback(match operation {
-                        ReaderOperation::PreviousPage => "Previous page",
-                        ReaderOperation::NextPage => "Next page",
-                        ReaderOperation::Back | ReaderOperation::ReturnToEntryPoint => {
-                            unreachable!()
-                        }
-                    });
-                    return finish(Some(DirtyArea::Full), PowerAction::None);
+            if source == InputSourceKind::Keys {
+                if matches!(event.code, KEY_LEFT | KEY_RIGHT) {
+                    if self.page == UiPage::Home && event.value == 1 {
+                        let operation = if event.code == KEY_LEFT {
+                            ReaderOperation::PreviousPage
+                        } else {
+                            ReaderOperation::NextPage
+                        };
+                        self.reader_operation = Some(operation);
+                        self.set_debug_feedback(match operation {
+                            ReaderOperation::PreviousPage => "Previous page",
+                            ReaderOperation::NextPage => "Next page",
+                            ReaderOperation::Back | ReaderOperation::ReturnToEntryPoint => {
+                                unreachable!()
+                            }
+                        });
+                    }
+                    // Page buttons have no UI action outside the reader and
+                    // must not create a diagnostic-only e-ink update.
+                    return finish(None, PowerAction::None);
+                }
+                if event.code == KEY_HOME {
+                    return finish(
+                        if event.value == 1 {
+                            self.home_button()
+                        } else {
+                            None
+                        },
+                        PowerAction::None,
+                    );
+                }
+                if event.code == KEY_BACK {
+                    return finish(
+                        if event.value == 1 {
+                            self.back_button()
+                        } else {
+                            None
+                        },
+                        PowerAction::None,
+                    );
                 }
             }
             if source.is_power() && event.code == KEY_POWER {
@@ -2054,7 +2140,7 @@ impl UiState {
                     self.menu_hold_triggered = false;
                     self.set_debug_feedback("Menu held");
                 }
-                (self.diagnostics_dirty(DirtyArea::Key), PowerAction::None)
+                (None, PowerAction::None)
             }
             2 => {
                 let due = !self.menu_hold_triggered
@@ -2068,7 +2154,7 @@ impl UiState {
                     (Some(self.trigger_menu_redraw()), PowerAction::None)
                 } else {
                     self.set_debug_feedback("Menu repeat");
-                    (self.diagnostics_dirty(DirtyArea::Key), PowerAction::None)
+                    (None, PowerAction::None)
                 }
             }
             0 => {
@@ -2076,7 +2162,7 @@ impl UiState {
                     self.menu_pressed_at = None;
                     self.menu_hold_triggered = false;
                     self.set_debug_feedback("Menu released");
-                    return (self.diagnostics_dirty(DirtyArea::Key), PowerAction::None);
+                    return (None, PowerAction::None);
                 };
                 let duration = event.timestamp_micros().saturating_sub(start);
                 self.menu_pressed_at = None;
@@ -2084,20 +2170,15 @@ impl UiState {
                 self.menu_hold_triggered = false;
                 if !already_triggered && duration >= MENU_HOLD_MICROS {
                     (Some(self.trigger_menu_redraw()), PowerAction::None)
-                } else if !already_triggered && self.page == UiPage::DisplayTest {
-                    self.page = UiPage::Details;
-                    self.set_debug_feedback("Returned to Details / Settings");
-                    (Some(DirtyArea::Full), PowerAction::None)
                 } else if !already_triggered && self.page == UiPage::Home {
-                    self.reader_operation = Some(ReaderOperation::Back);
-                    self.set_debug_feedback("Reader back");
+                    self.open_ui_page(UiPage::Details, "Details open");
                     (Some(DirtyArea::Full), PowerAction::None)
                 } else {
                     self.set_debug_feedback("Menu released");
-                    (self.diagnostics_dirty(DirtyArea::Key), PowerAction::None)
+                    (None, PowerAction::None)
                 }
             }
-            _ => (self.diagnostics_dirty(DirtyArea::Key), PowerAction::None),
+            _ => (None, PowerAction::None),
         }
     }
 
@@ -2136,20 +2217,11 @@ impl UiState {
             return (PowerAction::None, Some(DirtyArea::Full));
         }
         if self.touch_y < display::STATUS_BAR_HEIGHT as i32 {
-            self.page = match self.page {
-                UiPage::Home => UiPage::Details,
-                UiPage::Details => UiPage::Home,
-                UiPage::DisplayTest => {
-                    unreachable!("display-test taps return before the status bar")
-                }
-            };
-            self.set_debug_feedback(match self.page {
-                UiPage::Home => "Returned to reading",
-                UiPage::Details => "Details open",
-                UiPage::DisplayTest => {
-                    unreachable!("display-test taps return before the status bar")
-                }
-            });
+            if self.page == UiPage::Home {
+                self.open_ui_page(UiPage::Details, "Details open");
+            } else {
+                self.return_to_reader("Returned to reading");
+            }
             return (PowerAction::None, Some(DirtyArea::Full));
         }
         if self.page != UiPage::Details {
@@ -2191,8 +2263,7 @@ impl UiState {
                 (PowerAction::None, Some(DirtyArea::Action(touch_action)))
             }
             display::DetailsAction::DisplayTest => {
-                self.page = UiPage::DisplayTest;
-                self.set_debug_feedback("Display test open");
+                self.open_ui_page(UiPage::DisplayTest, "Display test open");
                 (PowerAction::None, Some(DirtyArea::Full))
             }
             display::DetailsAction::Reboot => {
@@ -2204,8 +2275,7 @@ impl UiState {
                 (PowerAction::PowerOff, Some(DirtyArea::Action(touch_action)))
             }
             display::DetailsAction::BackToReading => {
-                self.page = UiPage::Home;
-                self.set_debug_feedback("Returned to reading");
+                self.return_to_reader("Returned to reading");
                 (PowerAction::None, Some(DirtyArea::Full))
             }
         }
@@ -2277,8 +2347,8 @@ mod tests {
         display, record_reader_event_feedback, BundleHandoff, DirtyArea, Feedback, InputSourceKind,
         PageTone, Point, PowerAction, ReaderOperation, RefreshReason, SuspendMode, SyncEvent,
         UiPage, UiState, ABS_MT_POSITION_X, ABS_MT_POSITION_Y, ABS_MT_TOUCH_MAJOR,
-        ABS_MT_TRACKING_ID, ABS_X, ABS_Y, BTN_TOUCH, EVENT_ABS, EVENT_KEY, EVENT_SYN, KEY_LEFT,
-        KEY_MENU, KEY_RIGHT, SYN_REPORT,
+        ABS_MT_TRACKING_ID, ABS_X, ABS_Y, BTN_TOUCH, EVENT_ABS, EVENT_KEY, EVENT_SYN, KEY_BACK,
+        KEY_HOME, KEY_LEFT, KEY_MENU, KEY_RIGHT, SYN_REPORT,
     };
     use crate::input::RawEvent;
     use prs_markdown::reader::ReaderEvent;
@@ -2565,7 +2635,7 @@ mod tests {
         let mut state = UiState::new();
         state.set_error_feedback("Reader error");
 
-        let (dirty, action) = state.observe(InputSourceKind::Keys, event(KEY_MENU, 2, 1_000_000));
+        let (dirty, action) = state.observe(InputSourceKind::Keys, event(KEY_HOME, 1, 1_000_000));
 
         assert_eq!(action, super::PowerAction::None);
         assert_eq!(state.visible_feedback(), None);
@@ -2647,14 +2717,122 @@ mod tests {
     }
 
     #[test]
-    fn short_menu_press_requests_reader_back() {
+    fn short_menu_press_opens_details_only_from_reader() {
         let mut state = UiState::new();
         state.observe(InputSourceKind::Keys, event(KEY_MENU, 1, 1_000_000));
 
         let (dirty, action) = state.observe(InputSourceKind::Keys, event(KEY_MENU, 0, 1_999_999));
         assert_eq!(dirty, Some(DirtyArea::Full));
         assert_eq!(action, super::PowerAction::None);
+        assert_eq!(state.page, UiPage::Details);
+        assert_eq!(state.ui_history, vec![UiPage::Home]);
+        assert_eq!(state.take_reader_operation(), None);
+    }
+
+    #[test]
+    fn home_from_reader_queues_entry_point_and_clears_ui_history() {
+        let mut state = UiState::new();
+        state.ui_history = vec![UiPage::Details];
+
+        let (dirty, action) = state.observe(InputSourceKind::Keys, event(KEY_HOME, 1, 1_000_000));
+
+        assert_eq!(dirty, None);
+        assert_eq!(action, PowerAction::None);
+        assert_eq!(state.page, UiPage::Home);
+        assert!(state.ui_history.is_empty());
+        assert_eq!(
+            state.take_reader_operation(),
+            Some(ReaderOperation::ReturnToEntryPoint)
+        );
+    }
+
+    #[test]
+    fn home_from_non_reader_returns_to_reader_and_clears_ui_history() {
+        let mut state = UiState::new();
+        state.page = UiPage::DisplayTest;
+        state.ui_history = vec![UiPage::Home, UiPage::Details];
+
+        let (dirty, action) = state.observe(InputSourceKind::Keys, event(KEY_HOME, 1, 1_000_000));
+
+        assert_eq!(dirty, Some(DirtyArea::Full));
+        assert_eq!(action, PowerAction::None);
+        assert_eq!(state.page, UiPage::Home);
+        assert!(state.ui_history.is_empty());
+        assert_eq!(state.take_reader_operation(), None);
+    }
+
+    #[test]
+    fn back_walks_ui_history_then_delegates_to_reader_history() {
+        let mut state = UiState::new();
+        state.open_ui_page(UiPage::Details, "Details open");
+        state.open_ui_page(UiPage::DisplayTest, "Display test open");
+
+        let (dirty, action) = state.observe(InputSourceKind::Keys, event(KEY_BACK, 1, 1_000_000));
+        assert_eq!(dirty, Some(DirtyArea::Full));
+        assert_eq!(action, PowerAction::None);
+        assert_eq!(state.page, UiPage::Details);
+        assert_eq!(state.ui_history, vec![UiPage::Home]);
+        assert_eq!(state.take_reader_operation(), None);
+
+        let (dirty, action) = state.observe(InputSourceKind::Keys, event(KEY_BACK, 1, 1_000_001));
+        assert_eq!(dirty, Some(DirtyArea::Full));
+        assert_eq!(action, PowerAction::None);
+        assert_eq!(state.page, UiPage::Home);
+        assert!(state.ui_history.is_empty());
+
+        let (dirty, action) = state.observe(InputSourceKind::Keys, event(KEY_BACK, 1, 1_000_002));
+        assert_eq!(dirty, None);
+        assert_eq!(action, PowerAction::None);
         assert_eq!(state.take_reader_operation(), Some(ReaderOperation::Back));
+    }
+
+    #[test]
+    fn back_from_empty_reader_history_is_a_no_op_without_refresh() {
+        let mut state = UiState::new();
+
+        let (dirty, action) = state.observe(InputSourceKind::Keys, event(KEY_BACK, 1, 1_000_000));
+
+        assert_eq!(dirty, None);
+        assert_eq!(action, PowerAction::None);
+        assert_eq!(state.take_reader_operation(), Some(ReaderOperation::Back));
+    }
+
+    #[test]
+    fn menu_short_press_is_a_no_op_outside_reader() {
+        for page in [UiPage::Details, UiPage::DisplayTest] {
+            let mut state = UiState::new();
+            state.page = page;
+            state.ui_history = vec![UiPage::Home];
+            state.observe(InputSourceKind::Keys, event(KEY_MENU, 1, 1_000_000));
+
+            let (dirty, action) =
+                state.observe(InputSourceKind::Keys, event(KEY_MENU, 0, 1_100_000));
+
+            assert_eq!(dirty, None);
+            assert_eq!(action, PowerAction::None);
+            assert_eq!(state.page, page);
+            assert_eq!(state.ui_history, vec![UiPage::Home]);
+            assert_eq!(state.take_reader_operation(), None);
+        }
+    }
+
+    #[test]
+    fn completed_menu_hold_refreshes_without_opening_details() {
+        for page in [UiPage::Home, UiPage::Details, UiPage::DisplayTest] {
+            let mut state = UiState::new();
+            state.page = page;
+            state.observe(InputSourceKind::Keys, event(KEY_MENU, 1, 1_000_000));
+            state.menu_pressed_at = Some(Instant::now() - Duration::from_secs(1));
+
+            assert_eq!(state.poll_menu_hold(), Some(DirtyArea::Full));
+            let (dirty, action) =
+                state.observe(InputSourceKind::Keys, event(KEY_MENU, 0, 2_000_000));
+
+            assert_eq!(dirty, None);
+            assert_eq!(action, PowerAction::None);
+            assert_eq!(state.page, page);
+            assert_eq!(state.take_reader_operation(), None);
+        }
     }
 
     #[test]
@@ -2662,7 +2840,7 @@ mod tests {
         let mut state = UiState::new();
 
         let (dirty, action) = state.observe(InputSourceKind::Keys, event(KEY_LEFT, 1, 1_000_000));
-        assert_eq!(dirty, Some(DirtyArea::Full));
+        assert_eq!(dirty, None);
         assert_eq!(action, super::PowerAction::None);
         assert_eq!(
             state.take_reader_operation(),
@@ -2675,7 +2853,7 @@ mod tests {
         assert_eq!(state.take_reader_operation(), None);
 
         let (dirty, action) = state.observe(InputSourceKind::Keys, event(KEY_RIGHT, 1, 1_000_002));
-        assert_eq!(dirty, Some(DirtyArea::Full));
+        assert_eq!(dirty, None);
         assert_eq!(action, super::PowerAction::None);
         assert_eq!(
             state.take_reader_operation(),
@@ -2689,13 +2867,13 @@ mod tests {
         state.page = UiPage::Details;
 
         let (dirty, action) = state.observe(InputSourceKind::Keys, event(KEY_RIGHT, 1, 1_000_000));
-        assert_eq!(dirty, Some(DirtyArea::Key));
+        assert_eq!(dirty, None);
         assert_eq!(action, super::PowerAction::None);
         assert_eq!(state.take_reader_operation(), None);
 
         state.observe(InputSourceKind::Keys, event(KEY_MENU, 1, 2_000_000));
         let (dirty, action) = state.observe(InputSourceKind::Keys, event(KEY_MENU, 0, 2_100_000));
-        assert_eq!(dirty, Some(DirtyArea::Key));
+        assert_eq!(dirty, None);
         assert_eq!(action, super::PowerAction::None);
         assert_eq!(state.take_reader_operation(), None);
     }
@@ -3111,7 +3289,7 @@ mod tests {
     }
 
     #[test]
-    fn short_menu_press_returns_from_display_test_to_details() {
+    fn short_menu_press_does_not_navigate_from_display_test() {
         let mut state = UiState::new();
         state.page = UiPage::DisplayTest;
         state.observe(InputSourceKind::Keys, event(KEY_MENU, 1, 1_000_000));
@@ -3119,8 +3297,8 @@ mod tests {
         let (dirty, action) = state.observe(InputSourceKind::Keys, event(KEY_MENU, 0, 1_100_000));
 
         assert_eq!(action, super::PowerAction::None);
-        assert_eq!(dirty, Some(DirtyArea::Full));
-        assert_eq!(state.page, UiPage::Details);
+        assert_eq!(dirty, None);
+        assert_eq!(state.page, UiPage::DisplayTest);
         assert_eq!(state.take_reader_operation(), None);
     }
 
