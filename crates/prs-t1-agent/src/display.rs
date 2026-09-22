@@ -1991,23 +1991,30 @@ fn draw_value_box(
     value: &str,
     pressed: bool,
 ) {
-    let top = region.top as usize;
-    let width = (region.width as usize / 3)
-        .max(64)
-        .min(region.width as usize);
-    let height = region.height as usize;
-    let box_left = (region.right() as usize).saturating_sub(width);
+    let value_region = details_value_box_region(region);
     if pressed {
-        canvas.fill_rect(box_left, top, width, height, BLACK);
+        canvas.fill_rect(
+            value_region.left as usize,
+            value_region.top as usize,
+            value_region.width as usize,
+            value_region.height as usize,
+            BLACK,
+        );
     } else {
-        canvas.stroke_rect(box_left, top, width, height, BLACK);
+        canvas.stroke_rect(
+            value_region.left as usize,
+            value_region.top as usize,
+            value_region.width as usize,
+            value_region.height as usize,
+            BLACK,
+        );
     }
     draw_text_centered_in_rect(
         canvas,
-        box_left,
-        top,
-        width,
-        height,
+        value_region.left as usize,
+        value_region.top as usize,
+        value_region.width as usize,
+        value_region.height as usize,
         value,
         if pressed {
             Rgb565::WHITE
@@ -2015,6 +2022,18 @@ fn draw_value_box(
             Rgb565::BLACK
         },
     );
+}
+
+fn details_value_box_region(region: DisplayRegion) -> DisplayRegion {
+    let width = (region.width as usize / 3)
+        .max(64)
+        .min(region.width as usize);
+    DisplayRegion::new(
+        (region.right() as usize).saturating_sub(width) as u32,
+        region.top,
+        width as u32,
+        region.height,
+    )
 }
 
 fn draw_text_right_in_rect(
@@ -2398,6 +2417,7 @@ mod tests {
         DETAILS_ACTION_HEIGHT, DETAILS_ACTION_TOP, DETAILS_LINE_STEP, SCREEN_HEIGHT, SCREEN_WIDTH,
         WHITE,
     };
+    use embedded_graphics::prelude::{Dimensions, RgbColor};
     use std::env;
     use std::fs;
     use std::path::Path;
@@ -2405,6 +2425,138 @@ mod tests {
     fn pixel(frame: &[u8], width: usize, x: usize, y: usize) -> u16 {
         let offset = (y * width + x) * 2;
         u16::from_ne_bytes([frame[offset], frame[offset + 1]])
+    }
+
+    fn text_bounds(x: usize, y: usize, text: &str, bold: bool) -> super::DisplayRegion {
+        let font = if bold {
+            &super::FONT_8X13_BOLD
+        } else {
+            &super::FONT_8X13
+        };
+        let style = super::MonoTextStyle::new(font, super::Rgb565::BLACK);
+        let bounds =
+            super::Text::with_baseline(text, super::Point::zero(), style, super::Baseline::Top)
+                .bounding_box();
+        super::DisplayRegion::new(x as u32, y as u32, bounds.size.width, bounds.size.height)
+    }
+
+    fn centered_text_bounds(
+        region: super::DisplayRegion,
+        text: &str,
+        bold: bool,
+    ) -> super::DisplayRegion {
+        let measured = text_bounds(0, 0, text, bold);
+        super::DisplayRegion::new(
+            region.left + region.width.saturating_sub(measured.width) / 2,
+            region.top + region.height.saturating_sub(measured.height) / 2,
+            measured.width,
+            measured.height,
+        )
+    }
+
+    fn regions_overlap(left: super::DisplayRegion, right: super::DisplayRegion) -> bool {
+        left.left < right.right()
+            && right.left < left.right()
+            && left.top < right.bottom()
+            && right.top < left.bottom()
+    }
+
+    fn assert_region_contains(
+        outer: super::DisplayRegion,
+        inner: super::DisplayRegion,
+        description: &str,
+    ) {
+        assert!(
+            inner.left >= outer.left
+                && inner.top >= outer.top
+                && inner.right() <= outer.right()
+                && inner.bottom() <= outer.bottom(),
+            "{description} text bounds {inner:?} exceed {outer:?}"
+        );
+    }
+
+    fn modern_page_actions(page: DetailsPage) -> &'static [DetailsAction] {
+        match page {
+            DetailsPage::Menu => &[
+                DetailsAction::OpenReading,
+                DetailsAction::OpenSynchronization,
+                DetailsAction::OpenDeviceDiagnostics,
+                DetailsAction::BackToReading,
+            ],
+            DetailsPage::Reading => &[
+                DetailsAction::Orientation,
+                DetailsAction::ShowStatusBar,
+                DetailsAction::FontDecrease,
+                DetailsAction::FontReset,
+                DetailsAction::FontIncrease,
+                DetailsAction::ReadingProgress,
+                DetailsAction::ReturnToEntryPoint,
+                DetailsAction::BackToSettings,
+            ],
+            DetailsPage::Synchronization => {
+                &[DetailsAction::SyncNow, DetailsAction::BackToSettings]
+            }
+            DetailsPage::DeviceDiagnostics => &[
+                DetailsAction::DebugMessages,
+                DetailsAction::DisplayTest,
+                DetailsAction::Reboot,
+                DetailsAction::PowerOff,
+                DetailsAction::BackToSettings,
+            ],
+            DetailsPage::PowerConfirmation => &[
+                DetailsAction::CancelPowerAction,
+                DetailsAction::ConfirmPower,
+            ],
+            DetailsPage::Legacy => &[],
+        }
+    }
+
+    fn assert_text_clear_of_other_controls(
+        page: DetailsPage,
+        width: usize,
+        height: usize,
+        text: super::DisplayRegion,
+        parent_action: Option<DetailsAction>,
+        description: &str,
+    ) {
+        for action in modern_page_actions(page) {
+            if Some(*action) == parent_action {
+                continue;
+            }
+            let control = details_action_region_for_page(page, *action, width, height)
+                .expect("listed modern action has a control region");
+            assert!(
+                !regions_overlap(text, control),
+                "{description} text bounds {text:?} overlap the {action:?} control {control:?} at {width}x{height}"
+            );
+        }
+    }
+
+    fn assert_setting_row_text_clearance(
+        page: DetailsPage,
+        action: DetailsAction,
+        label: &str,
+        value: &str,
+        width: usize,
+        height: usize,
+    ) {
+        let control = details_action_region_for_page(page, action, width, height)
+            .expect("setting row has a control region");
+        let label_bounds = text_bounds(24, control.top as usize + 14, label, false);
+        let value_box = super::details_value_box_region(control);
+        let value_bounds = centered_text_bounds(value_box, value, true);
+
+        assert_region_contains(value_box, value_bounds, "setting value");
+        assert!(
+            !regions_overlap(label_bounds, value_box),
+            "{label} text bounds {label_bounds:?} overlap its value box {value_box:?} at {width}x{height}"
+        );
+        assert!(
+            !regions_overlap(label_bounds, value_bounds),
+            "{label} text bounds {label_bounds:?} overlap {value:?} text bounds {value_bounds:?} at {width}x{height}"
+        );
+        assert_text_clear_of_other_controls(page, width, height, label_bounds, Some(action), label);
+        assert_text_clear_of_other_controls(page, width, height, value_bounds, Some(action), value);
     }
 
     fn screenshot_view(debug_messages: bool) -> UiViewModel {
@@ -2926,6 +3078,11 @@ mod tests {
     #[test]
     fn modern_settings_layout_has_explicit_dimensions_and_text_clearance() {
         for (width, height) in [(SCREEN_WIDTH, SCREEN_HEIGHT), (800, 600)] {
+            let orientation = if width > height {
+                "Landscape"
+            } else {
+                "Portrait"
+            };
             let font_group = super::modern_font_group_region(width, height);
             if width <= height {
                 assert!(font_group.top as usize >= super::DETAILS_READING_STATUS_TOP + 44);
@@ -2941,6 +3098,129 @@ mod tests {
             }
             assert!(font_group.right() <= width as u32);
             assert!(font_group.bottom() <= height as u32);
+
+            let font_label = text_bounds(
+                font_group.left as usize,
+                font_group.top as usize - 22,
+                "Font size",
+                false,
+            );
+            let font_value_bounds = text_bounds(
+                font_group.right() as usize - text_bounds(0, 0, "100%", false).width as usize,
+                font_group.top as usize - 22,
+                "100%",
+                false,
+            );
+            assert_eq!(font_label.top, font_value_bounds.top);
+            assert!(
+                !regions_overlap(font_label, font_value_bounds),
+                "Font size label {font_label:?} overlaps its percentage {font_value_bounds:?} at {width}x{height}"
+            );
+            assert_text_clear_of_other_controls(
+                DetailsPage::Reading,
+                width,
+                height,
+                font_label,
+                None,
+                "Font size",
+            );
+            assert_text_clear_of_other_controls(
+                DetailsPage::Reading,
+                width,
+                height,
+                font_value_bounds,
+                None,
+                "100%",
+            );
+
+            for (page, heading) in [
+                (DetailsPage::Menu, "Choose a section"),
+                (DetailsPage::Reading, "Everyday reading preferences"),
+                (DetailsPage::Synchronization, "Synchronization status"),
+                (
+                    DetailsPage::DeviceDiagnostics,
+                    "Device maintenance and diagnostics",
+                ),
+            ] {
+                let heading_bounds = text_bounds(24, 106, heading, false);
+                assert_text_clear_of_other_controls(
+                    page,
+                    width,
+                    height,
+                    heading_bounds,
+                    None,
+                    heading,
+                );
+            }
+
+            assert_setting_row_text_clearance(
+                DetailsPage::Reading,
+                DetailsAction::Orientation,
+                "Orientation",
+                orientation,
+                width,
+                height,
+            );
+            assert_setting_row_text_clearance(
+                DetailsPage::Reading,
+                DetailsAction::ShowStatusBar,
+                "Show status bar",
+                "ON",
+                width,
+                height,
+            );
+            assert_setting_row_text_clearance(
+                DetailsPage::Reading,
+                DetailsAction::ReadingProgress,
+                "Reading progress",
+                "ON",
+                width,
+                height,
+            );
+            assert_setting_row_text_clearance(
+                DetailsPage::DeviceDiagnostics,
+                DetailsAction::DebugMessages,
+                "Debug messages",
+                "OFF",
+                width,
+                height,
+            );
+
+            for (name, x, y) in [
+                ("Status: Idle", 24, super::DETAILS_SYNC_STATUS_TOP),
+                ("Failure: None", 24, super::DETAILS_SYNC_STATUS_TOP + 24),
+                ("This action cannot be undone.", 24, 132),
+                ("Confirm Reboot?", 24, 164),
+            ] {
+                let bounds = text_bounds(x, y, name, false);
+                assert_text_clear_of_other_controls(
+                    if name.starts_with("Status:") || name.starts_with("Failure:") {
+                        DetailsPage::Synchronization
+                    } else {
+                        DetailsPage::PowerConfirmation
+                    },
+                    width,
+                    height,
+                    bounds,
+                    None,
+                    name,
+                );
+            }
+            let maintenance_heading = text_bounds(
+                if width > height { 412 } else { 24 },
+                if width > height { 106 } else { 286 },
+                "Maintenance",
+                false,
+            );
+            assert_text_clear_of_other_controls(
+                DetailsPage::DeviceDiagnostics,
+                width,
+                height,
+                maintenance_heading,
+                None,
+                "Maintenance",
+            );
+
             for action in [
                 DetailsAction::FontDecrease,
                 DetailsAction::FontReset,
@@ -2960,7 +3240,7 @@ mod tests {
                 DetailsPage::DeviceDiagnostics,
                 DetailsPage::PowerConfirmation,
             ] {
-                let view = modern_screenshot_view(page);
+                let view = modern_screenshot_view_with_orientation(page, orientation);
                 let frame = render_details_settings_host_at(&view, width, height);
                 assert_eq!(frame.len(), width * height * 2);
             }
