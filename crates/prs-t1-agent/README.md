@@ -485,8 +485,9 @@ the action pane has its own spaced region below the status content. Every action
 inverts while its touch is held and restores on release using a bounded partial
 refresh. Touch release is accepted from the event shapes observed on
 the T1: `BTN_TOUCH=0`, `ABS_MT_TRACKING_ID=-1`, or
-`ABS_MT_TOUCH_MAJOR=0`, committed by `SYN_REPORT`. The legacy `ABS_X/Y` path is
-normalized from the panel's advertised 800x600 axes before hit testing.
+`ABS_MT_TOUCH_MAJOR=0`, committed by `SYN_REPORT`. The legacy `ABS_X/Y` path
+maps the panel's advertised 800x600 axes to the logical 600x800 coordinates
+required by fbdev rotation `3` before hit testing.
 
 The reader feedback strip between the status bar and document content is quiet
 in normal mode. It shows actionable errors until the next touch or physical
@@ -504,8 +505,11 @@ press of at least two seconds requests reboot.
 ## Display and refresh model
 
 The T1 exposes a 600x800 visible RGB565 framebuffer with a 1216-byte stride
-and a larger virtual buffer. The runtime therefore never assumes that the
-visible image is tightly packed in the mapped framebuffer.
+and a larger virtual buffer. `NativeDisplay` establishes fbdev rotation `3`
+through `FBIOPUT_VSCREENINFO` after the first writable mapping, then re-queries
+the driver before the first render. It repeats this check after wake. The
+runtime therefore never assumes that the visible image is tightly packed in
+the mapped framebuffer.
 
 Each logical screen is first rendered into an owned, tightly packed RGB565
 frame. After a completed full-screen update, the runtime keeps a shadow frame,

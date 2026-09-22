@@ -3303,7 +3303,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_touch_axes_are_normalized_and_tracking_release_activates_tap() {
+    fn legacy_touch_axes_follow_portrait_rotation_and_tracking_release_activates_tap() {
         let mut state = UiState::new();
         state.page = UiPage::Details;
 

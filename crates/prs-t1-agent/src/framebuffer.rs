@@ -11,12 +11,17 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 const FBIOGET_VSCREENINFO: c_ulong = 0x4600;
+const FBIOPUT_VSCREENINFO: c_ulong = 0x4601;
 const FBIOGET_FSCREENINFO: c_ulong = 0x4602;
 const PROT_READ: c_int = 1;
 const PROT_WRITE: c_int = 2;
 const MAP_SHARED: c_int = 1;
 const MAP_FAILED: *mut c_void = -1isize as *mut c_void;
 const MAX_MAPPED_BYTES: usize = 128 * 1024 * 1024;
+const FB_ROTATE_CCW: u32 = 3;
+const NATIVE_DISPLAY_WIDTH: u32 = 600;
+const NATIVE_DISPLAY_HEIGHT: u32 = 800;
+const NATIVE_DISPLAY_ROTATION: u32 = FB_ROTATE_CCW;
 
 // These are the MXC EPDC ioctls used by the T1's installed
 // /system/lib/hw/gralloc.imx5x.so. The ioctl payload size is part of the
@@ -769,20 +774,24 @@ pub struct NativeDisplay {
 impl NativeDisplay {
     pub fn open(path: &Path) -> io::Result<Self> {
         let file = OpenOptions::new().read(true).write(true).open(path)?;
-        let var = query_var(&file)?;
-        let fix = query_fix(&file)?;
+        let mut var = query_var(&file)?;
+        let mut fix = query_fix(&file)?;
         validate(&var, &fix)?;
         validate_rgb565(&var)?;
-        let mapping = Some(MappedFramebuffer::new_with_protection(
+        // The T1 driver can inherit Android's landscape mode after handoff.
+        // Keep the first writable mmap before changing any other startup state;
+        // this ordering avoids the device's known second-mmap EINVAL path.
+        let mapping = MappedFramebuffer::new_with_protection(
             &file,
             map_length(&fix)?,
             PROT_READ | PROT_WRITE,
-        )?);
+        )?;
+        establish_native_orientation(&file, &mut var, &mut fix, Some(mapping.length))?;
         Ok(Self {
             file,
             var,
             fix,
-            mapping,
+            mapping: Some(mapping),
             next_marker: 10,
             pending_update: None,
             presented: None,
@@ -1100,8 +1109,12 @@ impl NativeDisplay {
             self.var.xoffset,
             self.var.yoffset,
         );
-        validate(&self.var, &self.fix)?;
-        validate_rgb565(&self.var)?;
+        establish_native_orientation(
+            &self.file,
+            &mut self.var,
+            &mut self.fix,
+            self.mapping.as_ref().map(|mapping| mapping.length),
+        )?;
         if self.mapping.is_none() {
             self.mapping = Some(MappedFramebuffer::new_with_protection(
                 &self.file,
@@ -1326,6 +1339,72 @@ fn map_length(fix: &FbFixScreeninfo) -> io::Result<usize> {
             "framebuffer memory size does not fit in usize",
         )
     })
+}
+
+fn establish_native_orientation(
+    file: &File,
+    var: &mut FbVarScreeninfo,
+    fix: &mut FbFixScreeninfo,
+    mapped_length: Option<usize>,
+) -> io::Result<()> {
+    if !native_orientation_matches(var) {
+        var.rotate = NATIVE_DISPLAY_ROTATION;
+        let result = unsafe {
+            ioctl(
+                file.as_raw_fd(),
+                FBIOPUT_VSCREENINFO,
+                var as *mut FbVarScreeninfo,
+            )
+        };
+        if result < 0 {
+            return Err(ioctl_error("set native framebuffer orientation"));
+        }
+    }
+
+    // The driver derives xres/yres and the fixed stride from the requested
+    // rotation. Use its returned values for every subsequent render and
+    // update, instead of assuming that the ioctl accepted the request.
+    *var = query_var(file)?;
+    *fix = query_fix(file)?;
+    validate(var, fix)?;
+    validate_rgb565(var)?;
+    validate_native_orientation(var)?;
+    if let Some(mapped_length) = mapped_length {
+        let required_length = map_length(fix)?;
+        if required_length > mapped_length {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "native framebuffer mapping is too small after orientation: {mapped_length} < {required_length}"
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn native_orientation_matches(var: &FbVarScreeninfo) -> bool {
+    var.xres == NATIVE_DISPLAY_WIDTH
+        && var.yres == NATIVE_DISPLAY_HEIGHT
+        && var.rotate == NATIVE_DISPLAY_ROTATION
+}
+
+fn validate_native_orientation(var: &FbVarScreeninfo) -> io::Result<()> {
+    if native_orientation_matches(var) {
+        return Ok(());
+    }
+    Err(io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!(
+            "native display requires {}x{} at rotation {}, got {}x{} at rotation {}",
+            NATIVE_DISPLAY_WIDTH,
+            NATIVE_DISPLAY_HEIGHT,
+            NATIVE_DISPLAY_ROTATION,
+            var.xres,
+            var.yres,
+            var.rotate,
+        ),
+    ))
 }
 
 fn validate_rgb565(var: &FbVarScreeninfo) -> io::Result<()> {
@@ -1553,6 +1632,33 @@ mod tests {
     fn t1_update_payload_matches_vendor_ioctl_size() {
         assert_eq!(std::mem::size_of::<MxcfbUpdateData>(), 0x44);
         assert_eq!(MXCFB_SEND_UPDATE, 0x4044_462e);
+    }
+
+    #[test]
+    fn native_orientation_requires_portrait_framebuffer_and_rotation_three() {
+        let portrait = FbVarScreeninfo {
+            xres: NATIVE_DISPLAY_WIDTH,
+            yres: NATIVE_DISPLAY_HEIGHT,
+            rotate: NATIVE_DISPLAY_ROTATION,
+            ..rgb565_var()
+        };
+        assert!(native_orientation_matches(&portrait));
+        assert!(validate_native_orientation(&portrait).is_ok());
+
+        let landscape = FbVarScreeninfo {
+            xres: NATIVE_DISPLAY_HEIGHT,
+            yres: NATIVE_DISPLAY_WIDTH,
+            rotate: 0,
+            ..portrait
+        };
+        assert!(!native_orientation_matches(&landscape));
+        assert!(validate_native_orientation(&landscape).is_err());
+    }
+
+    #[test]
+    fn framebuffer_orientation_uses_fbdev_put_vscreeninfo() {
+        assert_eq!(FBIOPUT_VSCREENINFO, 0x4601);
+        assert_eq!(NATIVE_DISPLAY_ROTATION, 3);
     }
 
     #[test]
