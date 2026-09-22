@@ -8,6 +8,7 @@
 
 use crate::display::{self, CONTENT_TOP};
 use crate::framebuffer::{DisplayCanvas, DisplayRegion, NativeDisplay};
+use crate::orientation::ReaderOrientation;
 use crate::refresh::{PageTone, RefreshPlan};
 use embedded_graphics::geometry::Point;
 use embedded_graphics::pixelcolor::{Rgb565, RgbColor};
@@ -164,6 +165,12 @@ pub fn reader_layout_for_display_with_fullscreen(
     ReaderLayout::new(Viewport::new(width, height))
         .with_status_bar_height(if fullscreen { 0 } else { CONTENT_TOP as u32 })
         .with_progress_line_height(PAGE_BOTTOM_MARGIN)
+}
+
+/// Build the T1 layout for one of the two physical display orientations.
+pub fn reader_layout_for_orientation(orientation: ReaderOrientation) -> ReaderLayout {
+    let viewport = orientation.viewport();
+    reader_layout_for_display(viewport.width, viewport.height)
 }
 
 fn reader_layout_for_page_viewport(viewport: Viewport) -> ReaderLayout {
@@ -394,6 +401,17 @@ impl T1Reader {
             return Err(ReaderControllerError::Reader(ReaderError::NoDocumentOpen));
         }
         self.controller.previous_page()
+    }
+
+    /// Reflow the shared reader after the physical display changes
+    /// orientation. The Markdown controller keeps the current content anchor
+    /// and navigation history while rebuilding page geometry and hit regions.
+    pub fn set_orientation(
+        &mut self,
+        orientation: ReaderOrientation,
+    ) -> Result<ReaderEvent, ReaderControllerError> {
+        self.controller
+            .set_reader_layout(reader_layout_for_orientation(orientation))
     }
 
     pub fn back(&mut self) -> Result<ReaderEvent, ReaderControllerError> {
@@ -890,6 +908,53 @@ mod tests {
         let png = crate::display::rgb565_to_png(&frame, 600, 800).expect("encode reader PNG");
         assert_png_golden("reader-normal", &png);
         fs::remove_dir_all(root).expect("remove reader fixture root");
+    }
+
+    #[test]
+    fn landscape_reader_matches_png_golden() {
+        let root = fixture_root(
+            "# Landscape reader\n\nThe document remains readable after the physical display rotates.\n",
+        );
+        let mut reader = T1Reader::open_with_layout(
+            fixture_config(&root),
+            reader_layout_for_orientation(ReaderOrientation::Landscape),
+        )
+        .expect("open landscape fixture");
+        let frame = reader
+            .render_frame("87%|UP|ON|ON||12:34", None, 800, 600)
+            .expect("render landscape reader");
+        let png =
+            crate::display::rgb565_to_png(&frame, 800, 600).expect("encode landscape reader PNG");
+        assert_png_golden("reader-landscape", &png);
+        fs::remove_dir_all(root).expect("remove reader fixture root");
+    }
+
+    #[test]
+    fn orientation_reflow_preserves_the_current_passage_and_history() {
+        let root = fixture_root(&"# Reader\n\npassage\n".repeat(160));
+        let mut reader = T1Reader::open_with_layout(
+            fixture_config(&root),
+            reader_layout_for_orientation(ReaderOrientation::Portrait),
+        )
+        .expect("open reflow fixture");
+        reader.next_page().expect("advance fixture page");
+        let anchor = reader
+            .reader()
+            .current_content_anchor()
+            .expect("current content anchor");
+        let history_len = reader.reader().history().len();
+
+        reader
+            .set_orientation(ReaderOrientation::Landscape)
+            .expect("reflow landscape fixture");
+
+        assert_eq!(
+            reader.reader().reader_layout().effective_viewport(),
+            Viewport::new(800, 508)
+        );
+        assert_eq!(reader.reader().current_content_anchor(), Some(anchor));
+        assert_eq!(reader.reader().history().len(), history_len);
+        fs::remove_dir_all(root).expect("remove reflow fixture root");
     }
 
     #[test]

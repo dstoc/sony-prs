@@ -782,8 +782,8 @@ sample.
 The event diagnostics now label known Linux event types and codes while still
 displaying their numeric values. This covers the observed `KEY_LEFT` (105),
 `KEY_RIGHT` (106), `KEY_POWER` (116), `ABS_X`/`ABS_Y`, and multitouch position
-codes. Coordinate orientation and any higher-level gesture semantics remain
-intentionally unassigned until a physical sample is available.
+codes. The native shell now applies the selected physical orientation to the
+legacy touch axes; higher-level gesture semantics remain outside its scope.
 
 The final presentation pass resized the four diagnostic panels and moved the
 lower status block down so all rendered text has clear space from the panel
@@ -1380,7 +1380,9 @@ the shell uses the raw screen coordinates for hit testing. `BTN_TOUCH` release
 events delimit taps; movement continues to update the diagnostics without
 triggering navigation. The legacy `ABS_X/Y` compatibility path remains
 displayed for investigation and is normalized from the advertised 800x600
-physical axes to screen x/y before hit testing. The decoder also accepts
+physical axes to the active screen orientation before hit testing. Portrait
+swaps the axes for the existing fbdev rotation `3`; landscape keeps the axes
+in their native order at rotation `0`. The decoder also accepts
 `ABS_MT_TRACKING_ID=-1` as a release for drivers that do not emit
 `BTN_TOUCH=0`. A synthetic legacy-axis sequence successfully navigated into
 details and activated the lower `Back to reading` action.

@@ -1,4 +1,5 @@
 use crate::damage::{self, DamageOptions};
+use crate::orientation::ReaderOrientation;
 use std::fmt;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
@@ -18,10 +19,10 @@ const PROT_WRITE: c_int = 2;
 const MAP_SHARED: c_int = 1;
 const MAP_FAILED: *mut c_void = -1isize as *mut c_void;
 const MAX_MAPPED_BYTES: usize = 128 * 1024 * 1024;
-const FB_ROTATE_CCW: u32 = 3;
 const NATIVE_DISPLAY_WIDTH: u32 = 600;
 const NATIVE_DISPLAY_HEIGHT: u32 = 800;
-const NATIVE_DISPLAY_ROTATION: u32 = FB_ROTATE_CCW;
+const LANDSCAPE_DISPLAY_WIDTH: u32 = NATIVE_DISPLAY_HEIGHT;
+const LANDSCAPE_DISPLAY_HEIGHT: u32 = NATIVE_DISPLAY_WIDTH;
 
 // These are the MXC EPDC ioctls used by the T1's installed
 // /system/lib/hw/gralloc.imx5x.so. The ioctl payload size is part of the
@@ -769,10 +770,15 @@ pub struct NativeDisplay {
     next_marker: u32,
     pending_update: Option<PendingUpdate>,
     presented: Option<Vec<u8>>,
+    orientation: ReaderOrientation,
 }
 
 impl NativeDisplay {
     pub fn open(path: &Path) -> io::Result<Self> {
+        Self::open_with_orientation(path, ReaderOrientation::Portrait)
+    }
+
+    pub fn open_with_orientation(path: &Path, orientation: ReaderOrientation) -> io::Result<Self> {
         let file = OpenOptions::new().read(true).write(true).open(path)?;
         let mut var = query_var(&file)?;
         let mut fix = query_fix(&file)?;
@@ -786,7 +792,7 @@ impl NativeDisplay {
             map_length(&fix)?,
             PROT_READ | PROT_WRITE,
         )?;
-        establish_native_orientation(&file, &mut var, &mut fix, Some(mapping.length))?;
+        establish_native_orientation(&file, &mut var, &mut fix, orientation, Some(mapping.length))?;
         Ok(Self {
             file,
             var,
@@ -795,6 +801,7 @@ impl NativeDisplay {
             next_marker: 10,
             pending_update: None,
             presented: None,
+            orientation,
         })
     }
 
@@ -804,6 +811,30 @@ impl NativeDisplay {
 
     pub fn height(&self) -> u32 {
         self.var.yres
+    }
+
+    pub fn orientation(&self) -> ReaderOrientation {
+        self.orientation
+    }
+
+    /// Change the physical fbdev orientation while retaining the validated
+    /// mapping. The next render is forced to establish a complete shadow for
+    /// the newly oriented panel.
+    pub fn set_orientation(&mut self, orientation: ReaderOrientation) -> io::Result<()> {
+        if self.orientation == orientation && native_orientation_matches(&self.var, orientation) {
+            return Ok(());
+        }
+        self.wait_for_pending_update()?;
+        establish_native_orientation(
+            &self.file,
+            &mut self.var,
+            &mut self.fix,
+            orientation,
+            self.mapping.as_ref().map(|mapping| mapping.length),
+        )?;
+        self.orientation = orientation;
+        self.presented = None;
+        Ok(())
     }
 
     /// Compare an owned packed RGB565 frame with the last completed frame,
@@ -1113,6 +1144,7 @@ impl NativeDisplay {
             &self.file,
             &mut self.var,
             &mut self.fix,
+            self.orientation,
             self.mapping.as_ref().map(|mapping| mapping.length),
         )?;
         if self.mapping.is_none() {
@@ -1345,10 +1377,11 @@ fn establish_native_orientation(
     file: &File,
     var: &mut FbVarScreeninfo,
     fix: &mut FbFixScreeninfo,
+    orientation: ReaderOrientation,
     mapped_length: Option<usize>,
 ) -> io::Result<()> {
-    if !native_orientation_matches(var) {
-        var.rotate = NATIVE_DISPLAY_ROTATION;
+    if !native_orientation_matches(var, orientation) {
+        var.rotate = orientation.framebuffer_rotation();
         let result = unsafe {
             ioctl(
                 file.as_raw_fd(),
@@ -1368,7 +1401,7 @@ fn establish_native_orientation(
     *fix = query_fix(file)?;
     validate(var, fix)?;
     validate_rgb565(var)?;
-    validate_native_orientation(var)?;
+    validate_native_orientation(var, orientation)?;
     if let Some(mapped_length) = mapped_length {
         let required_length = map_length(fix)?;
         if required_length > mapped_length {
@@ -1383,23 +1416,29 @@ fn establish_native_orientation(
     Ok(())
 }
 
-fn native_orientation_matches(var: &FbVarScreeninfo) -> bool {
-    var.xres == NATIVE_DISPLAY_WIDTH
-        && var.yres == NATIVE_DISPLAY_HEIGHT
-        && var.rotate == NATIVE_DISPLAY_ROTATION
+fn native_orientation_matches(var: &FbVarScreeninfo, orientation: ReaderOrientation) -> bool {
+    let viewport = orientation.viewport();
+    var.xres == viewport.width
+        && var.yres == viewport.height
+        && var.rotate == orientation.framebuffer_rotation()
 }
 
-fn validate_native_orientation(var: &FbVarScreeninfo) -> io::Result<()> {
-    if native_orientation_matches(var) {
+fn validate_native_orientation(
+    var: &FbVarScreeninfo,
+    orientation: ReaderOrientation,
+) -> io::Result<()> {
+    if native_orientation_matches(var, orientation) {
         return Ok(());
     }
+    let viewport = orientation.viewport();
     Err(io::Error::new(
         io::ErrorKind::InvalidData,
         format!(
-            "native display requires {}x{} at rotation {}, got {}x{} at rotation {}",
-            NATIVE_DISPLAY_WIDTH,
-            NATIVE_DISPLAY_HEIGHT,
-            NATIVE_DISPLAY_ROTATION,
+            "native {} display requires {}x{} at rotation {}, got {}x{} at rotation {}",
+            orientation.label(),
+            viewport.width,
+            viewport.height,
+            orientation.framebuffer_rotation(),
             var.xres,
             var.yres,
             var.rotate,
@@ -1639,26 +1678,38 @@ mod tests {
         let portrait = FbVarScreeninfo {
             xres: NATIVE_DISPLAY_WIDTH,
             yres: NATIVE_DISPLAY_HEIGHT,
-            rotate: NATIVE_DISPLAY_ROTATION,
+            rotate: ReaderOrientation::Portrait.framebuffer_rotation(),
             ..rgb565_var()
         };
-        assert!(native_orientation_matches(&portrait));
-        assert!(validate_native_orientation(&portrait).is_ok());
+        assert!(native_orientation_matches(
+            &portrait,
+            ReaderOrientation::Portrait
+        ));
+        assert!(validate_native_orientation(&portrait, ReaderOrientation::Portrait).is_ok());
 
         let landscape = FbVarScreeninfo {
-            xres: NATIVE_DISPLAY_HEIGHT,
-            yres: NATIVE_DISPLAY_WIDTH,
+            xres: LANDSCAPE_DISPLAY_WIDTH,
+            yres: LANDSCAPE_DISPLAY_HEIGHT,
             rotate: 0,
             ..portrait
         };
-        assert!(!native_orientation_matches(&landscape));
-        assert!(validate_native_orientation(&landscape).is_err());
+        assert!(native_orientation_matches(
+            &landscape,
+            ReaderOrientation::Landscape
+        ));
+        assert!(validate_native_orientation(&landscape, ReaderOrientation::Landscape).is_ok());
+        assert!(!native_orientation_matches(
+            &landscape,
+            ReaderOrientation::Portrait
+        ));
+        assert!(validate_native_orientation(&landscape, ReaderOrientation::Portrait).is_err());
     }
 
     #[test]
     fn framebuffer_orientation_uses_fbdev_put_vscreeninfo() {
         assert_eq!(FBIOPUT_VSCREENINFO, 0x4601);
-        assert_eq!(NATIVE_DISPLAY_ROTATION, 3);
+        assert_eq!(ReaderOrientation::Portrait.framebuffer_rotation(), 3);
+        assert_eq!(ReaderOrientation::Landscape.framebuffer_rotation(), 0);
     }
 
     #[test]

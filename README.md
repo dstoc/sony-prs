@@ -80,7 +80,13 @@ and EPDC access, evdev input, status/settings UI, touch coordinate mapping,
 suspend/wake, damage, and refresh policy.
 
 The T1 agent is tested against a rooted Sony PRS-T1 running Android 2.2.1. The
-observed device exposes a 600x800 RGB565 framebuffer at
+observed device exposes an 800x600 RGB565 panel. The native shell supports the
+default portrait surface at 600x800 and a landscape surface at 800x600. The
+orientation preference in Details / Settings changes the physical framebuffer,
+the Markdown layout, and touch coordinates as one operation; it is not
+persistent yet.
+
+The framebuffer is exposed at
 `/dev/graphics/fb0`, an EPDC refresh ioctl, and evdev touch, key, and power
 devices. Those paths and observations are firmware-specific; inspect the
 device before applying the commands to another T1.

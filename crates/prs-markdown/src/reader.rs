@@ -735,7 +735,10 @@ where
     ) -> Result<ReaderEvent, ReaderError> {
         let reader_layout = reader_layout.normalized();
         let Some(current) = self.current.take() else {
-            return Err(ReaderError::NoDocumentOpen);
+            self.reader_layout = reader_layout;
+            self.base_style = base_style;
+            self.style = reader_layout.effective_style(base_style);
+            return Ok(ReaderEvent::NoAction);
         };
         let content = current.content;
         let location = current.location.clone();

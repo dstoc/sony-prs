@@ -494,8 +494,11 @@ inverts while its touch is held and restores on release using a bounded partial
 refresh. Touch release is accepted from the event shapes observed on
 the T1: `BTN_TOUCH=0`, `ABS_MT_TRACKING_ID=-1`, or
 `ABS_MT_TOUCH_MAJOR=0`, committed by `SYN_REPORT`. The legacy `ABS_X/Y` path
-maps the panel's advertised 800x600 axes to the logical 600x800 coordinates
-required by fbdev rotation `3` before hit testing.
+maps the panel's advertised 800x600 axes to the active logical surface before
+hit testing. Portrait uses the existing fbdev rotation `3` and swaps the axes
+to 600x800. Landscape uses fbdev rotation `0` and keeps the 800x600 axes in
+their native order. The preference is an in-memory setting until persistence
+is added by a separate change.
 
 The reader feedback strip between the status bar and document content is quiet
 in normal mode. It shows actionable errors until the next touch or physical
@@ -512,12 +515,13 @@ press of at least two seconds requests reboot.
 
 ## Display and refresh model
 
-The T1 exposes a 600x800 visible RGB565 framebuffer with a 1216-byte stride
-and a larger virtual buffer. `NativeDisplay` establishes fbdev rotation `3`
+The T1 exposes an 800x600 physical RGB565 panel with a 1216-byte stride and a
+larger virtual buffer. `NativeDisplay` establishes the selected fbdev rotation
 through `FBIOPUT_VSCREENINFO` after the first writable mapping, then re-queries
 the driver before the first render. It repeats this check after wake. The
 runtime therefore never assumes that the visible image is tightly packed in
-the mapped framebuffer.
+the mapped framebuffer. Portrait is 600x800 at rotation `3`; landscape is
+800x600 at rotation `0`.
 
 Each logical screen is first rendered into an owned, tightly packed RGB565
 frame. After a completed full-screen update, the runtime keeps a shadow frame,

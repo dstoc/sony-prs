@@ -34,13 +34,16 @@ pub const CONTENT_LINE_STEP: usize = 25;
 pub const DETAILS_LINE_STEP: usize = 21;
 pub const DETAILS_ACTION_MARGIN: usize = 24;
 pub const DETAILS_DEBUG_TOP: usize = 106;
-pub const DETAILS_DEBUG_HEIGHT: usize = 32;
+pub const DETAILS_DEBUG_HEIGHT: usize = DETAILS_LINE_STEP;
 pub const DETAILS_PROGRESS_TOP: usize = DETAILS_DEBUG_TOP + DETAILS_DEBUG_HEIGHT;
 pub const DETAILS_PROGRESS_HEIGHT: usize = DETAILS_DEBUG_HEIGHT;
 pub const DETAILS_FULLSCREEN_TOP: usize = DETAILS_PROGRESS_TOP + DETAILS_PROGRESS_HEIGHT;
 pub const DETAILS_FULLSCREEN_HEIGHT: usize = DETAILS_DEBUG_HEIGHT;
+pub const DETAILS_ORIENTATION_TOP: usize = DETAILS_FULLSCREEN_TOP + DETAILS_FULLSCREEN_HEIGHT;
 pub const DETAILS_ACTION_HEADER_TOP: usize = 520;
 pub const DETAILS_ACTION_TOP: usize = 548;
+const DETAILS_LANDSCAPE_ACTION_HEADER_TOP: usize = 456;
+const DETAILS_LANDSCAPE_ACTION_TOP: usize = 476;
 pub const DETAILS_ACTION_HEIGHT: usize = 36;
 pub const DETAILS_ACTION_GAP: usize = 4;
 pub const DETAILS_SYNC_TOP: usize = DETAILS_ACTION_TOP;
@@ -56,6 +59,7 @@ pub const DETAILS_BACK_TOP: usize =
     DETAILS_POWER_OFF_TOP + DETAILS_ACTION_HEIGHT + DETAILS_ACTION_GAP;
 pub const SCREEN_WIDTH: usize = 600;
 pub const SCREEN_HEIGHT: usize = 800;
+const LANDSCAPE_LINE_STEP: usize = 20;
 
 const STATUS_BAR_SIDE_MARGIN: usize = 16;
 const STATUS_BAR_CLOCK_WIDTH: usize = 96;
@@ -108,6 +112,14 @@ pub enum DetailsRow {
     Section(String),
     Value(String),
     Toggle { label: String, enabled: bool },
+    Choice { label: String, value: String },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DetailsPreference {
+    DebugMessages,
+    ReadingProgress,
+    Orientation,
 }
 
 /// A toggle rendered in the Settings section of Details / Settings.
@@ -119,29 +131,30 @@ pub enum DetailsToggle {
 }
 
 impl DetailsToggle {
-    const fn top(self) -> usize {
+    const fn row(self) -> usize {
         match self {
-            Self::DebugMessages => DETAILS_DEBUG_TOP,
-            Self::ReadingProgress => DETAILS_PROGRESS_TOP,
-            Self::FullscreenReader => DETAILS_FULLSCREEN_TOP,
+            Self::DebugMessages => 1,
+            Self::ReadingProgress => 2,
+            Self::FullscreenReader => 3,
         }
     }
+}
+
+fn details_toggle_top(toggle: DetailsToggle, width: usize, height: usize) -> usize {
+    CONTENT_TOP
+        .saturating_add((toggle.row() + 1).saturating_mul(details_line_step(width, height)))
+        .saturating_sub(12)
 }
 
 /// Return the exact toggle rectangle used by the Settings renderer and input
 /// hit testing.
 pub fn details_toggle_region(toggle: DetailsToggle, width: usize, height: usize) -> DisplayRegion {
-    let top = toggle.top().min(height);
+    let top = details_toggle_top(toggle, width, height).min(height);
     DisplayRegion::new(
         0,
         top as u32,
         width as u32,
-        match toggle {
-            DetailsToggle::DebugMessages => DETAILS_DEBUG_HEIGHT,
-            DetailsToggle::ReadingProgress => DETAILS_PROGRESS_HEIGHT,
-            DetailsToggle::FullscreenReader => DETAILS_FULLSCREEN_HEIGHT,
-        }
-        .min(height.saturating_sub(top)) as u32,
+        details_line_step(width, height).min(height.saturating_sub(top)) as u32,
     )
 }
 
@@ -217,6 +230,26 @@ impl DetailsAction {
 
 /// Return the exact action rectangle used by both rendering and hit testing.
 pub fn details_action_region(action: DetailsAction, width: usize, height: usize) -> DisplayRegion {
+    if width > height {
+        let margin = DETAILS_ACTION_MARGIN.min(width / 2);
+        let gap = DETAILS_ACTION_GAP.min(width);
+        let button_width = width.saturating_sub(margin.saturating_mul(2).saturating_add(gap)) / 2;
+        let index = DetailsAction::ALL
+            .iter()
+            .position(|candidate| *candidate == action)
+            .unwrap_or_default();
+        let column = index % 2;
+        let row = index / 2;
+        let top = DETAILS_LANDSCAPE_ACTION_TOP
+            .saturating_add(row.saturating_mul(DETAILS_ACTION_HEIGHT + DETAILS_ACTION_GAP));
+        return DisplayRegion::new(
+            margin.saturating_add(column.saturating_mul(button_width.saturating_add(gap))) as u32,
+            top.min(height) as u32,
+            button_width as u32,
+            DETAILS_ACTION_HEIGHT.min(height.saturating_sub(top)) as u32,
+        );
+    }
+
     let margin = DETAILS_ACTION_MARGIN.min(width / 2);
     DisplayRegion::new(
         margin as u32,
@@ -240,6 +273,54 @@ pub fn details_action_at(x: i32, y: i32, width: usize, height: usize) -> Option<
             && y >= region.top as usize
             && y < region.bottom() as usize
     })
+}
+
+fn details_line_step(width: usize, height: usize) -> usize {
+    if width > height {
+        LANDSCAPE_LINE_STEP
+    } else {
+        DETAILS_LINE_STEP
+    }
+}
+
+fn details_preference_top(preference: DetailsPreference, width: usize, height: usize) -> usize {
+    let row: usize = match preference {
+        DetailsPreference::DebugMessages => 1,
+        DetailsPreference::ReadingProgress => 2,
+        DetailsPreference::Orientation => 4,
+    };
+    CONTENT_TOP
+        .saturating_add((row + 1).saturating_mul(details_line_step(width, height)))
+        .saturating_sub(12)
+}
+
+/// Return the settings preference under a touch point using the same geometry
+/// as the Settings renderer.
+pub fn details_preference_at(
+    x: i32,
+    y: i32,
+    width: usize,
+    height: usize,
+) -> Option<DetailsPreference> {
+    if x < 24 || y < 0 || x as usize >= width.saturating_sub(24) {
+        return None;
+    }
+    let y = y as usize;
+    let row_height = details_line_step(width, height);
+    DetailsPreference::all().into_iter().find(|preference| {
+        let top = details_preference_top(*preference, width, height);
+        y >= top && y < top.saturating_add(row_height)
+    })
+}
+
+impl DetailsPreference {
+    pub const fn all() -> [Self; 3] {
+        [
+            Self::DebugMessages,
+            Self::ReadingProgress,
+            Self::Orientation,
+        ]
+    }
 }
 
 /// The native Details / Settings data after status collection and formatting.
@@ -268,6 +349,11 @@ impl DetailsViewModel {
             .map(|line| {
                 if let Some((label, enabled)) = toggle_state(line) {
                     DetailsRow::Toggle { label, enabled }
+                } else if let Some(value) = line.strip_prefix("Orientation ") {
+                    DetailsRow::Choice {
+                        label: "Orientation".into(),
+                        value: value.into(),
+                    }
                 } else if is_section_heading(line) {
                     DetailsRow::Section(line.clone())
                 } else {
@@ -285,6 +371,7 @@ impl DetailsViewModel {
             DetailsRow::Toggle { label, enabled } => {
                 format!("{label} {}", if *enabled { "ON" } else { "OFF" })
             }
+            DetailsRow::Choice { label, value } => format!("{label} {value}"),
         }));
         lines
     }
@@ -444,6 +531,11 @@ pub(crate) fn render_details_settings_frame(
     render_details_settings(&view.status_bar, &view.details, width, height, None)
 }
 
+#[cfg(test)]
+pub fn render_details_settings_host_at(view: &UiViewModel, width: usize, height: usize) -> Vec<u8> {
+    render_details_settings(&view.status_bar, &view.details, width, height, None)
+}
+
 fn render_details_settings(
     status: &StatusBarViewModel,
     details: &DetailsViewModel,
@@ -463,6 +555,7 @@ fn white_frame(width: usize, height: usize) -> Vec<u8> {
     for pixel in frame.chunks_exact_mut(2) {
         pixel.copy_from_slice(&WHITE.to_ne_bytes());
     }
+
     frame
 }
 
@@ -1073,6 +1166,12 @@ fn draw_details_model(
     details: &DetailsViewModel,
     pressed_action: Option<DetailsAction>,
 ) {
+    let line_step = details_line_step(canvas.width(), canvas.height());
+    let action_header_top = if canvas.width() > canvas.height() {
+        DETAILS_LANDSCAPE_ACTION_HEADER_TOP
+    } else {
+        DETAILS_ACTION_HEADER_TOP
+    };
     draw_text_font(
         canvas,
         24,
@@ -1082,27 +1181,28 @@ fn draw_details_model(
         Rgb565::BLACK,
     );
     for (index, row) in details.rows.iter().enumerate() {
-        let y = CONTENT_TOP.saturating_add((index + 1).saturating_mul(DETAILS_LINE_STEP));
-        if y.saturating_add(16) > DETAILS_ACTION_HEADER_TOP.saturating_sub(4) {
+        let y = CONTENT_TOP.saturating_add((index + 1).saturating_mul(line_step));
+        if y.saturating_add(16) > action_header_top.saturating_sub(4) {
             break;
         }
         match row {
             DetailsRow::Section(text) => draw_section_heading(canvas, y, text),
             DetailsRow::Value(text) => draw_text(canvas, 24, y, text),
             DetailsRow::Toggle { label, enabled } => draw_debug_toggle(canvas, y, label, *enabled),
+            DetailsRow::Choice { label, value } => draw_choice(canvas, y, label, value),
         }
     }
     draw_text_font(
         canvas,
         24,
-        DETAILS_ACTION_HEADER_TOP,
+        action_header_top,
         "Actions",
         &FONT_8X13_BOLD,
         Rgb565::BLACK,
     );
     canvas.fill_rect(
         24,
-        DETAILS_ACTION_HEADER_TOP.saturating_add(16),
+        action_header_top.saturating_add(16),
         canvas.width().saturating_sub(48),
         1,
         BLACK,
@@ -1272,9 +1372,9 @@ fn toggle_state(line: &str) -> Option<(String, bool)> {
 
 fn draw_debug_toggle(canvas: &mut DisplayCanvas<'_>, y: usize, label: &str, enabled: bool) {
     draw_text(canvas, 24, y, label);
-    let left = 430;
+    let left = canvas.width().saturating_sub(170);
     let top = y.saturating_sub(3);
-    let width = canvas.width().saturating_sub(left + 24);
+    let width = canvas.width().saturating_sub(left + 24).max(1);
     canvas.stroke_rect(left, top, width, 22, BLACK);
     draw_text_centered_in_rect(
         canvas,
@@ -1285,6 +1385,15 @@ fn draw_debug_toggle(canvas: &mut DisplayCanvas<'_>, y: usize, label: &str, enab
         if enabled { "ON" } else { "OFF" },
         Rgb565::BLACK,
     );
+}
+
+fn draw_choice(canvas: &mut DisplayCanvas<'_>, y: usize, label: &str, value: &str) {
+    draw_text(canvas, 24, y, label);
+    let left = canvas.width().saturating_sub(170);
+    let top = y.saturating_sub(3);
+    let width = canvas.width().saturating_sub(left + 24).max(1);
+    canvas.stroke_rect(left, top, width, 22, BLACK);
+    draw_text_centered_in_rect(canvas, left, top, width, 22, value, Rgb565::BLACK);
 }
 
 fn draw_section_heading(canvas: &mut DisplayCanvas<'_>, y: usize, text: &str) {
@@ -1450,10 +1559,11 @@ mod tests {
     use super::{
         details_action_at, details_action_region, details_toggle_at, details_toggle_region,
         gray565, render_authorization_qr, render_details_settings_host,
-        render_details_settings_host_pressed, render_display_test, render_status_bar_host,
-        rgb565_to_png, standby_screen, DetailsAction, DetailsRow, DetailsToggle, DetailsViewModel,
-        StatusBarViewModel, UiViewModel, BLACK, DETAILS_ACTION_HEADER_TOP, DETAILS_ACTION_HEIGHT,
-        DETAILS_ACTION_TOP, DETAILS_LINE_STEP, SCREEN_HEIGHT, SCREEN_WIDTH, WHITE,
+        render_details_settings_host_at, render_details_settings_host_pressed, render_display_test,
+        render_status_bar_host, rgb565_to_png, standby_screen, DetailsAction, DetailsRow,
+        DetailsToggle, DetailsViewModel, StatusBarViewModel, UiViewModel, BLACK,
+        DETAILS_ACTION_HEADER_TOP, DETAILS_ACTION_HEIGHT, DETAILS_ACTION_TOP, DETAILS_LINE_STEP,
+        SCREEN_HEIGHT, SCREEN_WIDTH, WHITE,
     };
     use std::env;
     use std::fs;
@@ -1482,6 +1592,14 @@ mod tests {
             DetailsRow::Toggle {
                 label: "Reading progress".into(),
                 enabled: true,
+            },
+            DetailsRow::Toggle {
+                label: "Fullscreen reader".into(),
+                enabled: false,
+            },
+            DetailsRow::Choice {
+                label: "Orientation".into(),
+                value: "Portrait".into(),
             },
             DetailsRow::Section("Synchronization".into()),
             DetailsRow::Value("Sync active  Failure none".into()),
@@ -1680,27 +1798,20 @@ mod tests {
     fn settings_toggle_hit_testing_matches_rendered_rows() {
         for toggle in [
             DetailsToggle::DebugMessages,
+            DetailsToggle::ReadingProgress,
             DetailsToggle::FullscreenReader,
         ] {
-            let region = details_toggle_region(toggle, SCREEN_WIDTH, SCREEN_HEIGHT);
-            assert_eq!(
-                details_toggle_at(
-                    region.left as i32 + 1,
-                    region.top as i32 + 1,
-                    SCREEN_WIDTH,
-                    SCREEN_HEIGHT
-                ),
-                Some(toggle)
-            );
-            assert_eq!(
-                details_toggle_at(
-                    region.right() as i32,
-                    region.top as i32 + 1,
-                    SCREEN_WIDTH,
-                    SCREEN_HEIGHT
-                ),
-                None
-            );
+            for (width, height) in [(SCREEN_WIDTH, SCREEN_HEIGHT), (800, 600)] {
+                let region = details_toggle_region(toggle, width, height);
+                assert_eq!(
+                    details_toggle_at(region.left as i32 + 1, region.top as i32 + 1, width, height),
+                    Some(toggle)
+                );
+                assert_eq!(
+                    details_toggle_at(region.right() as i32, region.top as i32 + 1, width, height),
+                    None
+                );
+            }
         }
     }
 
@@ -1710,7 +1821,9 @@ mod tests {
             "Details / Settings".into(),
             "Settings".into(),
             "Debug messages OFF".into(),
+            "Reading progress ON".into(),
             "Fullscreen reader ON".into(),
+            "Orientation Landscape".into(),
         ]);
         assert_eq!(
             view.rows,
@@ -1721,11 +1834,69 @@ mod tests {
                     enabled: false,
                 },
                 DetailsRow::Toggle {
+                    label: "Reading progress".into(),
+                    enabled: true,
+                },
+                DetailsRow::Toggle {
                     label: "Fullscreen reader".into(),
                     enabled: true,
                 },
+                DetailsRow::Choice {
+                    label: "Orientation".into(),
+                    value: "Landscape".into(),
+                },
             ]
         );
+    }
+
+    #[test]
+    fn landscape_actions_use_two_columns_and_stay_inside_the_frame() {
+        let width = 800;
+        let height = 600;
+        let regions = DetailsAction::ALL.map(|action| details_action_region(action, width, height));
+        for (action, region) in DetailsAction::ALL.into_iter().zip(regions) {
+            assert!(region.right() <= width as u32);
+            assert!(region.bottom() <= height as u32);
+            assert_eq!(
+                details_action_at(region.left as i32 + 1, region.top as i32 + 1, width, height,),
+                Some(action)
+            );
+        }
+        assert_eq!(regions[0].top, regions[1].top);
+        assert_ne!(regions[0].left, regions[1].left);
+        assert!(regions[0].bottom() <= regions[2].top);
+    }
+
+    #[test]
+    fn settings_preference_hit_testing_matches_both_orientation_rows() {
+        assert_eq!(
+            super::details_preference_at(100, (super::DETAILS_DEBUG_TOP + 10) as i32, 600, 800),
+            Some(super::DetailsPreference::DebugMessages)
+        );
+        assert_eq!(
+            super::details_preference_at(100, (super::DETAILS_PROGRESS_TOP + 10) as i32, 600, 800,),
+            Some(super::DetailsPreference::ReadingProgress)
+        );
+        assert_eq!(
+            super::details_preference_at(
+                100,
+                (super::DETAILS_ORIENTATION_TOP + 10) as i32,
+                600,
+                800,
+            ),
+            Some(super::DetailsPreference::Orientation)
+        );
+        assert_eq!(
+            super::details_preference_at(100, 174, 800, 600),
+            Some(super::DetailsPreference::Orientation)
+        );
+    }
+
+    #[test]
+    fn landscape_details_renderer_has_the_expected_host_golden() {
+        let frame = render_details_settings_host_at(&screenshot_view(false), 800, 600);
+        let png = rgb565_to_png(&frame, 800, 600).expect("encode landscape details PNG");
+        assert_png_golden("details-settings-landscape", &png);
     }
 
     #[test]

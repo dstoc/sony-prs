@@ -1,5 +1,6 @@
 use crate::framebuffer::{DisplayRegion, NativeDisplay, WaveformMode};
 use crate::input::{EventReader, RawEvent};
+use crate::orientation::ReaderOrientation;
 use crate::refresh::{PageTone, RefreshPolicy, RefreshReason};
 use crate::{display, reader, sync};
 use embedded_graphics::geometry::Point;
@@ -99,8 +100,10 @@ pub fn run(path: &Path, suspend_mode: SuspendMode) -> io::Result<()> {
     // The T1's old Android/Bionic framebuffer driver requires the first
     // writable mapping before this environment/configuration parse. Keep the
     // display open first so a sleep-timeout override cannot make mmap fail.
-    let mut display =
-        NativeDisplay::open(path).map_err(|error| display_error("open native display", error))?;
+    let requested_orientation = ReaderOrientation::default();
+    let mut display = NativeDisplay::open_with_orientation(path, requested_orientation)
+        .map_err(|error| display_error("open native display", error))?;
+    let orientation = display.orientation();
     // Preserve the five-minute default and the test override, but do not move
     // this parse above NativeDisplay::open() without physical T1 validation.
     let sleep_inactivity_timeout = sleep_inactivity_timeout()?;
@@ -126,7 +129,7 @@ pub fn run(path: &Path, suspend_mode: SuspendMode) -> io::Result<()> {
         sync_task.library_root(),
     )
     .map_err(|error| display_error("open development Markdown reader", error))?;
-    let mut state = UiState::new();
+    let mut state = UiState::with_orientation(orientation);
     if sync_task.start() {
         state.sync_started();
     }
@@ -220,6 +223,15 @@ pub fn run(path: &Path, suspend_mode: SuspendMode) -> io::Result<()> {
                 if let Some(point) = state.take_reader_tap() {
                     let result = markdown_reader.tap(point);
                     let dirty = apply_reader_result(&mut state, &mut markdown_reader, result);
+                    redraw_area = merge_optional_dirty(redraw_area, dirty);
+                }
+                if let Some(target) = state.take_orientation_change() {
+                    let dirty = apply_orientation_change(
+                        &mut display,
+                        &mut markdown_reader,
+                        &mut state,
+                        target,
+                    );
                     redraw_area = merge_optional_dirty(redraw_area, dirty);
                 }
             }
@@ -619,6 +631,48 @@ fn apply_reader_result(
     }
 }
 
+fn apply_orientation_change(
+    display: &mut NativeDisplay,
+    markdown_reader: &mut reader::T1Reader,
+    state: &mut UiState,
+    target: ReaderOrientation,
+) -> Option<DirtyArea> {
+    let previous = state.orientation;
+    if target == previous {
+        return None;
+    }
+
+    if let Err(error) = display.set_orientation(target) {
+        state.set_error_feedback(format!("Display orientation failed: {error}"));
+        eprintln!("standalone-test: display orientation change failed: {error}");
+        return Some(DirtyArea::Full);
+    }
+
+    if let Err(error) = markdown_reader.set_orientation(target) {
+        let rollback = display.set_orientation(previous);
+        state.set_error_feedback(format!("Reader orientation failed: {error}"));
+        eprintln!(
+            "standalone-test: reader orientation change failed: {error}; framebuffer rollback={rollback:?}"
+        );
+        return Some(DirtyArea::Full);
+    }
+
+    state.orientation = target;
+    state.set_debug_feedback(format!("Orientation {}", target.label()));
+    eprintln!(
+        "standalone-test: orientation={} framebuffer={}x{} touch-map={}",
+        target.label(),
+        display.width(),
+        display.height(),
+        if target.is_landscape() {
+            "native"
+        } else {
+            "swapped"
+        },
+    );
+    Some(DirtyArea::Full)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DirtyArea {
     Full,
@@ -746,12 +800,14 @@ impl DirtyArea {
             // old message can remain visible until a later content redraw.
             Self::Touch if page == UiPage::Home => feedback_region(),
             Self::Key | Self::Power if page == UiPage::Home => feedback_region(),
-            // The details page keeps the touch diagnostics near the bottom
-            // of the content area. Keep the update well inside the display.
-            Self::Touch => DisplayRegion::new(20, 460, 560, 130),
-            // Key and power diagnostics share one region so a power press can
-            // update the key row, power row, and status message together.
-            Self::Key | Self::Power => DisplayRegion::new(20, 535, 560, 105),
+            // The details page has responsive row geometry in landscape, so
+            // repaint its content band for live input diagnostics.
+            Self::Touch | Self::Key | Self::Power => DisplayRegion::new(
+                0,
+                display::STATUS_BAR_HEIGHT as u32,
+                width,
+                height.saturating_sub(display::STATUS_BAR_HEIGHT as u32),
+            ),
             Self::Action(action) => {
                 display::details_action_region(action, width as usize, height as usize)
             }
@@ -833,6 +889,10 @@ fn screen_view_model(state: &UiState, wake_lock_held: bool) -> display::UiViewMo
         display::DetailsRow::Toggle {
             label: "Fullscreen reader".into(),
             enabled: state.fullscreen,
+        },
+        display::DetailsRow::Choice {
+            label: "Orientation".into(),
+            value: state.orientation.label().into(),
         },
         display::DetailsRow::Section("Synchronization".into()),
         display::DetailsRow::Value(format!(
@@ -1623,6 +1683,8 @@ enum Feedback {
 }
 
 struct UiState {
+    orientation: ReaderOrientation,
+    orientation_change: Option<ReaderOrientation>,
     page: UiPage,
     ui_history: Vec<UiPage>,
     mode: &'static str,
@@ -1633,6 +1695,8 @@ struct UiState {
     reader_tap: Option<Point>,
     reader_operation: Option<ReaderOperation>,
     touch_seen: bool,
+    touch_raw_x: i32,
+    touch_raw_y: i32,
     touch_x: i32,
     touch_y: i32,
     touch_down: bool,
@@ -1665,7 +1729,13 @@ struct UiState {
 
 impl UiState {
     fn new() -> Self {
+        Self::with_orientation(ReaderOrientation::default())
+    }
+
+    fn with_orientation(orientation: ReaderOrientation) -> Self {
         Self {
+            orientation,
+            orientation_change: None,
             page: UiPage::Home,
             ui_history: Vec::new(),
             mode: "ACTIVE",
@@ -1676,6 +1746,8 @@ impl UiState {
             reader_tap: None,
             reader_operation: None,
             touch_seen: false,
+            touch_raw_x: 0,
+            touch_raw_y: 0,
             touch_x: 0,
             touch_y: 0,
             touch_down: false,
@@ -1726,6 +1798,18 @@ impl UiState {
 
     fn take_reader_operation(&mut self) -> Option<ReaderOperation> {
         self.reader_operation.take()
+    }
+
+    fn take_orientation_change(&mut self) -> Option<ReaderOrientation> {
+        self.orientation_change.take()
+    }
+
+    fn screen_width(&self) -> usize {
+        self.orientation.viewport().width as usize
+    }
+
+    fn screen_height(&self) -> usize {
+        self.orientation.viewport().height as usize
     }
 
     fn open_ui_page(&mut self, page: UiPage, message: &'static str) {
@@ -1960,15 +2044,25 @@ impl UiState {
                         self.touch_seen = true;
                     }
                     // The T1's legacy compatibility axes are physically
-                    // oriented 800x600 while the framebuffer is 600x800.
-                    // Normalize them to screen x/y before hit testing.
+                    // oriented 800x600. Normalize them with the same
+                    // orientation that configures the framebuffer.
                     ABS_X => {
-                        self.touch_y = event.value;
+                        self.touch_raw_x = event.value;
                         self.touch_seen = true;
+                        let point = self
+                            .orientation
+                            .map_touch_point(self.touch_raw_x, self.touch_raw_y);
+                        self.touch_x = point.x;
+                        self.touch_y = point.y;
                     }
                     ABS_Y => {
-                        self.touch_x = event.value;
+                        self.touch_raw_y = event.value;
                         self.touch_seen = true;
+                        let point = self
+                            .orientation
+                            .map_touch_point(self.touch_raw_x, self.touch_raw_y);
+                        self.touch_x = point.x;
+                        self.touch_y = point.y;
                     }
                     _ => {}
                 }
@@ -1978,8 +2072,8 @@ impl UiState {
                     let next_pressed = (display::details_action_at(
                         self.touch_x,
                         self.touch_y,
-                        display::SCREEN_WIDTH,
-                        display::SCREEN_HEIGHT,
+                        self.screen_width(),
+                        self.screen_height(),
                     ) == Some(action))
                     .then_some(action);
                     if next_pressed != self.pressed_action {
@@ -2126,8 +2220,8 @@ impl UiState {
             display::details_action_at(
                 self.touch_x,
                 self.touch_y,
-                display::SCREEN_WIDTH,
-                display::SCREEN_HEIGHT,
+                self.screen_width(),
+                self.screen_height(),
             )
         } else {
             None
@@ -2219,8 +2313,8 @@ impl UiState {
                 display::details_action_at(
                     self.touch_x,
                     self.touch_y,
-                    display::SCREEN_WIDTH,
-                    display::SCREEN_HEIGHT,
+                    self.screen_width(),
+                    self.screen_height(),
                 )
             } else {
                 None
@@ -2251,8 +2345,8 @@ impl UiState {
             match display::details_toggle_at(
                 self.touch_x,
                 self.touch_y,
-                display::SCREEN_WIDTH,
-                display::SCREEN_HEIGHT,
+                self.screen_width(),
+                self.screen_height(),
             ) {
                 Some(display::DetailsToggle::DebugMessages) => {
                     self.debug_messages = !self.debug_messages;
@@ -2271,7 +2365,20 @@ impl UiState {
                     });
                     return (PowerAction::None, None);
                 }
-                None => {}
+                None => {
+                    if display::details_preference_at(
+                        self.touch_x,
+                        self.touch_y,
+                        self.screen_width(),
+                        self.screen_height(),
+                    ) == Some(display::DetailsPreference::Orientation)
+                    {
+                        let target = self.orientation.toggle();
+                        self.orientation_change = Some(target);
+                        self.set_debug_feedback(format!("Orientation {} selected", target.label()));
+                        return (PowerAction::None, Some(DirtyArea::Full));
+                    }
+                }
             }
         }
         let Some(touch_action) = touch_action else {
@@ -2281,8 +2388,8 @@ impl UiState {
             || display::details_action_at(
                 self.touch_x,
                 self.touch_y,
-                display::SCREEN_WIDTH,
-                display::SCREEN_HEIGHT,
+                self.screen_width(),
+                self.screen_height(),
             ) != Some(touch_action)
         {
             return (PowerAction::None, Some(DirtyArea::Action(touch_action)));
@@ -2381,10 +2488,10 @@ impl UiState {
 mod tests {
     use super::{
         display, record_reader_event_feedback, BundleHandoff, DirtyArea, Feedback, InputSourceKind,
-        PageTone, Point, PowerAction, ReaderOperation, RefreshReason, SuspendMode, SyncEvent,
-        UiPage, UiState, ABS_MT_POSITION_X, ABS_MT_POSITION_Y, ABS_MT_TOUCH_MAJOR,
-        ABS_MT_TRACKING_ID, ABS_X, ABS_Y, BTN_TOUCH, EVENT_ABS, EVENT_KEY, EVENT_SYN, KEY_BACK,
-        KEY_HOME, KEY_LEFT, KEY_MENU, KEY_RIGHT, SYN_REPORT,
+        PageTone, Point, PowerAction, ReaderOperation, ReaderOrientation, RefreshReason,
+        SuspendMode, SyncEvent, UiPage, UiState, ABS_MT_POSITION_X, ABS_MT_POSITION_Y,
+        ABS_MT_TOUCH_MAJOR, ABS_MT_TRACKING_ID, ABS_X, ABS_Y, BTN_TOUCH, EVENT_ABS, EVENT_KEY,
+        EVENT_SYN, KEY_BACK, KEY_HOME, KEY_LEFT, KEY_MENU, KEY_RIGHT, SYN_REPORT,
     };
     use crate::input::RawEvent;
     use prs_markdown::reader::ReaderEvent;
@@ -2747,6 +2854,38 @@ mod tests {
             state.take_reader_operation(),
             Some(ReaderOperation::SetFullscreen(false))
         );
+    }
+
+    #[test]
+    fn orientation_preference_is_selectable_without_changing_persistence_state() {
+        let mut state = UiState::new();
+        state.page = UiPage::Details;
+        state.touch_x = 100;
+        state.touch_y = (display::DETAILS_ORIENTATION_TOP + 10) as i32;
+        state.touch_down = true;
+
+        state.observe(InputSourceKind::Touch, event(BTN_TOUCH, 0, 1_000_000));
+
+        assert_eq!(state.orientation, ReaderOrientation::Portrait);
+        assert_eq!(
+            state.take_orientation_change(),
+            Some(ReaderOrientation::Landscape)
+        );
+    }
+
+    #[test]
+    fn legacy_touch_axes_follow_landscape_framebuffer_orientation() {
+        let mut state = UiState::with_orientation(ReaderOrientation::Landscape);
+        let mut axis_x = event(ABS_X, 770, 1_000_000);
+        axis_x.event_type = EVENT_ABS;
+        let mut axis_y = event(ABS_Y, 300, 1_000_001);
+        axis_y.event_type = EVENT_ABS;
+
+        state.observe(InputSourceKind::Touch, axis_x);
+        state.observe(InputSourceKind::Touch, axis_y);
+
+        assert_eq!(state.touch_x, 770);
+        assert_eq!(state.touch_y, 300);
     }
 
     #[test]
