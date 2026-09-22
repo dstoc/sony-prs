@@ -237,6 +237,28 @@ The helper also accepts `PRS_T1_AGENT_BINARY` when the binary is stored at a
 different host path. See [README.md](README.md) for the available runtime
 commands, screenshot workflow, refresh tests, and recovery details.
 
+## Power-state helper
+
+The native runtime can use the PRS-T1 vendor power bridge at
+`/data/local/tmp/prs-t1-power-state` for suspend and wake. This Android 2.2
+compatibility helper must be linked with the reader's own `/system/lib/libdl.so`;
+do not substitute the host system library or a library copied from another
+reader image. Build and stage it with:
+
+```sh
+adb pull /system/lib/libdl.so /tmp/prs-t1-libdl.so
+./crates/prs-t1-agent/tools/build-power-state-helper.sh \
+  /tmp/prs-t1-libdl.so target/prs-t1-power-state
+adb push target/prs-t1-power-state /data/local/tmp/prs-t1-power-state
+adb shell chmod 755 /data/local/tmp/prs-t1-power-state
+```
+
+The helper resolves Sony's `set_screen_state(int)` entry point and accepts the
+runtime states `on`, `mem`, and `standby`. The native UI uses it for the
+wake-side `on` handoff when the helper is present. The [native UI recovery
+runbook](README.md#usb-wakerecovery-while-native-ui-owns-the-reader) explains
+how to use that handoff when Android's input dispatcher is unavailable.
+
 ## Wi-Fi lifecycle helper
 
 The Wi-Fi lifecycle uses a separate dynamically linked ARM/Bionic shim. The

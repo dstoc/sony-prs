@@ -73,6 +73,9 @@ jobs:
       - name: Check PRS-T1 Wi-Fi lifecycle contract
         run: tools/test-prs-t1-wifi.sh
 
+      - name: Check PRS-T1 USB recovery documentation
+        run: tools/test-prs-t1-recovery-docs.sh
+
       - name: Record tested PRSync versions
         run: |
           mkdir -p ci-artifacts

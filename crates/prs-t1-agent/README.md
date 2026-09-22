@@ -574,21 +574,68 @@ back.
 The T1 vendor library exports Sony's `set_screen_state(int)` function. When
 `/data/local/tmp/prs-t1-power-state` is present, the runtime uses it for
 `standby`, `mem`, and the wake-side `on` handoff; otherwise it falls back to
-`/sys/power/state`. The Android 2.2 compatibility helper is built and staged
-with:
-
-```sh
-adb pull /system/lib/libdl.so /tmp/prs-t1-libdl.so
-./crates/prs-t1-agent/tools/build-power-state-helper.sh \
-  /tmp/prs-t1-libdl.so target/prs-t1-power-state
-adb push target/prs-t1-power-state /data/local/tmp/prs-t1-power-state
-adb shell chmod 755 /data/local/tmp/prs-t1-power-state
-```
+`/sys/power/state`. The Android 2.2 compatibility helper must be linked with
+the reader's own `/system/lib/libdl.so`; see the [power-state helper build
+instructions](build.md#power-state-helper) for the build and staging commands.
 
 The optional [T1 launcher](../../tools/prs-t1-launcher/README.md) adds a
 small Android 2.2/API 8 Home activity labelled **Native UI**. It invokes the
 root handoff when selected from the Home resolver; it does not contain the
 native renderer and does not make the native UI persistent.
+
+## USB wake/recovery while native UI owns the reader
+
+In standalone native mode, ADB can remain online after `zygote` and
+`system_server` have stopped. That does not mean Android's input stack is
+available: `adb shell input keyevent 116` sends a request through Android's
+`input` command and framework input dispatcher, so it cannot reach the native
+loop after those services are gone.
+
+The native runtime reads Linux evdev nodes directly and waits for
+`KEY_POWER` (type `1`, code `116`). Before choosing a node, inspect the live
+reader rather than assuming that `event2` is stable across firmware or runtime
+states:
+
+```sh
+adb shell /data/local/tmp/prs-t1-agent input
+```
+
+Use the `event_info` names and the reported capabilities to find the power
+node. On the tested reader the candidates are `/dev/input/event2`
+(`wm831x_on`) and `/dev/input/event4` (`sub_cpu_pwrbutton`). If the mapping is
+unclear, confirm a candidate while the reader is awake with the finite event
+probe and a physical press; select the node that reports
+`type_name=KEY code=116 code_name=KEY_POWER`:
+
+```sh
+adb shell /data/local/tmp/prs-t1-agent events /dev/input/event2 10
+```
+
+Replace `event2` in the following sequence with the confirmed node. The
+sequence injects a raw Linux press, synchronization event, release, and final
+synchronization event:
+
+```sh
+adb shell '
+  sendevent /dev/input/event2 1 116 1
+  sendevent /dev/input/event2 0 0 0
+  sendevent /dev/input/event2 1 116 0
+  sendevent /dev/input/event2 0 0 0
+'
+```
+
+This works because `sendevent` writes directly to the same evdev path that the
+native runtime polls; it bypasses Android input dispatch entirely. After the
+native loop receives the event, it invokes
+`/data/local/tmp/prs-t1-power-state on`, which calls Sony's
+`set_screen_state(1)` through the vendor bridge. Keep that helper built from
+the reader's matching `/system/lib/libdl.so` and staged as described in the
+[power-state helper build instructions](build.md#power-state-helper).
+
+Raw event injection is a development/recovery technique only. It is not a
+normal end-user wake path and should not be added to a product-facing support
+procedure. If ADB is unavailable entirely, USB cannot wake the reader
+remotely; use the physical power button or the hardware reset procedure.
 
 ## Safety and recovery
 
