@@ -9,6 +9,11 @@ const canvas = {
     return { left: 10, top: 20, width: 300, height: 400 };
   },
 };
+const oneXCanvas = {
+  getBoundingClientRect() {
+    return { left: 10, top: 20, width: 600, height: 800 };
+  },
+};
 
 assert.deepEqual(
   logicalPointFromPointer(
@@ -27,6 +32,15 @@ assert.deepEqual(
     800,
   ),
   { x: 1, y: 0.5 },
+);
+assert.deepEqual(
+  logicalPointFromPointer(
+    { clientX: 310, clientY: 420 },
+    oneXCanvas,
+    600,
+    800,
+  ),
+  { x: 300, y: 400 },
 );
 assert.deepEqual(
   logicalPointFromPointer(
