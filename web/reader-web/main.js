@@ -3,7 +3,10 @@ import init, {
   logical_height,
   logical_width,
 } from "./pkg/prs_reader_web.js";
-import { chooseDirectory } from "./directory-library.js";
+import {
+  chooseDirectory,
+  readerAfterDirectoryError,
+} from "./directory-library.js";
 import {
   commandForKeyboardEvent,
   logicalPointFromPointer,
@@ -62,13 +65,16 @@ async function chooseLibrary() {
   chooseButton.disabled = true;
   setControlsDisabled(true);
   status.textContent = "Opening directory…";
+  let directorySelected = false;
   try {
     const selected = await chooseDirectory();
+    directorySelected = true;
     const selectedReader = load_directory(selected.files, selected.entryPoint);
     reader = selectedReader;
     setReaderLoaded(true);
     render();
   } catch (error) {
+    reader = readerAfterDirectoryError(reader, error, directorySelected);
     status.textContent = errorMessage(error);
   } finally {
     chooseButton.disabled = false;

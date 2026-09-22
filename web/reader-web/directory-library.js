@@ -7,6 +7,17 @@ function childPath(parent, name) {
   return parent ? `${parent}/${name}` : name;
 }
 
+function markDirectorySelected(error) {
+  if (error && typeof error === "object") {
+    error.directorySelected = true;
+    return error;
+  }
+
+  const wrapped = new Error(String(error));
+  wrapped.directorySelected = true;
+  return wrapped;
+}
+
 /**
  * Select the root Markdown document that opens when a directory is loaded.
  * The explicit preferences keep common libraries predictable; the code-unit
@@ -35,6 +46,16 @@ export function selectEntryPoint(files) {
   throw new Error("No root Markdown file found in the selected directory.");
 }
 
+/**
+ * Keep an existing reader only when the directory picker was cancelled before
+ * a new directory was selected.
+ */
+export function readerAfterDirectoryError(reader, error, directorySelected) {
+  return directorySelected || error?.directorySelected === true
+    ? undefined
+    : reader;
+}
+
 async function readDirectory(directory, parent, files) {
   for await (const handle of directory.values()) {
     const path = childPath(parent, handle.name);
@@ -61,11 +82,15 @@ export async function chooseDirectory() {
   }
 
   const directory = await window.showDirectoryPicker({ mode: "read" });
-  const files = [];
-  await readDirectory(directory, "", files);
-  return {
-    name: directory.name,
-    files,
-    entryPoint: selectEntryPoint(files),
-  };
+  try {
+    const files = [];
+    await readDirectory(directory, "", files);
+    return {
+      name: directory.name,
+      files,
+      entryPoint: selectEntryPoint(files),
+    };
+  } catch (error) {
+    throw markDirectorySelected(error);
+  }
 }
