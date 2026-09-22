@@ -43,6 +43,7 @@ impl Drop for TestRoot {
 }
 
 struct MemoryProvider {
+    document_path: PathBuf,
     entry_point: PathBuf,
     text: HashMap<String, String>,
     binary: HashMap<String, Vec<u8>>,
@@ -50,6 +51,10 @@ struct MemoryProvider {
 
 impl ResourceProvider for MemoryProvider {
     fn document_path(&self) -> &Path {
+        &self.document_path
+    }
+
+    fn entry_point(&self) -> &Path {
         &self.entry_point
     }
 
@@ -131,6 +136,7 @@ fn reader(root: &TestRoot) -> Reader<FileSystemResourceProvider> {
 #[test]
 fn reader_uses_a_non_filesystem_source_for_entry_documents_and_assets() {
     let provider = MemoryProvider {
+        document_path: PathBuf::from("legacy.md"),
         entry_point: PathBuf::from("index.md"),
         text: HashMap::from([(String::from("index.md"), String::from("# In memory\n"))]),
         binary: HashMap::from([(String::from("cover.png"), vec![1, 2, 3])]),
