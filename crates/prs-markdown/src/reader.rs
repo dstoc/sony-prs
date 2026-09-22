@@ -1354,7 +1354,6 @@ fn anchor_cursor(
 mod tests {
     use super::*;
     use crate::geometry::Viewport;
-    use crate::parse::MarkdownParser;
     use crate::style::ReaderStyle;
 
     #[test]
@@ -1397,6 +1396,44 @@ mod tests {
         assert!(document.blocks()[0]
             .plain_text()
             .contains("nested child content"));
+    }
+
+    #[test]
+    fn line_start_offsets_advance_through_table_cells_after_reflow() {
+        let document = ComrakParser::default()
+            .parse(
+                "| one | this later cell contains enough words to wrap across several lines |
+| --- | --- |
+| three | the final cell also keeps its content after the table changes size |",
+            )
+            .expect("parse document");
+        let style = ReaderStyle::default();
+        let wide_layout = LayoutEngine::new(style).layout(&document, Viewport::new(72, 240));
+        let wide_starts = line_start_offsets(&document.blocks()[0], &wide_layout.blocks()[0]);
+        let reading_text = document.blocks()[0].reading_text();
+        let later_cell_offset = reading_text
+            .find("this later cell")
+            .expect("later table cell in reading text");
+
+        let wide_line = wide_starts
+            .iter()
+            .position(|start| *start >= later_cell_offset)
+            .expect("wrapped later cell line");
+        assert!(wide_line > 0, "later cell must not be the first table line");
+        let anchor = content_anchor_for(&document, &wide_layout, DocumentCursor::new(0, wide_line));
+        assert!(
+            anchor.offset >= later_cell_offset,
+            "anchor {anchor:?} did not enter the later table cell; starts were {wide_starts:?}"
+        );
+
+        let narrow_layout = LayoutEngine::new(style).layout(&document, Viewport::new(40, 240));
+        let restored = cursor_for_content_anchor(&document, &narrow_layout, anchor)
+            .expect("restore anchor after table reflow");
+        let narrow_starts = line_start_offsets(&document.blocks()[0], &narrow_layout.blocks()[0]);
+        assert!(
+            narrow_starts[restored.line] >= later_cell_offset,
+            "restored cursor {restored:?} left the later table cell; starts were {narrow_starts:?}"
+        );
     }
 
     #[test]

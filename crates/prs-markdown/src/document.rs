@@ -333,8 +333,7 @@ impl Block {
                 .iter()
                 .chain(table.rows.iter().flatten())
                 .map(|cell| cell.iter().map(Inline::reading_text).collect::<String>())
-                .collect::<Vec<_>>()
-                .join(" | "),
+                .collect(),
             Self::CodeBlock { code, .. } => code.clone(),
             Self::Image { alt, .. } => image_fallback(alt),
             Self::Rule => String::new(),
