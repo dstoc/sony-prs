@@ -1,9 +1,11 @@
 //! High-level reader state, kept separate from physical input and display IO.
 
-use crate::document::{image_fallback, Document};
+use crate::document::{image_fallback, Block, Document, Inline, Table};
 use crate::geometry::Viewport;
 use crate::image::ImageResources;
-use crate::layout::{ApproximateTextMeasurer, DocumentLayout, LayoutEngine, TextMeasurer};
+use crate::layout::{
+    ApproximateTextMeasurer, DocumentLayout, LayoutEngine, LayoutLine, TableLayout, TextMeasurer,
+};
 use crate::navigation::{DocumentId, DocumentLocation, NavigationTarget, ReaderHistory};
 use crate::pagination::{
     DocumentCursor, DocumentRange, HitRegion, PageLayout, Pagination, PaginationIndex, Paginator,
@@ -1248,6 +1250,9 @@ fn line_start_offsets(
     layout_block: &crate::layout::LayoutBlock,
 ) -> Vec<usize> {
     let source = block.reading_text().chars().collect::<Vec<_>>();
+    if let (Block::Table(table), Some(table_layout)) = (block, layout_block.table.as_ref()) {
+        return table_line_start_offsets(table, table_layout, &source, &layout_block.lines);
+    }
     let mut offset = 0;
     layout_block
         .lines
@@ -1290,6 +1295,150 @@ fn line_start_offsets(
             line_start.min(source.len())
         })
         .collect()
+}
+
+fn table_line_start_offsets(
+    table: &Table,
+    table_layout: &TableLayout,
+    source: &[char],
+    lines: &[LayoutLine],
+) -> Vec<usize> {
+    let cell_ranges = table_cell_ranges(table);
+    let mut starts = vec![0; lines.len()];
+    let mut data_rows = vec![0usize; table_layout.groups.len()];
+
+    for row in &table_layout.rows {
+        let Some(group) = table_layout.groups.get(row.group) else {
+            continue;
+        };
+        let source_row_index = if row.header {
+            0
+        } else {
+            let row_index = data_rows[row.group];
+            data_rows[row.group] = row_index.saturating_add(1);
+            row_index.saturating_add(1)
+        };
+        let source_ranges = cell_ranges
+            .get(source_row_index)
+            .cloned()
+            .unwrap_or_default();
+        let cells = group
+            .columns
+            .iter()
+            .map(|column| {
+                source_ranges.get(*column).cloned().unwrap_or_else(|| {
+                    let offset = source.len();
+                    offset..offset
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut cell_offsets = cells.iter().map(|range| range.start).collect::<Vec<_>>();
+
+        for (line_index, line) in lines
+            .get(row.line_range.clone())
+            .into_iter()
+            .flatten()
+            .enumerate()
+        {
+            let mut line_start = cells.first().map(|range| range.start).unwrap_or(0);
+            let mut matched = false;
+            let mut cell_index = 0;
+            for fragment in &line.fragments {
+                let fragment_text = fragment
+                    .image
+                    .as_ref()
+                    .map(|image| image_fallback(&image.alt))
+                    .unwrap_or_else(|| fragment.text.clone());
+                if fragment_text.is_empty() {
+                    continue;
+                }
+                let Some((matched_cell, fragment_offset)) = cells
+                    .iter()
+                    .enumerate()
+                    .skip(cell_index)
+                    .find_map(|(cell, range)| {
+                        match_fragment_in_range(source, range, cell_offsets[cell], &fragment_text)
+                            .map(|offset| (cell, offset))
+                    })
+                else {
+                    continue;
+                };
+                if !matched {
+                    line_start = fragment_offset;
+                    matched = true;
+                }
+                cell_offsets[matched_cell] = fragment_offset
+                    .saturating_add(fragment_text.chars().count())
+                    .min(cells[matched_cell].end);
+                cell_index = matched_cell;
+            }
+            if let Some(start) = row.line_range.start.checked_add(line_index) {
+                if let Some(output) = starts.get_mut(start) {
+                    *output = line_start.min(source.len());
+                }
+            }
+        }
+    }
+    starts
+}
+
+fn table_cell_ranges(table: &Table) -> Vec<Vec<std::ops::Range<usize>>> {
+    let mut offset = 0usize;
+    let mut ranges = Vec::with_capacity(table.rows.len().saturating_add(1));
+    for row in std::iter::once(&table.headers).chain(table.rows.iter()) {
+        let mut row_ranges = Vec::with_capacity(row.len());
+        for cell in row {
+            let length = cell
+                .iter()
+                .map(Inline::reading_text)
+                .map(|text| text.chars().count())
+                .sum::<usize>();
+            row_ranges.push(offset..offset.saturating_add(length));
+            offset = offset.saturating_add(length);
+        }
+        ranges.push(row_ranges);
+    }
+    ranges
+}
+
+fn match_fragment_in_range(
+    source: &[char],
+    range: &std::ops::Range<usize>,
+    offset: usize,
+    fragment: &str,
+) -> Option<usize> {
+    let fragment = fragment.chars().collect::<Vec<_>>();
+    if fragment.is_empty() {
+        return Some(offset.min(range.end));
+    }
+    let start = offset.max(range.start).min(range.end);
+    let exact = |candidate: usize| {
+        candidate >= range.start
+            && candidate.saturating_add(fragment.len()) <= range.end
+            && source
+                .get(candidate..candidate.saturating_add(fragment.len()))
+                .is_some_and(|value| value == fragment.as_slice())
+    };
+    if exact(start) {
+        return Some(start);
+    }
+    if fragment[0].is_whitespace() {
+        return None;
+    }
+    let skipped = skip_source_whitespace_in_range(source, start, range.end);
+    exact(skipped).then_some(skipped)
+}
+
+fn skip_source_whitespace_in_range(source: &[char], offset: usize, end: usize) -> usize {
+    let mut offset = offset.min(end);
+    while offset < end
+        && source
+            .get(offset)
+            .is_some_and(|character| character.is_whitespace())
+    {
+        offset += 1;
+    }
+    offset
 }
 
 fn skip_source_whitespace(source: &[char], offset: usize) -> usize {
@@ -1411,19 +1560,19 @@ mod tests {
         let wide_layout = LayoutEngine::new(style).layout(&document, Viewport::new(72, 240));
         let wide_starts = line_start_offsets(&document.blocks()[0], &wide_layout.blocks()[0]);
         let reading_text = document.blocks()[0].reading_text();
-        let later_cell_offset = reading_text
-            .find("this later cell")
-            .expect("later table cell in reading text");
+        let final_cell_offset = reading_text
+            .find("the final cell")
+            .expect("final table cell in reading text");
 
         let wide_line = wide_starts
             .iter()
-            .position(|start| *start >= later_cell_offset)
-            .expect("wrapped later cell line");
-        assert!(wide_line > 0, "later cell must not be the first table line");
+            .position(|start| *start >= final_cell_offset)
+            .expect("wrapped final cell line");
+        assert!(wide_line > 0, "final cell must not be the first table line");
         let anchor = content_anchor_for(&document, &wide_layout, DocumentCursor::new(0, wide_line));
         assert!(
-            anchor.offset >= later_cell_offset,
-            "anchor {anchor:?} did not enter the later table cell; starts were {wide_starts:?}"
+            anchor.offset >= final_cell_offset,
+            "anchor {anchor:?} did not enter the final grouped cell; starts were {wide_starts:?}"
         );
 
         let narrow_layout = LayoutEngine::new(style).layout(&document, Viewport::new(40, 240));
@@ -1431,8 +1580,8 @@ mod tests {
             .expect("restore anchor after table reflow");
         let narrow_starts = line_start_offsets(&document.blocks()[0], &narrow_layout.blocks()[0]);
         assert!(
-            narrow_starts[restored.line] >= later_cell_offset,
-            "restored cursor {restored:?} left the later table cell; starts were {narrow_starts:?}"
+            narrow_starts[restored.line] >= final_cell_offset,
+            "restored cursor {restored:?} left the final grouped cell; starts were {narrow_starts:?}"
         );
     }
 
