@@ -152,8 +152,17 @@ pub fn viewport_for_display(width: u32, height: u32) -> Viewport {
 
 /// Build the shared reader presentation inputs for a T1 display.
 pub fn reader_layout_for_display(width: u32, height: u32) -> ReaderLayout {
+    reader_layout_for_display_with_fullscreen(width, height, false)
+}
+
+/// Build the shared reader presentation inputs for a T1 display mode.
+pub fn reader_layout_for_display_with_fullscreen(
+    width: u32,
+    height: u32,
+    fullscreen: bool,
+) -> ReaderLayout {
     ReaderLayout::new(Viewport::new(width, height))
-        .with_status_bar_height(CONTENT_TOP as u32)
+        .with_status_bar_height(if fullscreen { 0 } else { CONTENT_TOP as u32 })
         .with_progress_line_height(PAGE_BOTTOM_MARGIN)
 }
 
@@ -178,6 +187,7 @@ pub struct T1Reader {
     library_root: PathBuf,
     library_empty: bool,
     progress_line_enabled: bool,
+    fullscreen: bool,
 }
 
 impl T1Reader {
@@ -243,6 +253,7 @@ impl T1Reader {
             library_root: library_root.as_ref().to_owned(),
             library_empty: false,
             progress_line_enabled: true,
+            fullscreen: layout.status_bar_height == 0,
         })
     }
 
@@ -291,6 +302,40 @@ impl T1Reader {
 
     pub fn set_progress_line_enabled(&mut self, enabled: bool) {
         self.progress_line_enabled = enabled;
+    }
+
+    /// Return whether the reader is using its session-scoped fullscreen mode.
+    pub fn fullscreen(&self) -> bool {
+        self.fullscreen
+    }
+
+    /// Set the session-scoped fullscreen mode and reflow the active document.
+    ///
+    /// A repeated setting is a no-op. A changed setting uses the shared reader
+    /// layout so the current logical passage and navigation history survive the
+    /// viewport change.
+    pub fn set_fullscreen(
+        &mut self,
+        fullscreen: bool,
+    ) -> Result<ReaderEvent, ReaderControllerError> {
+        if self.fullscreen == fullscreen {
+            return Ok(ReaderEvent::NoAction);
+        }
+        let layout = self
+            .controller
+            .reader()
+            .reader_layout()
+            .with_status_bar_height(if fullscreen { 0 } else { CONTENT_TOP as u32 });
+        let result = self.controller.set_reader_layout(layout);
+        if result.is_ok() {
+            self.fullscreen = fullscreen;
+        }
+        result
+    }
+
+    /// Toggle the session-scoped fullscreen mode.
+    pub fn toggle_fullscreen(&mut self) -> Result<ReaderEvent, ReaderControllerError> {
+        self.set_fullscreen(!self.fullscreen)
     }
 
     /// Return to the entry point of the currently open bundle through reader
@@ -417,10 +462,12 @@ impl T1Reader {
         let mut frame = vec![0; frame_len];
         let mut canvas = DisplayCanvas::new(&mut frame, width, height, width * 2, 0, 0);
         canvas.fill(Rgb565::WHITE.into_storage());
-        let status = [status_line.to_owned()];
-        display::draw_status_bar(&mut canvas, &status);
-        if let Some(feedback) = feedback {
-            display::draw_reader_feedback(&mut canvas, feedback);
+        if !self.fullscreen {
+            let status = [status_line.to_owned()];
+            display::draw_status_bar(&mut canvas, &status);
+            if let Some(feedback) = feedback {
+                display::draw_reader_feedback(&mut canvas, feedback);
+            }
         }
 
         self.controller
@@ -613,6 +660,14 @@ mod tests {
         let layout = reader_layout_for_display(600, 800);
         assert_eq!(layout.effective_viewport(), Viewport::new(600, 708));
         assert_eq!(viewport_for_display(600, 800), Viewport::new(600, 708));
+    }
+
+    #[test]
+    fn fullscreen_layout_hides_status_bar_and_keeps_progress_reservation() {
+        let layout = reader_layout_for_display_with_fullscreen(600, 800, true);
+        assert_eq!(layout.content_top(), 0);
+        assert_eq!(layout.effective_viewport(), Viewport::new(600, 784));
+        assert_eq!(layout.progress_line_bounds().top_left.y, 784);
     }
 
     fn fixture_root(source: &str) -> PathBuf {
@@ -1025,6 +1080,117 @@ mod tests {
                 page_count: reader.reader().page_count()
             }
         );
+        fs::remove_dir_all(root).expect("remove reader fixture root");
+    }
+
+    #[test]
+    fn fullscreen_reflow_preserves_logical_position_and_history() {
+        let root = fixture_root("# Entry\n\n[Chapter](chapter.md)\n");
+        fs::write(root.join("chapter.md"), "# Chapter\n\nline\n".repeat(80))
+            .expect("write linked document");
+        let mut reader =
+            T1Reader::open(fixture_config(&root), Viewport::new(240, 120)).expect("open fixture");
+        assert_eq!(
+            reader.screen_to_viewport(Point::new(12, CONTENT_TOP as i32 - 1)),
+            None
+        );
+        reader
+            .controller
+            .follow_reference("chapter.md")
+            .expect("follow chapter link");
+        reader.controller.next_page().expect("advance chapter page");
+        let anchor = reader.reader().current_content_anchor();
+        let history_length = reader.reader().history().len();
+        let can_go_back = reader.reader().can_go_back();
+
+        assert!(reader.set_fullscreen(true).is_ok());
+        assert!(reader.fullscreen());
+        assert_eq!(reader.reader().reader_layout().content_top(), 0);
+        assert_eq!(reader.reader().current_content_anchor(), anchor);
+        assert_eq!(reader.reader().history().len(), history_length);
+        assert_eq!(reader.reader().can_go_back(), can_go_back);
+        assert_eq!(
+            reader.screen_to_viewport(Point::new(12, 11)),
+            Some(Point::new(12, 11))
+        );
+        assert_eq!(
+            reader.screen_to_viewport(Point::new(12, CONTENT_TOP as i32 - 1)),
+            Some(Point::new(12, CONTENT_TOP as i32 - 1))
+        );
+        reader.controller.back().expect("return to entry document");
+        let link = reader
+            .reader()
+            .current_page()
+            .expect("entry page")
+            .hit_regions
+            .first()
+            .expect("chapter link")
+            .bounds
+            .top_left;
+        assert!(matches!(
+            reader.tap(link).expect("activate fullscreen link"),
+            ReaderEvent::Navigated { .. }
+        ));
+
+        reader.controller.back().expect("go back through history");
+        assert_eq!(
+            reader
+                .reader()
+                .current_location()
+                .unwrap()
+                .document
+                .as_ref(),
+            "index.md"
+        );
+        reader
+            .controller
+            .forward()
+            .expect("go forward through history");
+        assert_eq!(
+            reader
+                .reader()
+                .current_location()
+                .unwrap()
+                .document
+                .as_ref(),
+            "chapter.md"
+        );
+        assert!(matches!(
+            reader.set_fullscreen(true).unwrap(),
+            ReaderEvent::NoAction
+        ));
+        assert!(matches!(
+            reader.set_fullscreen(false),
+            Ok(ReaderEvent::PageChanged { .. })
+        ));
+        assert!(!reader.fullscreen());
+        fs::remove_dir_all(root).expect("remove reader fixture root");
+    }
+
+    #[test]
+    fn fullscreen_render_hides_status_and_keeps_one_pixel_progress_indicator() {
+        let root = fixture_root(&"line\n".repeat(120));
+        let mut reader =
+            T1Reader::open(fixture_config(&root), Viewport::new(600, 708)).expect("open fixture");
+        reader.set_fullscreen(true).expect("enable fullscreen");
+        let frame = reader
+            .render_frame("87%|UP|ON|ON||12:34", None, 600, 800)
+            .expect("render fullscreen reader");
+        let layout = reader.reader().reader_layout();
+        let progress_y = layout
+            .progress_indicator_bounds()
+            .expect("fullscreen progress indicator")
+            .top_left
+            .y as usize;
+        let black = Rgb565::BLACK.into_storage().to_ne_bytes();
+        let white = Rgb565::WHITE.into_storage().to_ne_bytes();
+        assert_eq!(
+            &frame[(progress_y * 600) * 2..(progress_y * 600 + 1) * 2],
+            &black
+        );
+        assert_eq!(&frame[..2], &white);
+        let png = crate::display::rgb565_to_png(&frame, 600, 800).expect("encode fullscreen PNG");
+        assert_png_golden("reader-fullscreen", &png);
         fs::remove_dir_all(root).expect("remove reader fixture root");
     }
 

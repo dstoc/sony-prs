@@ -387,6 +387,13 @@ bar, the home page renders the current paginated Markdown document. The page
 viewport starts at y=76, leaving a small separation below the bar and a bottom
 margin for the reader.
 
+Details / Settings includes the session-scoped **Fullscreen reader** toggle.
+It is off when the native agent starts. When enabled, the shared reader layout
+sets the status-bar height to zero, reflows the active document around its
+logical content anchor, and keeps the one-pixel reading progress indicator.
+The status bar remains visible on Details / Settings and other operational
+screens. The toggle does not persist across a restart.
+
 Tap the status bar to open Details / Settings. Tap Display test to show the
 full-screen grayscale calibration pattern. Press MENU briefly to return to
 Details / Settings. A long MENU press still requests a full EPDC redraw.
@@ -469,8 +476,9 @@ history, and transient overlays are not history entries.
 Tap the status bar to open **Details / Settings**. The details page groups the
 live snapshot under:
 
-- **Settings** — the **Debug messages** toggle is off by default. Enable it
-  when troubleshooting to show the native reader's diagnostic feedback.
+- **Settings** — the **Debug messages** and **Fullscreen reader** toggles are
+  off by default. Enable debug messages when troubleshooting. Fullscreen is a
+  session-only reader presentation setting.
 - **Power** — battery state, temperature, voltage, AC, USB, and supported power states.
 - **Connectivity** — Wi-Fi interface/link/supplicant state, USB gadget state, and ADB.
 - **Synchronization** — the current sync state and the latest failure summary.

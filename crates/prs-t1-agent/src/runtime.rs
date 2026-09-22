@@ -190,6 +190,9 @@ pub fn run(path: &Path, suspend_mode: SuspendMode) -> io::Result<()> {
                     action = event_action;
                 }
                 if let Some(operation) = state.take_reader_operation() {
+                    let fullscreen_operation =
+                        matches!(operation, ReaderOperation::SetFullscreen(_));
+                    let previous_fullscreen = markdown_reader.fullscreen();
                     let result = match operation {
                         ReaderOperation::PreviousPage => markdown_reader.previous_page(),
                         ReaderOperation::NextPage => markdown_reader.next_page(),
@@ -197,8 +200,21 @@ pub fn run(path: &Path, suspend_mode: SuspendMode) -> io::Result<()> {
                         ReaderOperation::ReturnToEntryPoint => {
                             markdown_reader.return_to_entry_point()
                         }
+                        ReaderOperation::SetFullscreen(fullscreen) => {
+                            if markdown_reader.fullscreen() == fullscreen {
+                                Ok(ReaderEvent::NoAction)
+                            } else {
+                                markdown_reader.toggle_fullscreen()
+                            }
+                        }
                     };
-                    let dirty = apply_reader_result(&mut state, &mut markdown_reader, result);
+                    let mut dirty = apply_reader_result(&mut state, &mut markdown_reader, result);
+                    if fullscreen_operation {
+                        state.fullscreen = markdown_reader.fullscreen();
+                        if state.fullscreen != previous_fullscreen {
+                            dirty = Some(DirtyArea::Full);
+                        }
+                    }
                     redraw_area = merge_optional_dirty(redraw_area, dirty);
                 }
                 if let Some(point) = state.take_reader_tap() {
@@ -813,6 +829,10 @@ fn screen_view_model(state: &UiState, wake_lock_held: bool) -> display::UiViewMo
         display::DetailsRow::Toggle {
             label: "Reading progress".into(),
             enabled: state.reading_progress,
+        },
+        display::DetailsRow::Toggle {
+            label: "Fullscreen reader".into(),
+            enabled: state.fullscreen,
         },
         display::DetailsRow::Section("Synchronization".into()),
         display::DetailsRow::Value(format!(
@@ -1455,6 +1475,7 @@ enum ReaderOperation {
     NextPage,
     Back,
     ReturnToEntryPoint,
+    SetFullscreen(bool),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1608,6 +1629,7 @@ struct UiState {
     feedback: Option<Feedback>,
     debug_messages: bool,
     reading_progress: bool,
+    fullscreen: bool,
     reader_tap: Option<Point>,
     reader_operation: Option<ReaderOperation>,
     touch_seen: bool,
@@ -1650,6 +1672,7 @@ impl UiState {
             feedback: None,
             debug_messages: false,
             reading_progress: true,
+            fullscreen: false,
             reader_tap: None,
             reader_operation: None,
             touch_seen: false,
@@ -2040,7 +2063,9 @@ impl UiState {
                         self.set_debug_feedback(match operation {
                             ReaderOperation::PreviousPage => "Previous page",
                             ReaderOperation::NextPage => "Next page",
-                            ReaderOperation::Back | ReaderOperation::ReturnToEntryPoint => {
+                            ReaderOperation::Back
+                            | ReaderOperation::ReturnToEntryPoint
+                            | ReaderOperation::SetFullscreen(_) => {
                                 unreachable!()
                             }
                         });
@@ -2222,18 +2247,32 @@ impl UiState {
         // An action is committed only if release remains inside the exact
         // control that was pressed. A drag across another control therefore
         // restores the original button without activating either control.
-        let y = self.touch_y;
-        let within_debug_row = y >= display::DETAILS_DEBUG_TOP as i32
-            && y < (display::DETAILS_DEBUG_TOP + display::DETAILS_DEBUG_HEIGHT) as i32;
-        if within_debug_row && touch_action.is_none() && pressed_action.is_none() {
-            self.debug_messages = !self.debug_messages;
-            return (PowerAction::None, Some(DirtyArea::Interaction));
-        }
-        let within_progress_row = y >= display::DETAILS_PROGRESS_TOP as i32
-            && y < (display::DETAILS_PROGRESS_TOP + display::DETAILS_PROGRESS_HEIGHT) as i32;
-        if within_progress_row && touch_action.is_none() && pressed_action.is_none() {
-            self.reading_progress = !self.reading_progress;
-            return (PowerAction::None, Some(DirtyArea::Interaction));
+        if touch_action.is_none() && pressed_action.is_none() {
+            match display::details_toggle_at(
+                self.touch_x,
+                self.touch_y,
+                display::SCREEN_WIDTH,
+                display::SCREEN_HEIGHT,
+            ) {
+                Some(display::DetailsToggle::DebugMessages) => {
+                    self.debug_messages = !self.debug_messages;
+                    return (PowerAction::None, Some(DirtyArea::Interaction));
+                }
+                Some(display::DetailsToggle::ReadingProgress) => {
+                    self.reading_progress = !self.reading_progress;
+                    return (PowerAction::None, Some(DirtyArea::Interaction));
+                }
+                Some(display::DetailsToggle::FullscreenReader) => {
+                    self.reader_operation = Some(ReaderOperation::SetFullscreen(!self.fullscreen));
+                    self.set_debug_feedback(if self.fullscreen {
+                        "Fullscreen reader off"
+                    } else {
+                        "Fullscreen reader on"
+                    });
+                    return (PowerAction::None, None);
+                }
+                None => {}
+            }
         }
         let Some(touch_action) = touch_action else {
             return (PowerAction::None, None);
@@ -2680,6 +2719,34 @@ mod tests {
         state.touch_down = true;
         state.observe(InputSourceKind::Touch, event(BTN_TOUCH, 0, 1_000_001));
         assert!(state.reading_progress);
+    }
+
+    #[test]
+    fn fullscreen_reader_toggle_is_off_by_default_and_requests_layout_reflow() {
+        let mut state = UiState::new();
+        assert!(!state.fullscreen);
+        state.page = UiPage::Details;
+        state.touch_x = 100;
+        state.touch_y = (display::DETAILS_FULLSCREEN_TOP + 10) as i32;
+        state.touch_down = true;
+
+        let (dirty, action) = state.observe(InputSourceKind::Touch, event(BTN_TOUCH, 0, 1_000_000));
+
+        assert_eq!(action, PowerAction::None);
+        assert_eq!(dirty, None);
+        assert_eq!(
+            state.take_reader_operation(),
+            Some(ReaderOperation::SetFullscreen(true))
+        );
+        assert!(!state.fullscreen);
+
+        state.fullscreen = true;
+        state.touch_down = true;
+        let (_, _) = state.observe(InputSourceKind::Touch, event(BTN_TOUCH, 0, 1_000_001));
+        assert_eq!(
+            state.take_reader_operation(),
+            Some(ReaderOperation::SetFullscreen(false))
+        );
     }
 
     #[test]

@@ -37,6 +37,8 @@ pub const DETAILS_DEBUG_TOP: usize = 106;
 pub const DETAILS_DEBUG_HEIGHT: usize = 32;
 pub const DETAILS_PROGRESS_TOP: usize = DETAILS_DEBUG_TOP + DETAILS_DEBUG_HEIGHT;
 pub const DETAILS_PROGRESS_HEIGHT: usize = DETAILS_DEBUG_HEIGHT;
+pub const DETAILS_FULLSCREEN_TOP: usize = DETAILS_PROGRESS_TOP + DETAILS_PROGRESS_HEIGHT;
+pub const DETAILS_FULLSCREEN_HEIGHT: usize = DETAILS_DEBUG_HEIGHT;
 pub const DETAILS_ACTION_HEADER_TOP: usize = 520;
 pub const DETAILS_ACTION_TOP: usize = 548;
 pub const DETAILS_ACTION_HEIGHT: usize = 36;
@@ -106,6 +108,63 @@ pub enum DetailsRow {
     Section(String),
     Value(String),
     Toggle { label: String, enabled: bool },
+}
+
+/// A toggle rendered in the Settings section of Details / Settings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DetailsToggle {
+    DebugMessages,
+    ReadingProgress,
+    FullscreenReader,
+}
+
+impl DetailsToggle {
+    const fn top(self) -> usize {
+        match self {
+            Self::DebugMessages => DETAILS_DEBUG_TOP,
+            Self::ReadingProgress => DETAILS_PROGRESS_TOP,
+            Self::FullscreenReader => DETAILS_FULLSCREEN_TOP,
+        }
+    }
+}
+
+/// Return the exact toggle rectangle used by the Settings renderer and input
+/// hit testing.
+pub fn details_toggle_region(toggle: DetailsToggle, width: usize, height: usize) -> DisplayRegion {
+    let top = toggle.top().min(height);
+    DisplayRegion::new(
+        0,
+        top as u32,
+        width as u32,
+        match toggle {
+            DetailsToggle::DebugMessages => DETAILS_DEBUG_HEIGHT,
+            DetailsToggle::ReadingProgress => DETAILS_PROGRESS_HEIGHT,
+            DetailsToggle::FullscreenReader => DETAILS_FULLSCREEN_HEIGHT,
+        }
+        .min(height.saturating_sub(top)) as u32,
+    )
+}
+
+/// Hit-test a Settings toggle against the same rows drawn on screen.
+pub fn details_toggle_at(x: i32, y: i32, width: usize, height: usize) -> Option<DetailsToggle> {
+    if x < 0 || y < 0 {
+        return None;
+    }
+    let x = x as usize;
+    let y = y as usize;
+    [
+        DetailsToggle::DebugMessages,
+        DetailsToggle::ReadingProgress,
+        DetailsToggle::FullscreenReader,
+    ]
+    .into_iter()
+    .find(|toggle| {
+        let region = details_toggle_region(*toggle, width, height);
+        x >= region.left as usize
+            && x < region.right() as usize
+            && y >= region.top as usize
+            && y < region.bottom() as usize
+    })
 }
 
 /// An actionable control on the native Details / Settings page.
@@ -207,16 +266,8 @@ impl DetailsViewModel {
             .iter()
             .skip(1)
             .map(|line| {
-                if let Some(enabled) = debug_toggle_state(line) {
-                    DetailsRow::Toggle {
-                        label: "Debug messages".into(),
-                        enabled,
-                    }
-                } else if let Some(enabled) = reading_progress_toggle_state(line) {
-                    DetailsRow::Toggle {
-                        label: "Reading progress".into(),
-                        enabled,
-                    }
+                if let Some((label, enabled)) = toggle_state(line) {
+                    DetailsRow::Toggle { label, enabled }
                 } else if is_section_heading(line) {
                     DetailsRow::Section(line.clone())
                 } else {
@@ -1206,21 +1257,16 @@ fn is_section_heading(line: &str) -> bool {
     )
 }
 
-fn debug_toggle_state(line: &str) -> Option<bool> {
-    line.strip_prefix("Debug messages ")
-        .and_then(|value| match value {
-            "ON" => Some(true),
-            "OFF" => Some(false),
-            _ => None,
-        })
-}
-
-fn reading_progress_toggle_state(line: &str) -> Option<bool> {
-    line.strip_prefix("Reading progress ")
-        .and_then(|value| match value {
-            "ON" => Some(true),
-            "OFF" => Some(false),
-            _ => None,
+fn toggle_state(line: &str) -> Option<(String, bool)> {
+    ["Debug messages", "Reading progress", "Fullscreen reader"]
+        .into_iter()
+        .find_map(|label| {
+            let enabled = line.strip_prefix(label)?.strip_prefix(' ')?;
+            match enabled {
+                "ON" => Some((label.to_owned(), true)),
+                "OFF" => Some((label.to_owned(), false)),
+                _ => None,
+            }
         })
 }
 
@@ -1402,12 +1448,12 @@ impl DrawTarget for DisplayCanvas<'_> {
 #[cfg(test)]
 mod tests {
     use super::{
-        details_action_at, details_action_region, gray565, render_authorization_qr,
-        render_details_settings_host, render_details_settings_host_pressed, render_display_test,
-        render_status_bar_host, rgb565_to_png, standby_screen, DetailsAction, DetailsRow,
-        DetailsViewModel, StatusBarViewModel, UiViewModel, BLACK, DETAILS_ACTION_HEADER_TOP,
-        DETAILS_ACTION_HEIGHT, DETAILS_ACTION_TOP, DETAILS_LINE_STEP, SCREEN_HEIGHT, SCREEN_WIDTH,
-        WHITE,
+        details_action_at, details_action_region, details_toggle_at, details_toggle_region,
+        gray565, render_authorization_qr, render_details_settings_host,
+        render_details_settings_host_pressed, render_display_test, render_status_bar_host,
+        rgb565_to_png, standby_screen, DetailsAction, DetailsRow, DetailsToggle, DetailsViewModel,
+        StatusBarViewModel, UiViewModel, BLACK, DETAILS_ACTION_HEADER_TOP, DETAILS_ACTION_HEIGHT,
+        DETAILS_ACTION_TOP, DETAILS_LINE_STEP, SCREEN_HEIGHT, SCREEN_WIDTH, WHITE,
     };
     use std::env;
     use std::fs;
@@ -1628,6 +1674,58 @@ mod tests {
                 None
             );
         }
+    }
+
+    #[test]
+    fn settings_toggle_hit_testing_matches_rendered_rows() {
+        for toggle in [
+            DetailsToggle::DebugMessages,
+            DetailsToggle::FullscreenReader,
+        ] {
+            let region = details_toggle_region(toggle, SCREEN_WIDTH, SCREEN_HEIGHT);
+            assert_eq!(
+                details_toggle_at(
+                    region.left as i32 + 1,
+                    region.top as i32 + 1,
+                    SCREEN_WIDTH,
+                    SCREEN_HEIGHT
+                ),
+                Some(toggle)
+            );
+            assert_eq!(
+                details_toggle_at(
+                    region.right() as i32,
+                    region.top as i32 + 1,
+                    SCREEN_WIDTH,
+                    SCREEN_HEIGHT
+                ),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn details_view_model_preserves_multiple_toggle_labels() {
+        let view = DetailsViewModel::from_lines(&[
+            "Details / Settings".into(),
+            "Settings".into(),
+            "Debug messages OFF".into(),
+            "Fullscreen reader ON".into(),
+        ]);
+        assert_eq!(
+            view.rows,
+            vec![
+                DetailsRow::Section("Settings".into()),
+                DetailsRow::Toggle {
+                    label: "Debug messages".into(),
+                    enabled: false,
+                },
+                DetailsRow::Toggle {
+                    label: "Fullscreen reader".into(),
+                    enabled: true,
+                },
+            ]
+        );
     }
 
     #[test]

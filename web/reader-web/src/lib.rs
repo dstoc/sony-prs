@@ -29,6 +29,7 @@ where
     renderer: EmbeddedGraphicsRenderer<FontdueTextEngine>,
     framebuffer: RgbaFramebuffer,
     feedback: String,
+    fullscreen: bool,
 }
 
 impl<P> ReaderSurface<P>
@@ -74,6 +75,7 @@ where
                 layout.display_viewport.height,
             )),
             feedback: "Ready. Use a link, a control, or a keyboard shortcut.".to_owned(),
+            fullscreen: false,
         })
     }
 
@@ -82,16 +84,42 @@ where
             .clear(Rgb888::WHITE)
             .expect("framebuffer clear cannot fail");
         self.controller
-            .render_current_page_with_overlay(
+            .render_current_page_with_overlay_and_progress(
                 &mut self.renderer,
                 &mut self.framebuffer,
                 Point::new(
                     0,
                     self.controller.reader().reader_layout().content_top() as i32,
                 ),
+                true,
             )
             .map_err(|error| format!("render browser reader: {error}"))?;
         Ok(self.framebuffer.pixels().to_vec())
+    }
+
+    fn fullscreen(&self) -> bool {
+        self.fullscreen
+    }
+
+    fn set_fullscreen(&mut self, fullscreen: bool) -> String {
+        if self.fullscreen == fullscreen {
+            self.feedback = "Fullscreen reader unchanged.".to_owned();
+            return self.feedback.clone();
+        }
+        let layout = self
+            .controller
+            .reader()
+            .reader_layout()
+            .with_progress_line_height(if fullscreen { 16 } else { 1 });
+        let result = self.controller.set_reader_layout(layout);
+        if result.is_ok() {
+            self.fullscreen = fullscreen;
+        }
+        self.apply_result(result)
+    }
+
+    fn toggle_fullscreen(&mut self) -> String {
+        self.set_fullscreen(!self.fullscreen)
     }
 
     fn pointer_up(&mut self, x: f64, y: f64) -> String {
@@ -273,6 +301,18 @@ impl BrowserReader {
 
     pub fn home(&mut self) -> String {
         self.surface.home()
+    }
+
+    pub fn fullscreen(&self) -> bool {
+        self.surface.fullscreen()
+    }
+
+    pub fn set_fullscreen(&mut self, fullscreen: bool) -> String {
+        self.surface.set_fullscreen(fullscreen)
+    }
+
+    pub fn toggle_fullscreen(&mut self) -> String {
+        self.surface.toggle_fullscreen()
     }
 
     /// Resolve a local document or asset through the selected directory.
@@ -547,6 +587,18 @@ impl ReaderSimulator {
     pub fn home(&mut self) -> String {
         self.surface.home()
     }
+
+    pub fn fullscreen(&self) -> bool {
+        self.surface.fullscreen()
+    }
+
+    pub fn set_fullscreen(&mut self, fullscreen: bool) -> String {
+        self.surface.set_fullscreen(fullscreen)
+    }
+
+    pub fn toggle_fullscreen(&mut self) -> String {
+        self.surface.toggle_fullscreen()
+    }
 }
 
 /// A tightly packed RGBA framebuffer used as the handoff to JavaScript.
@@ -704,6 +756,60 @@ mod tests {
         assert_eq!(
             app.surface.controller.reader().current_page_index(),
             Some(0)
+        );
+    }
+
+    #[test]
+    fn fullscreen_toggle_reflows_browser_reader_without_losing_history_anchor() {
+        let mut app = ReaderSimulator::new().expect("demo reader opens");
+        let anchor = app.surface.controller.reader().current_content_anchor();
+        let history_length = app.surface.controller.reader().history().len();
+        assert!(!app.fullscreen());
+        assert_eq!(
+            app.surface
+                .controller
+                .reader()
+                .reader_layout()
+                .effective_viewport(),
+            prs_markdown::Viewport::new(600, 799)
+        );
+
+        app.set_fullscreen(true);
+
+        assert!(app.fullscreen());
+        assert_eq!(
+            app.surface
+                .controller
+                .reader()
+                .reader_layout()
+                .effective_viewport(),
+            prs_markdown::Viewport::new(600, 784)
+        );
+        assert_eq!(
+            app.surface.controller.reader().current_content_anchor(),
+            anchor
+        );
+        assert_eq!(
+            app.surface.controller.reader().history().len(),
+            history_length
+        );
+        let frame = app
+            .render_frame()
+            .expect("render fullscreen browser reader");
+        assert_eq!(
+            &frame[(799 * 600) * 4..(799 * 600 + 1) * 4],
+            &[0, 0, 0, u8::MAX]
+        );
+
+        app.set_fullscreen(false);
+        assert!(!app.fullscreen());
+        assert_eq!(
+            app.surface
+                .controller
+                .reader()
+                .reader_layout()
+                .effective_viewport(),
+            prs_markdown::Viewport::new(600, 799)
         );
     }
 
