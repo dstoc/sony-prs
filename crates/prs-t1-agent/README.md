@@ -387,26 +387,36 @@ bar, the home page renders the current paginated Markdown document. The page
 viewport starts at y=76, leaving a small separation below the bar and a bottom
 margin for the reader.
 
-Details / Settings includes the session-scoped **Fullscreen reader** toggle.
-It is off when the native agent starts. When enabled, the shared reader layout
-sets the status-bar height to zero, reflows the active document around its
-logical content anchor, and keeps the one-pixel reading progress indicator.
-The status bar remains visible on Details / Settings and other operational
-screens. The toggle does not persist across a restart.
+Details / Settings opens a short section menu. **Reading** contains the
+everyday presentation controls: **Orientation**, **Show status bar**, **Font
+size** with **A-**, **Reset**, and **A+** controls, and **Reading progress**.
+**Synchronization** contains the current status, failure summary, and **Sync
+now**. **Device & diagnostics** contains **Debug messages**, **Display test**,
+**Reboot**, and **Power off**. Each section uses its own bounded page so the
+controls remain usable in both portrait and landscape.
 
-The same Settings section shows the persisted **Font size** choice and
-**Orientation** choice. Tap Font size to cycle through 75%, 100%, 125%, and
-150%. Tap Orientation to switch between portrait and landscape. Both choices
-are saved atomically in `/data/misc/prs-t1/reader-preferences.json` and are
-loaded after the first writable framebuffer mapping, so the saved rotation is
-applied without changing the established T1 mmap order. Fresh installs use
-portrait and 100%. A missing, corrupt, unsupported, or newer-format file uses
-those defaults. The file contains no credentials, authorization state, or
-reader content. Fullscreen remains session-scoped and defaults off.
+Turning **Show status bar** off enables the session-scoped **Fullscreen
+reader** mode. The shared reader layout sets the status-bar height to zero,
+reflows the active document around its logical content anchor, and keeps the
+one-pixel reading progress indicator. The status bar remains visible on
+Settings pages and other operational screens. Fullscreen is off when the
+native agent starts and does not persist across a restart.
 
-Tap the status bar to open Details / Settings. Tap Display test to show the
-full-screen grayscale calibration pattern. Press MENU briefly to return to
-Details / Settings. A long MENU press still requests a full EPDC redraw.
+The Reading page switches between portrait and 90-degree counterclockwise
+landscape, and changes take effect after the reader preserves the current
+passage. Font controls use the bounded 75%, 100%, 125%, and 150% range and
+also preserve the current passage. Orientation and font size are saved
+atomically in `/data/misc/prs-t1/reader-preferences.json` and are loaded after
+the first writable framebuffer mapping, so the saved rotation is applied
+without changing the established T1 mmap order. Fresh installs use portrait
+and 100%. A missing, corrupt, unsupported, or newer-format file uses those
+defaults. The file contains no credentials, authorization state, or reader
+content.
+
+Tap the status bar to open Details / Settings. Open **Device & diagnostics**
+and tap **Display test** to show the full-screen grayscale calibration pattern.
+Press **Back** to return to that section. A long **Menu** press still requests
+a full EPDC redraw.
 
 ### Development Markdown document
 
@@ -484,28 +494,16 @@ second retains its existing full GC16 redraw behavior, and the completed hold
 consumes its release. UI history remains separate from document/page/cursor
 history, and transient overlays are not history entries.
 
-Tap the status bar to open **Details / Settings**. The details page groups the
-live snapshot under:
+Tap the status bar to open **Details / Settings**. The section menu and every
+nested page keep the status bar visible. Physical **Back** returns from a
+nested page to the section menu, then returns to reading. **Home** returns to
+reading from any operational page. A short **Menu** press opens the section
+menu from reading; a short press elsewhere is a no-op. A long **Menu** press
+still requests a full GC16 redraw.
 
-- **Settings** — **Debug messages** and **Reading progress** default to off and
-  on. **Fullscreen reader** defaults off and is session-only. **Font size**
-  cycles through the bounded 75%–150% range. **Orientation** switches the
-  physical surface. Font size and orientation are the only settings persisted
-  across a restart.
-- **Power** — battery state, temperature, voltage, AC, USB, and supported power states.
-- **Connectivity** — Wi-Fi interface/link/supplicant state, USB gadget state, and ADB.
-- **Synchronization** — the current sync state and the latest failure summary.
-- **System** — uptime, framebuffer state/rotation, Android process state, and wake lock.
-- **Storage** — available space on `/data` and `/mnt/sdcard`.
-- **Diagnostics** — compact system and input counters/state kept separate from the user-facing status.
-
-The page also provides full-width **Reboot**, **Power off**, and **Back to
-reading** targets, plus **Sync now**, **Return to entry point**, and **Display
-test**. User-facing status is separated from compact **Diagnostics** telemetry;
-the action pane has its own spaced region below the status content. Every action
-inverts while its touch is held and restores on release using a bounded partial
-refresh. Touch release is accepted from the event shapes observed on
-the T1: `BTN_TOUCH=0`, `ABS_MT_TRACKING_ID=-1`, or
+Every modern control inverts while its touch is held and restores on release
+using a bounded partial refresh. Touch release is accepted from the event
+shapes observed on the T1: `BTN_TOUCH=0`, `ABS_MT_TRACKING_ID=-1`, or
 `ABS_MT_TOUCH_MAJOR=0`, committed by `SYN_REPORT`. The legacy `ABS_X/Y` path
 maps the panel's advertised 800x600 axes to the active logical surface before
 hit testing. The multitouch stream uses the portrait-sized screen coordinate

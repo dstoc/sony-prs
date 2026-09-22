@@ -208,8 +208,13 @@ pub fn run(path: &Path, suspend_mode: SuspendMode) -> io::Result<()> {
                 if let Some(operation) = state.take_reader_operation() {
                     let fullscreen_operation =
                         matches!(operation, ReaderOperation::SetFullscreen(_));
-                    let font_scale_operation =
-                        matches!(operation, ReaderOperation::SetFontScale(_));
+                    let font_scale_operation = matches!(
+                        operation,
+                        ReaderOperation::SetFontScale(_)
+                            | ReaderOperation::DecreaseFontScale
+                            | ReaderOperation::ResetFontScale
+                            | ReaderOperation::IncreaseFontScale
+                    );
                     let previous_fullscreen = markdown_reader.fullscreen();
                     let result = match operation {
                         ReaderOperation::PreviousPage => markdown_reader.previous_page(),
@@ -228,6 +233,9 @@ pub fn run(path: &Path, suspend_mode: SuspendMode) -> io::Result<()> {
                         ReaderOperation::SetFontScale(font_scale_percent) => {
                             markdown_reader.set_font_scale_percent(font_scale_percent)
                         }
+                        ReaderOperation::DecreaseFontScale => markdown_reader.decrease_font_size(),
+                        ReaderOperation::ResetFontScale => markdown_reader.reset_font_size(),
+                        ReaderOperation::IncreaseFontScale => markdown_reader.increase_font_size(),
                     };
                     let result_succeeded = result.is_ok();
                     let mut dirty = apply_reader_result(&mut state, &mut markdown_reader, result);
@@ -861,7 +869,20 @@ impl DirtyArea {
                 height.saturating_sub(display::STATUS_BAR_HEIGHT as u32),
             ),
             Self::Action(action) => {
-                display::details_action_region(action, width as usize, height as usize)
+                let details_page = match page {
+                    UiPage::Details => display::DetailsPage::Menu,
+                    UiPage::Reading => display::DetailsPage::Reading,
+                    UiPage::Synchronization => display::DetailsPage::Synchronization,
+                    UiPage::DeviceDiagnostics => display::DetailsPage::DeviceDiagnostics,
+                    UiPage::Home | UiPage::DisplayTest => display::DetailsPage::Legacy,
+                };
+                display::details_action_region_for_page(
+                    details_page,
+                    action,
+                    width as usize,
+                    height as usize,
+                )
+                .unwrap_or_else(|| DisplayRegion::full(width, height))
             }
         };
         region.bounded(width, height)
@@ -928,99 +949,157 @@ fn screen_view_model(state: &UiState, wake_lock_held: bool) -> display::UiViewMo
         mode: mode_label,
         clock,
     };
-    let rows = vec![
-        display::DetailsRow::Section("Settings".into()),
-        display::DetailsRow::Toggle {
-            label: "Debug messages".into(),
-            enabled: state.debug_messages,
-        },
-        display::DetailsRow::Toggle {
-            label: "Reading progress".into(),
-            enabled: state.reading_progress,
-        },
-        display::DetailsRow::Toggle {
-            label: "Fullscreen reader".into(),
-            enabled: state.fullscreen,
-        },
-        display::DetailsRow::Choice {
-            label: "Font size".into(),
-            value: format!("{}%", state.font_scale_percent),
-        },
-        display::DetailsRow::Choice {
-            label: "Orientation".into(),
-            value: state.orientation.label().into(),
-        },
-        display::DetailsRow::Section("Synchronization".into()),
-        display::DetailsRow::Value(format!(
-            "Sync {}  Failure {}",
-            if state.sync_active { "active" } else { "idle" },
-            state.last_sync_failure.as_deref().unwrap_or("none")
-        )),
-        display::DetailsRow::Section("Power".into()),
-        display::DetailsRow::Value(format!(
-            "Battery {} {}  Temp {} C",
-            percent_label(&battery_level),
-            pretty_value(&battery_state),
-            temperature
-        )),
-        display::DetailsRow::Value(format!(
-            "Health {}  Voltage {}  AC {} USB {}",
-            pretty_value(&uppercase_or_unknown(status.battery.health.as_deref())),
-            voltage_label(status.battery.voltage_uv),
-            pretty_value(ac),
-            pretty_value(usb_power)
-        )),
-        display::DetailsRow::Section("Connectivity".into()),
-        display::DetailsRow::Value(format!(
-            "WiFi {} {}  Supplicant {}",
-            status.wifi.interface.to_ascii_lowercase(),
-            pretty_value(&wifi_state),
-            pretty_value(&supplicant)
-        )),
-        display::DetailsRow::Value(format!(
-            "USB {}  Gadget {}  ADB {}  Functions {}",
-            pretty_value(usb_connected),
-            pretty_value(&uppercase_or_unknown(status.usb.gadget_state.as_deref())),
-            pretty_value(adb),
-            pretty_value(&uppercase_or_unknown(
-                status.usb.gadget_functions.as_deref()
-            ))
-        )),
-        display::DetailsRow::Section("Storage".into()),
-        display::DetailsRow::Value(format!(
-            "Data {} KiB",
-            number_or_unknown(status.storage.data.available_kib)
-        )),
-        display::DetailsRow::Value(format!(
-            "SD card {} KiB",
-            number_or_unknown(status.storage.sdcard.available_kib)
-        )),
-        // System and input telemetry is intentionally grouped into a compact
-        // Diagnostics section. It keeps the user-facing settings and status
-        // above a dedicated action pane without losing the live counters.
-        display::DetailsRow::Section("Diagnostics".into()),
-        display::DetailsRow::Value(format!(
-            "System: FB {}  Rotate {}  zygote {}  dispd {}",
-            pretty_value(framebuffer),
-            number_or_unknown(status.screen.rotate),
-            pretty_value(zygote),
-            pretty_value(dispd)
-        )),
-        display::DetailsRow::Value(format!(
-            "Runtime: Wake {}  Date {}  Input {} touch {} key  Power {}",
-            pretty_value(if wake_lock_held { "yes" } else { "no" }),
-            current_date,
-            state.touch_events,
-            state.key_events,
-            state
-                .last_power_duration_ms
-                .map(|duration| format!("{}ms", duration))
-                .unwrap_or_else(|| "none".into())
-        )),
-    ];
+    let legacy_rows = || {
+        vec![
+            display::DetailsRow::Section("Settings".into()),
+            display::DetailsRow::Toggle {
+                label: "Debug messages".into(),
+                enabled: state.debug_messages,
+            },
+            display::DetailsRow::Toggle {
+                label: "Reading progress".into(),
+                enabled: state.reading_progress,
+            },
+            display::DetailsRow::Toggle {
+                label: "Fullscreen reader".into(),
+                enabled: state.fullscreen,
+            },
+            display::DetailsRow::Choice {
+                label: "Font size".into(),
+                value: format!("{}%", state.font_scale_percent),
+            },
+            display::DetailsRow::Choice {
+                label: "Orientation".into(),
+                value: state.orientation.label().into(),
+            },
+            display::DetailsRow::Section("Synchronization".into()),
+            display::DetailsRow::Value(format!(
+                "Sync {}  Failure {}",
+                if state.sync_active { "active" } else { "idle" },
+                state.last_sync_failure.as_deref().unwrap_or("none")
+            )),
+            display::DetailsRow::Section("Power".into()),
+            display::DetailsRow::Value(format!(
+                "Battery {} {}  Temp {} C",
+                percent_label(&battery_level),
+                pretty_value(&battery_state),
+                temperature
+            )),
+            display::DetailsRow::Value(format!(
+                "Health {}  Voltage {}  AC {} USB {}",
+                pretty_value(&uppercase_or_unknown(status.battery.health.as_deref())),
+                voltage_label(status.battery.voltage_uv),
+                pretty_value(ac),
+                pretty_value(usb_power)
+            )),
+            display::DetailsRow::Section("Connectivity".into()),
+            display::DetailsRow::Value(format!(
+                "WiFi {} {}  Supplicant {}",
+                status.wifi.interface.to_ascii_lowercase(),
+                pretty_value(&wifi_state),
+                pretty_value(&supplicant)
+            )),
+            display::DetailsRow::Value(format!(
+                "USB {}  Gadget {}  ADB {}  Functions {}",
+                pretty_value(usb_connected),
+                pretty_value(&uppercase_or_unknown(status.usb.gadget_state.as_deref())),
+                pretty_value(adb),
+                pretty_value(&uppercase_or_unknown(
+                    status.usb.gadget_functions.as_deref()
+                ))
+            )),
+            display::DetailsRow::Section("Storage".into()),
+            display::DetailsRow::Value(format!(
+                "Data {} KiB",
+                number_or_unknown(status.storage.data.available_kib)
+            )),
+            display::DetailsRow::Value(format!(
+                "SD card {} KiB",
+                number_or_unknown(status.storage.sdcard.available_kib)
+            )),
+            display::DetailsRow::Section("Diagnostics".into()),
+            display::DetailsRow::Value(format!(
+                "System: FB {}  Rotate {}  zygote {}  dispd {}",
+                pretty_value(framebuffer),
+                number_or_unknown(status.screen.rotate),
+                pretty_value(zygote),
+                pretty_value(dispd)
+            )),
+            display::DetailsRow::Value(format!(
+                "Runtime: Wake {}  Date {}  Input {} touch {} key  Power {}",
+                pretty_value(if wake_lock_held { "yes" } else { "no" }),
+                current_date,
+                state.touch_events,
+                state.key_events,
+                state
+                    .last_power_duration_ms
+                    .map(|duration| format!("{}ms", duration))
+                    .unwrap_or_else(|| "none".into())
+            )),
+        ]
+    };
+    let (page, title, rows) = match state.page {
+        UiPage::Details if state.settings_menu => {
+            (display::DetailsPage::Menu, "Settings", Vec::new())
+        }
+        UiPage::Reading => (
+            display::DetailsPage::Reading,
+            "Reading",
+            vec![
+                display::DetailsRow::Choice {
+                    label: "Orientation".into(),
+                    value: state.orientation.label().into(),
+                },
+                display::DetailsRow::Toggle {
+                    label: "Show status bar".into(),
+                    enabled: !state.fullscreen,
+                },
+                display::DetailsRow::Choice {
+                    label: "Font size".into(),
+                    value: format!("{}%", state.font_scale_percent),
+                },
+                display::DetailsRow::Toggle {
+                    label: "Reading progress".into(),
+                    enabled: state.reading_progress,
+                },
+            ],
+        ),
+        UiPage::Synchronization => (
+            display::DetailsPage::Synchronization,
+            "Synchronization",
+            vec![
+                display::DetailsRow::Value(format!(
+                    "Status {}",
+                    if state.sync_active { "Active" } else { "Idle" }
+                )),
+                display::DetailsRow::Value(format!(
+                    "Failure {}",
+                    state.last_sync_failure.as_deref().unwrap_or("None")
+                )),
+            ],
+        ),
+        UiPage::DeviceDiagnostics => (
+            display::DetailsPage::DeviceDiagnostics,
+            "Device & diagnostics",
+            vec![display::DetailsRow::Toggle {
+                label: "Debug messages".into(),
+                enabled: state.debug_messages,
+            }],
+        ),
+        UiPage::Details => (
+            display::DetailsPage::Legacy,
+            "Details / Settings",
+            legacy_rows(),
+        ),
+        UiPage::Home | UiPage::DisplayTest => (
+            display::DetailsPage::Legacy,
+            "Details / Settings",
+            legacy_rows(),
+        ),
+    };
     display::UiViewModel::new(
         status_bar,
-        display::DetailsViewModel::new("Details / Settings", rows),
+        display::DetailsViewModel::new_page(page, title, rows),
     )
 }
 
@@ -1163,11 +1242,13 @@ fn sleep_cycle(
             display.width() as usize,
             display.height() as usize,
         ),
-        UiPage::Details => display::render_details_settings_frame(
-            &view,
-            display.width() as usize,
-            display.height() as usize,
-        ),
+        UiPage::Details | UiPage::Reading | UiPage::Synchronization | UiPage::DeviceDiagnostics => {
+            display::render_details_settings_frame(
+                &view,
+                display.width() as usize,
+                display.height() as usize,
+            )
+        }
     };
     display
         .write_standby(&standby)
@@ -1590,6 +1671,9 @@ enum ReaderOperation {
     ReturnToEntryPoint,
     SetFullscreen(bool),
     SetFontScale(u16),
+    DecreaseFontScale,
+    ResetFontScale,
+    IncreaseFontScale,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1721,6 +1805,9 @@ where
 enum UiPage {
     Home,
     Details,
+    Reading,
+    Synchronization,
+    DeviceDiagnostics,
     DisplayTest,
 }
 
@@ -1741,6 +1828,7 @@ struct UiState {
     orientation_change: Option<ReaderOrientation>,
     font_scale_percent: u16,
     page: UiPage,
+    settings_menu: bool,
     ui_history: Vec<UiPage>,
     mode: &'static str,
     feedback: Option<Feedback>,
@@ -1800,6 +1888,7 @@ impl UiState {
             orientation_change: None,
             font_scale_percent: preferences.font_scale_percent,
             page: UiPage::Home,
+            settings_menu: false,
             ui_history: Vec::new(),
             mode: "ACTIVE",
             feedback: None,
@@ -1875,6 +1964,24 @@ impl UiState {
         self.orientation.viewport().height as usize
     }
 
+    fn is_settings_page(&self) -> bool {
+        matches!(
+            self.page,
+            UiPage::Details | UiPage::Reading | UiPage::Synchronization | UiPage::DeviceDiagnostics
+        )
+    }
+
+    fn details_page(&self) -> display::DetailsPage {
+        match self.page {
+            UiPage::Details if self.settings_menu => display::DetailsPage::Menu,
+            UiPage::Details => display::DetailsPage::Legacy,
+            UiPage::Reading => display::DetailsPage::Reading,
+            UiPage::Synchronization => display::DetailsPage::Synchronization,
+            UiPage::DeviceDiagnostics => display::DetailsPage::DeviceDiagnostics,
+            UiPage::Home | UiPage::DisplayTest => display::DetailsPage::Legacy,
+        }
+    }
+
     fn open_ui_page(&mut self, page: UiPage, message: &'static str) {
         if self.page == page {
             return;
@@ -1884,11 +1991,13 @@ impl UiState {
             self.ui_history.remove(0);
         }
         self.page = page;
+        self.settings_menu = page == UiPage::Details;
         self.set_debug_feedback(message);
     }
 
     fn return_to_reader(&mut self, message: &'static str) {
         self.page = UiPage::Home;
+        self.settings_menu = false;
         self.ui_history.clear();
         self.set_debug_feedback(message);
     }
@@ -1912,19 +2021,30 @@ impl UiState {
                 self.set_debug_feedback("Reader back");
                 None
             }
-            UiPage::Details | UiPage::DisplayTest => {
+            UiPage::Details
+            | UiPage::Reading
+            | UiPage::Synchronization
+            | UiPage::DeviceDiagnostics
+            | UiPage::DisplayTest => {
                 let previous = self.ui_history.pop().unwrap_or(match self.page {
                     UiPage::Details => UiPage::Home,
+                    UiPage::Reading | UiPage::Synchronization | UiPage::DeviceDiagnostics => {
+                        UiPage::Details
+                    }
                     UiPage::DisplayTest => UiPage::Details,
                     UiPage::Home => unreachable!(),
                 });
                 self.page = previous;
+                self.settings_menu = self.page == UiPage::Details && !self.ui_history.is_empty();
                 if self.page == UiPage::Home {
                     self.ui_history.clear();
                 }
                 self.set_debug_feedback(match self.page {
                     UiPage::Home => "Returned to reading",
                     UiPage::Details => "Returned to Details / Settings",
+                    UiPage::Reading => "Returned to Reading",
+                    UiPage::Synchronization => "Returned to Synchronization",
+                    UiPage::DeviceDiagnostics => "Returned to Device & diagnostics",
                     UiPage::DisplayTest => unreachable!(),
                 });
                 Some(DirtyArea::Full)
@@ -2142,7 +2262,8 @@ impl UiState {
             }
             if self.touch_down {
                 if let Some(action) = self.touch_action {
-                    let next_pressed = (display::details_action_at(
+                    let next_pressed = (display::details_action_at_for_page(
+                        self.details_page(),
                         self.touch_x,
                         self.touch_y,
                         self.screen_width(),
@@ -2205,7 +2326,7 @@ impl UiState {
                     );
                     return finish(dirty, action);
                 }
-                let dirty = (self.page == UiPage::Details).then_some(DirtyArea::Touch);
+                let dirty = self.is_settings_page().then_some(DirtyArea::Touch);
                 return finish(dirty, PowerAction::None);
             }
             return finish(None, PowerAction::None);
@@ -2233,7 +2354,10 @@ impl UiState {
                             ReaderOperation::Back
                             | ReaderOperation::ReturnToEntryPoint
                             | ReaderOperation::SetFullscreen(_)
-                            | ReaderOperation::SetFontScale(_) => {
+                            | ReaderOperation::SetFontScale(_)
+                            | ReaderOperation::DecreaseFontScale
+                            | ReaderOperation::ResetFontScale
+                            | ReaderOperation::IncreaseFontScale => {
                                 unreachable!()
                             }
                         });
@@ -2279,10 +2403,7 @@ impl UiState {
             } else {
                 DirtyArea::Key
             };
-            return finish(
-                (self.page == UiPage::Details).then_some(area),
-                PowerAction::None,
-            );
+            return finish(self.is_settings_page().then_some(area), PowerAction::None);
         }
 
         finish(None, PowerAction::None)
@@ -2290,8 +2411,9 @@ impl UiState {
 
     fn begin_touch_action(&mut self) -> Option<DirtyArea> {
         self.touch_action_initialized = true;
-        self.touch_action = if self.page == UiPage::Details {
-            display::details_action_at(
+        self.touch_action = if self.is_settings_page() {
+            display::details_action_at_for_page(
+                self.details_page(),
                 self.touch_x,
                 self.touch_y,
                 self.screen_width(),
@@ -2367,7 +2489,7 @@ impl UiState {
     }
 
     fn diagnostics_dirty(&self, area: DirtyArea) -> Option<DirtyArea> {
-        (self.page == UiPage::Details).then_some(area)
+        self.is_settings_page().then_some(area)
     }
 
     fn trigger_menu_redraw(&mut self) -> DirtyArea {
@@ -2383,8 +2505,9 @@ impl UiState {
 
     fn activate_tap(&mut self) -> (PowerAction, Option<DirtyArea>) {
         let touch_action = self.touch_action.take().or_else(|| {
-            if !self.touch_action_initialized && self.page == UiPage::Details {
-                display::details_action_at(
+            if !self.touch_action_initialized && self.is_settings_page() {
+                display::details_action_at_for_page(
+                    self.details_page(),
                     self.touch_x,
                     self.touch_y,
                     self.screen_width(),
@@ -2408,9 +2531,26 @@ impl UiState {
             }
             return (PowerAction::None, Some(DirtyArea::Full));
         }
-        if self.page != UiPage::Details {
+        if !self.is_settings_page() {
             self.reader_tap = Some(Point::new(self.touch_x, self.touch_y));
             return (PowerAction::None, None);
+        }
+        if self.details_page() != display::DetailsPage::Legacy {
+            let Some(action) = touch_action else {
+                return (PowerAction::None, None);
+            };
+            if pressed_action != Some(action)
+                || display::details_action_at_for_page(
+                    self.details_page(),
+                    self.touch_x,
+                    self.touch_y,
+                    self.screen_width(),
+                    self.screen_height(),
+                ) != Some(action)
+            {
+                return (PowerAction::None, Some(DirtyArea::Action(action)));
+            }
+            return self.activate_modern_action(action);
         }
         // An action is committed only if release remains inside the exact
         // control that was pressed. A drag across another control therefore
@@ -2474,7 +2614,8 @@ impl UiState {
             return (PowerAction::None, None);
         };
         if pressed_action != Some(touch_action)
-            || display::details_action_at(
+            || display::details_action_at_for_page(
+                self.details_page(),
                 self.touch_x,
                 self.touch_y,
                 self.screen_width(),
@@ -2509,6 +2650,105 @@ impl UiState {
             display::DetailsAction::BackToReading => {
                 self.return_to_reader("Returned to reading");
                 (PowerAction::None, Some(DirtyArea::Full))
+            }
+            display::DetailsAction::OpenReading
+            | display::DetailsAction::OpenSynchronization
+            | display::DetailsAction::OpenDeviceDiagnostics
+            | display::DetailsAction::Orientation
+            | display::DetailsAction::ShowStatusBar
+            | display::DetailsAction::FontDecrease
+            | display::DetailsAction::FontReset
+            | display::DetailsAction::FontIncrease
+            | display::DetailsAction::ReadingProgress
+            | display::DetailsAction::DebugMessages => unreachable!(),
+        }
+    }
+
+    fn activate_modern_action(
+        &mut self,
+        action: display::DetailsAction,
+    ) -> (PowerAction, Option<DirtyArea>) {
+        match action {
+            display::DetailsAction::OpenReading => {
+                self.open_ui_page(UiPage::Reading, "Reading settings open");
+                (PowerAction::None, Some(DirtyArea::Full))
+            }
+            display::DetailsAction::OpenSynchronization => {
+                self.open_ui_page(UiPage::Synchronization, "Synchronization open");
+                (PowerAction::None, Some(DirtyArea::Full))
+            }
+            display::DetailsAction::OpenDeviceDiagnostics => {
+                self.open_ui_page(UiPage::DeviceDiagnostics, "Device settings open");
+                (PowerAction::None, Some(DirtyArea::Full))
+            }
+            display::DetailsAction::BackToReading => {
+                self.return_to_reader("Returned to reading");
+                (PowerAction::None, Some(DirtyArea::Full))
+            }
+            display::DetailsAction::Orientation => {
+                let target = self.orientation.toggle();
+                self.orientation_change = Some(target);
+                self.set_debug_feedback(format!("Orientation {} selected", target.label()));
+                (PowerAction::None, Some(DirtyArea::Full))
+            }
+            display::DetailsAction::ShowStatusBar => {
+                let fullscreen = !self.fullscreen;
+                self.reader_operation = Some(ReaderOperation::SetFullscreen(fullscreen));
+                self.set_debug_feedback(if fullscreen {
+                    "Status bar hidden"
+                } else {
+                    "Status bar shown"
+                });
+                (PowerAction::None, None)
+            }
+            display::DetailsAction::FontDecrease => {
+                self.reader_operation = Some(ReaderOperation::DecreaseFontScale);
+                self.set_debug_feedback("Font size decreased");
+                (PowerAction::None, Some(DirtyArea::Full))
+            }
+            display::DetailsAction::FontReset => {
+                self.reader_operation = Some(ReaderOperation::ResetFontScale);
+                self.set_debug_feedback("Font size reset");
+                (PowerAction::None, Some(DirtyArea::Full))
+            }
+            display::DetailsAction::FontIncrease => {
+                self.reader_operation = Some(ReaderOperation::IncreaseFontScale);
+                self.set_debug_feedback("Font size increased");
+                (PowerAction::None, Some(DirtyArea::Full))
+            }
+            display::DetailsAction::ReadingProgress => {
+                self.reading_progress = !self.reading_progress;
+                self.set_debug_feedback(if self.reading_progress {
+                    "Reading progress on"
+                } else {
+                    "Reading progress off"
+                });
+                (PowerAction::None, Some(DirtyArea::Full))
+            }
+            display::DetailsAction::DebugMessages => {
+                self.debug_messages = !self.debug_messages;
+                (PowerAction::None, Some(DirtyArea::Full))
+            }
+            display::DetailsAction::SyncNow => {
+                self.request_manual_sync();
+                (PowerAction::None, Some(DirtyArea::Action(action)))
+            }
+            display::DetailsAction::ReturnToEntryPoint => {
+                self.reader_operation = Some(ReaderOperation::ReturnToEntryPoint);
+                self.set_debug_feedback("Returning to entry point");
+                (PowerAction::None, Some(DirtyArea::Action(action)))
+            }
+            display::DetailsAction::DisplayTest => {
+                self.open_ui_page(UiPage::DisplayTest, "Display test open");
+                (PowerAction::None, Some(DirtyArea::Full))
+            }
+            display::DetailsAction::Reboot => {
+                self.set_debug_feedback("Reboot requested");
+                (PowerAction::Reboot, Some(DirtyArea::Action(action)))
+            }
+            display::DetailsAction::PowerOff => {
+                self.set_debug_feedback("Power off requested");
+                (PowerAction::PowerOff, Some(DirtyArea::Action(action)))
             }
         }
     }
@@ -2578,7 +2818,7 @@ mod tests {
     use super::{
         display, record_reader_event_feedback, BundleHandoff, DirtyArea, Feedback, InputSourceKind,
         PageTone, Point, PowerAction, ReaderOperation, ReaderOrientation, ReaderPreferences,
-        RefreshReason, SuspendMode, SyncEvent, UiPage, UiState, ABS_MT_POSITION_X,
+        RefreshReason, SuspendMode, SyncEvent, SyncTrigger, UiPage, UiState, ABS_MT_POSITION_X,
         ABS_MT_POSITION_Y, ABS_MT_TOUCH_MAJOR, ABS_MT_TRACKING_ID, ABS_X, ABS_Y, BTN_TOUCH,
         EVENT_ABS, EVENT_KEY, EVENT_SYN, KEY_BACK, KEY_HOME, KEY_LEFT, KEY_MENU, KEY_RIGHT,
         SYN_REPORT,
@@ -2622,6 +2862,147 @@ mod tests {
         state.touch_down = true;
         let _ = state.observe(InputSourceKind::Touch, event(BTN_TOUCH, 0, 2_000_000));
         assert_eq!(state.page, UiPage::Home);
+    }
+
+    #[test]
+    fn settings_menu_opens_each_nested_section_and_back_walks_to_reader() {
+        let mut state = UiState::new();
+        state.open_ui_page(UiPage::Details, "Settings open");
+        assert!(state.settings_menu);
+
+        let region = display::details_action_region_for_page(
+            display::DetailsPage::Menu,
+            display::DetailsAction::OpenReading,
+            600,
+            800,
+        )
+        .expect("reading section region");
+        state.touch_x = region.left as i32 + 4;
+        state.touch_y = region.top as i32 + 4;
+        state.touch_down = true;
+        state.observe(InputSourceKind::Touch, event(BTN_TOUCH, 0, 1_000_000));
+        assert_eq!(state.page, UiPage::Reading);
+
+        let (dirty, action) = state.observe(InputSourceKind::Keys, event(KEY_BACK, 1, 1_000_001));
+        assert_eq!(dirty, Some(DirtyArea::Full));
+        assert_eq!(action, PowerAction::None);
+        assert_eq!(state.page, UiPage::Details);
+        assert!(state.settings_menu);
+
+        state.observe(InputSourceKind::Keys, event(KEY_BACK, 1, 1_000_002));
+        assert_eq!(state.page, UiPage::Home);
+        assert!(state.ui_history.is_empty());
+    }
+
+    #[test]
+    fn modern_reading_controls_dispatch_orientation_status_font_and_progress() {
+        let mut state = UiState::new();
+        state.page = UiPage::Reading;
+
+        let tap = |state: &mut UiState, action: display::DetailsAction| {
+            let region = display::details_action_region_for_page(
+                display::DetailsPage::Reading,
+                action,
+                600,
+                800,
+            )
+            .expect("reading control region");
+            state.touch_x = region.left as i32 + 4;
+            state.touch_y = region.top as i32 + 4;
+            state.touch_down = true;
+            state.observe(InputSourceKind::Touch, event(BTN_TOUCH, 0, 1_000_000));
+        };
+
+        tap(&mut state, display::DetailsAction::Orientation);
+        assert_eq!(
+            state.take_orientation_change(),
+            Some(ReaderOrientation::Landscape)
+        );
+        tap(&mut state, display::DetailsAction::ShowStatusBar);
+        assert_eq!(
+            state.take_reader_operation(),
+            Some(ReaderOperation::SetFullscreen(true))
+        );
+        for (action, expected) in [
+            (
+                display::DetailsAction::FontDecrease,
+                ReaderOperation::DecreaseFontScale,
+            ),
+            (
+                display::DetailsAction::FontReset,
+                ReaderOperation::ResetFontScale,
+            ),
+            (
+                display::DetailsAction::FontIncrease,
+                ReaderOperation::IncreaseFontScale,
+            ),
+        ] {
+            tap(&mut state, action);
+            assert_eq!(state.take_reader_operation(), Some(expected));
+        }
+        assert!(state.reading_progress);
+        tap(&mut state, display::DetailsAction::ReadingProgress);
+        assert!(!state.reading_progress);
+    }
+
+    #[test]
+    fn modern_device_and_sync_controls_are_reachable_in_landscape() {
+        let mut state = UiState::with_orientation(ReaderOrientation::Landscape);
+        state.page = UiPage::DeviceDiagnostics;
+        let debug = display::details_action_region_for_page(
+            display::DetailsPage::DeviceDiagnostics,
+            display::DetailsAction::DebugMessages,
+            800,
+            600,
+        )
+        .expect("debug control region");
+        state.touch_x = debug.left as i32 + 4;
+        state.touch_y = debug.top as i32 + 4;
+        state.touch_down = true;
+        state.observe(InputSourceKind::Touch, event(BTN_TOUCH, 0, 1_000_000));
+        assert!(state.debug_messages);
+
+        let mut state = UiState::with_orientation(ReaderOrientation::Landscape);
+        state.page = UiPage::Synchronization;
+        let sync = display::details_action_region_for_page(
+            display::DetailsPage::Synchronization,
+            display::DetailsAction::SyncNow,
+            800,
+            600,
+        )
+        .expect("sync control region");
+        state.touch_x = sync.left as i32 + 4;
+        state.touch_y = sync.top as i32 + 4;
+        state.touch_down = true;
+        state.observe(InputSourceKind::Touch, event(BTN_TOUCH, 0, 1_000_000));
+        assert_eq!(state.take_sync_trigger(), Some(SyncTrigger::Manual));
+    }
+
+    #[test]
+    fn modern_settings_press_is_drawn_before_release() {
+        let mut state = UiState::new();
+        state.open_ui_page(UiPage::Details, "Settings open");
+        let region = display::details_action_region_for_page(
+            display::DetailsPage::Menu,
+            display::DetailsAction::OpenDeviceDiagnostics,
+            600,
+            800,
+        )
+        .expect("device section region");
+        state.touch_x = region.left as i32 + 4;
+        state.touch_y = region.top as i32 + 4;
+        let (dirty, action) = state.observe(InputSourceKind::Touch, event(BTN_TOUCH, 1, 1_000_000));
+        assert_eq!(
+            dirty,
+            Some(DirtyArea::Action(
+                display::DetailsAction::OpenDeviceDiagnostics
+            ))
+        );
+        assert_eq!(action, PowerAction::None);
+        assert_eq!(
+            state.pressed_action,
+            Some(display::DetailsAction::OpenDeviceDiagnostics)
+        );
     }
 
     #[test]

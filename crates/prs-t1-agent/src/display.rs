@@ -58,6 +58,27 @@ pub const DETAILS_POWER_OFF_TOP: usize =
     DETAILS_REBOOT_TOP + DETAILS_ACTION_HEIGHT + DETAILS_ACTION_GAP;
 pub const DETAILS_BACK_TOP: usize =
     DETAILS_POWER_OFF_TOP + DETAILS_ACTION_HEIGHT + DETAILS_ACTION_GAP;
+pub const DETAILS_MENU_READING_TOP: usize = 132;
+pub const DETAILS_MENU_SYNC_TOP: usize = 202;
+pub const DETAILS_MENU_DEVICE_TOP: usize = 272;
+pub const DETAILS_MENU_BACK_TOP: usize = 500;
+pub const DETAILS_MENU_ACTION_HEIGHT: usize = 48;
+pub const DETAILS_READING_ORIENTATION_TOP: usize = 132;
+pub const DETAILS_READING_STATUS_TOP: usize = 194;
+pub const DETAILS_READING_FONT_TOP: usize = 264;
+pub const DETAILS_READING_PROGRESS_TOP: usize = 336;
+pub const DETAILS_READING_ENTRY_TOP: usize = 430;
+pub const DETAILS_READING_BACK_TOP: usize = 492;
+pub const DETAILS_SYNC_STATUS_TOP: usize = 132;
+pub const DETAILS_SYNC_NOW_TOP: usize = 226;
+pub const DETAILS_SYNC_BACK_TOP: usize = 492;
+pub const DETAILS_DEVICE_DEBUG_TOP: usize = 132;
+pub const DETAILS_DEVICE_DISPLAY_TOP: usize = 220;
+pub const DETAILS_DEVICE_REBOOT_TOP: usize = 292;
+pub const DETAILS_DEVICE_POWER_OFF_TOP: usize = 364;
+pub const DETAILS_DEVICE_BACK_TOP: usize = 492;
+pub const DETAILS_MODERN_CONTROL_HEIGHT: usize = 44;
+pub const DETAILS_MODERN_CONTROL_GAP: usize = 8;
 pub const SCREEN_WIDTH: usize = 600;
 pub const SCREEN_HEIGHT: usize = 800;
 const LANDSCAPE_LINE_STEP: usize = 20;
@@ -114,6 +135,17 @@ pub enum DetailsRow {
     Value(String),
     Toggle { label: String, enabled: bool },
     Choice { label: String, value: String },
+}
+
+/// The bounded native pages used by the Settings section menu.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DetailsPage {
+    /// The pre-sectioned details renderer retained for wire-format callers.
+    Legacy,
+    Menu,
+    Reading,
+    Synchronization,
+    DeviceDiagnostics,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -185,12 +217,22 @@ pub fn details_toggle_at(x: i32, y: i32, width: usize, height: usize) -> Option<
 /// An actionable control on the native Details / Settings page.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DetailsAction {
+    OpenReading,
+    OpenSynchronization,
+    OpenDeviceDiagnostics,
     SyncNow,
     ReturnToEntryPoint,
     DisplayTest,
     Reboot,
     PowerOff,
     BackToReading,
+    Orientation,
+    ShowStatusBar,
+    FontDecrease,
+    FontReset,
+    FontIncrease,
+    ReadingProgress,
+    DebugMessages,
 }
 
 impl DetailsAction {
@@ -205,12 +247,22 @@ impl DetailsAction {
 
     pub const fn label(self) -> &'static str {
         match self {
+            Self::OpenReading => "Reading",
+            Self::OpenSynchronization => "Synchronization",
+            Self::OpenDeviceDiagnostics => "Device & diagnostics",
             Self::SyncNow => "Sync now",
             Self::ReturnToEntryPoint => "Return to entry point",
             Self::DisplayTest => "Display test",
             Self::Reboot => "Reboot",
             Self::PowerOff => "Power off",
             Self::BackToReading => "Back to reading",
+            Self::Orientation => "Orientation",
+            Self::ShowStatusBar => "Show status bar",
+            Self::FontDecrease => "A-",
+            Self::FontReset => "Reset",
+            Self::FontIncrease => "A+",
+            Self::ReadingProgress => "Reading progress",
+            Self::DebugMessages => "Debug messages",
         }
     }
 
@@ -222,12 +274,168 @@ impl DetailsAction {
             Self::Reboot => DETAILS_REBOOT_TOP,
             Self::PowerOff => DETAILS_POWER_OFF_TOP,
             Self::BackToReading => DETAILS_BACK_TOP,
+            _ => 0,
         }
     }
 
     const fn is_destructive(self) -> bool {
         matches!(self, Self::Reboot | Self::PowerOff)
     }
+}
+
+fn modern_button_region(
+    top: usize,
+    width: usize,
+    height: usize,
+    button_height: usize,
+) -> DisplayRegion {
+    let margin = DETAILS_ACTION_MARGIN.min(width / 2);
+    DisplayRegion::new(
+        margin as u32,
+        top.min(height) as u32,
+        width.saturating_sub(margin.saturating_mul(2)) as u32,
+        button_height.min(height.saturating_sub(top)) as u32,
+    )
+}
+
+/// Return the rectangle for a control on one of the modern Settings pages.
+pub fn details_action_region_for_page(
+    page: DetailsPage,
+    action: DetailsAction,
+    width: usize,
+    height: usize,
+) -> Option<DisplayRegion> {
+    if page == DetailsPage::Legacy {
+        return DetailsAction::ALL
+            .contains(&action)
+            .then(|| details_action_region(action, width, height));
+    }
+    let (top, button_height) = match (page, action) {
+        (DetailsPage::Menu, DetailsAction::OpenReading) => {
+            (DETAILS_MENU_READING_TOP, DETAILS_MENU_ACTION_HEIGHT)
+        }
+        (DetailsPage::Menu, DetailsAction::OpenSynchronization) => {
+            (DETAILS_MENU_SYNC_TOP, DETAILS_MENU_ACTION_HEIGHT)
+        }
+        (DetailsPage::Menu, DetailsAction::OpenDeviceDiagnostics) => {
+            (DETAILS_MENU_DEVICE_TOP, DETAILS_MENU_ACTION_HEIGHT)
+        }
+        (DetailsPage::Menu, DetailsAction::BackToReading) => {
+            (DETAILS_MENU_BACK_TOP, DETAILS_MENU_ACTION_HEIGHT)
+        }
+        (DetailsPage::Reading, DetailsAction::Orientation) => (
+            DETAILS_READING_ORIENTATION_TOP,
+            DETAILS_MODERN_CONTROL_HEIGHT,
+        ),
+        (DetailsPage::Reading, DetailsAction::ShowStatusBar) => {
+            (DETAILS_READING_STATUS_TOP, DETAILS_MODERN_CONTROL_HEIGHT)
+        }
+        (DetailsPage::Reading, DetailsAction::FontDecrease)
+        | (DetailsPage::Reading, DetailsAction::FontReset)
+        | (DetailsPage::Reading, DetailsAction::FontIncrease) => {
+            let base = modern_button_region(
+                DETAILS_READING_FONT_TOP,
+                width,
+                height,
+                DETAILS_MODERN_CONTROL_HEIGHT,
+            );
+            let gap = DETAILS_MODERN_CONTROL_GAP.min(width);
+            let button_width = base.width.saturating_sub((gap.saturating_mul(2)) as u32) / 3;
+            let index = match action {
+                DetailsAction::FontDecrease => 0,
+                DetailsAction::FontReset => 1,
+                DetailsAction::FontIncrease => 2,
+                _ => unreachable!(),
+            };
+            return Some(DisplayRegion::new(
+                base.left + index * (button_width + gap as u32),
+                base.top,
+                button_width,
+                base.height,
+            ));
+        }
+        (DetailsPage::Reading, DetailsAction::ReadingProgress) => {
+            (DETAILS_READING_PROGRESS_TOP, DETAILS_MODERN_CONTROL_HEIGHT)
+        }
+        (DetailsPage::Reading, DetailsAction::ReturnToEntryPoint) => {
+            (DETAILS_READING_ENTRY_TOP, DETAILS_MODERN_CONTROL_HEIGHT)
+        }
+        (DetailsPage::Reading, DetailsAction::BackToReading) => {
+            (DETAILS_READING_BACK_TOP, DETAILS_MODERN_CONTROL_HEIGHT)
+        }
+        (DetailsPage::Synchronization, DetailsAction::SyncNow) => {
+            (DETAILS_SYNC_NOW_TOP, DETAILS_MENU_ACTION_HEIGHT)
+        }
+        (DetailsPage::Synchronization, DetailsAction::BackToReading) => {
+            (DETAILS_SYNC_BACK_TOP, DETAILS_MENU_ACTION_HEIGHT)
+        }
+        (DetailsPage::DeviceDiagnostics, DetailsAction::DebugMessages) => {
+            (DETAILS_DEVICE_DEBUG_TOP, DETAILS_MODERN_CONTROL_HEIGHT)
+        }
+        (DetailsPage::DeviceDiagnostics, DetailsAction::DisplayTest) => {
+            (DETAILS_DEVICE_DISPLAY_TOP, DETAILS_MENU_ACTION_HEIGHT)
+        }
+        (DetailsPage::DeviceDiagnostics, DetailsAction::Reboot) => {
+            (DETAILS_DEVICE_REBOOT_TOP, DETAILS_MENU_ACTION_HEIGHT)
+        }
+        (DetailsPage::DeviceDiagnostics, DetailsAction::PowerOff) => {
+            (DETAILS_DEVICE_POWER_OFF_TOP, DETAILS_MENU_ACTION_HEIGHT)
+        }
+        (DetailsPage::DeviceDiagnostics, DetailsAction::BackToReading) => {
+            (DETAILS_DEVICE_BACK_TOP, DETAILS_MENU_ACTION_HEIGHT)
+        }
+        _ => return None,
+    };
+    Some(modern_button_region(top, width, height, button_height))
+}
+
+/// Hit-test a modern Settings page against its rendered control rectangles.
+pub fn details_action_at_for_page(
+    page: DetailsPage,
+    x: i32,
+    y: i32,
+    width: usize,
+    height: usize,
+) -> Option<DetailsAction> {
+    if x < 0 || y < 0 {
+        return None;
+    }
+    let actions: &[DetailsAction] = match page {
+        DetailsPage::Legacy => &DetailsAction::ALL,
+        DetailsPage::Menu => &[
+            DetailsAction::OpenReading,
+            DetailsAction::OpenSynchronization,
+            DetailsAction::OpenDeviceDiagnostics,
+            DetailsAction::BackToReading,
+        ],
+        DetailsPage::Reading => &[
+            DetailsAction::Orientation,
+            DetailsAction::ShowStatusBar,
+            DetailsAction::FontDecrease,
+            DetailsAction::FontReset,
+            DetailsAction::FontIncrease,
+            DetailsAction::ReadingProgress,
+            DetailsAction::ReturnToEntryPoint,
+            DetailsAction::BackToReading,
+        ],
+        DetailsPage::Synchronization => &[DetailsAction::SyncNow, DetailsAction::BackToReading],
+        DetailsPage::DeviceDiagnostics => &[
+            DetailsAction::DebugMessages,
+            DetailsAction::DisplayTest,
+            DetailsAction::Reboot,
+            DetailsAction::PowerOff,
+            DetailsAction::BackToReading,
+        ],
+    };
+    actions.iter().copied().find(|action| {
+        let Some(region) = details_action_region_for_page(page, *action, width, height) else {
+            return false;
+        };
+        x as usize >= region.left as usize
+            && (x as usize) < region.right() as usize
+            && y as usize >= region.top as usize
+            && (y as usize) < region.bottom() as usize
+    })
 }
 
 /// Return the exact action rectangle used by both rendering and hit testing.
@@ -332,6 +540,7 @@ impl DetailsPreference {
 pub struct DetailsViewModel {
     pub title: String,
     pub rows: Vec<DetailsRow>,
+    pub page: DetailsPage,
 }
 
 impl DetailsViewModel {
@@ -339,6 +548,15 @@ impl DetailsViewModel {
         Self {
             title: title.into(),
             rows,
+            page: DetailsPage::Legacy,
+        }
+    }
+
+    pub fn new_page(page: DetailsPage, title: impl Into<String>, rows: Vec<DetailsRow>) -> Self {
+        Self {
+            title: title.into(),
+            rows,
+            page,
         }
     }
 
@@ -362,7 +580,11 @@ impl DetailsViewModel {
                 }
             })
             .collect();
-        Self { title, rows }
+        Self {
+            title,
+            rows,
+            page: DetailsPage::Legacy,
+        }
     }
 
     pub fn to_lines(&self) -> Vec<String> {
@@ -1167,6 +1389,10 @@ fn draw_details_model(
     details: &DetailsViewModel,
     pressed_action: Option<DetailsAction>,
 ) {
+    if details.page != DetailsPage::Legacy {
+        draw_modern_details_model(canvas, details, pressed_action);
+        return;
+    }
     let line_step = details_line_step(canvas.width(), canvas.height());
     let action_header_top = if canvas.width() > canvas.height() {
         DETAILS_LANDSCAPE_ACTION_HEADER_TOP
@@ -1209,6 +1435,401 @@ fn draw_details_model(
         BLACK,
     );
     draw_details_actions(canvas, pressed_action);
+}
+
+fn draw_modern_details_model(
+    canvas: &mut DisplayCanvas<'_>,
+    details: &DetailsViewModel,
+    pressed_action: Option<DetailsAction>,
+) {
+    draw_text_font(
+        canvas,
+        24,
+        CONTENT_TOP,
+        &details.title,
+        &FONT_10X20,
+        Rgb565::BLACK,
+    );
+    match details.page {
+        DetailsPage::Menu => draw_settings_menu(canvas, pressed_action),
+        DetailsPage::Reading => draw_reading_settings(canvas, details, pressed_action),
+        DetailsPage::Synchronization => draw_sync_settings(canvas, details, pressed_action),
+        DetailsPage::DeviceDiagnostics => draw_device_settings(canvas, details, pressed_action),
+        DetailsPage::Legacy => unreachable!(),
+    }
+}
+
+fn draw_settings_menu(canvas: &mut DisplayCanvas<'_>, pressed_action: Option<DetailsAction>) {
+    draw_text(canvas, 24, 106, "Choose a section");
+    for (action, hint) in [
+        (
+            DetailsAction::OpenReading,
+            "Orientation, status bar, font, progress",
+        ),
+        (
+            DetailsAction::OpenSynchronization,
+            "Sync now and latest status",
+        ),
+        (
+            DetailsAction::OpenDeviceDiagnostics,
+            "Diagnostics and device maintenance",
+        ),
+    ] {
+        let Some(region) = details_action_region_for_page(
+            DetailsPage::Menu,
+            action,
+            canvas.width(),
+            canvas.height(),
+        ) else {
+            continue;
+        };
+        draw_modern_button(
+            canvas,
+            region,
+            action.label(),
+            hint,
+            pressed_action == Some(action),
+        );
+    }
+    let Some(region) = details_action_region_for_page(
+        DetailsPage::Menu,
+        DetailsAction::BackToReading,
+        canvas.width(),
+        canvas.height(),
+    ) else {
+        return;
+    };
+    draw_modern_button(
+        canvas,
+        region,
+        DetailsAction::BackToReading.label(),
+        "Return to the current passage",
+        pressed_action == Some(DetailsAction::BackToReading),
+    );
+}
+
+fn draw_reading_settings(
+    canvas: &mut DisplayCanvas<'_>,
+    details: &DetailsViewModel,
+    pressed_action: Option<DetailsAction>,
+) {
+    draw_text(canvas, 24, 106, "Everyday reading preferences");
+    let orientation = row_choice(details, "Orientation").unwrap_or("Portrait");
+    let status_bar = row_toggle(details, "Show status bar").unwrap_or(true);
+    let progress = row_toggle(details, "Reading progress").unwrap_or(true);
+    let font_size = row_choice(details, "Font size").unwrap_or("100%");
+    draw_modern_choice(
+        canvas,
+        DetailsPage::Reading,
+        DetailsAction::Orientation,
+        "Orientation",
+        orientation,
+        pressed_action,
+    );
+    draw_modern_toggle(
+        canvas,
+        DetailsPage::Reading,
+        DetailsAction::ShowStatusBar,
+        "Show status bar",
+        status_bar,
+        pressed_action,
+    );
+    let Some(font_region) = details_action_region_for_page(
+        DetailsPage::Reading,
+        DetailsAction::FontReset,
+        canvas.width(),
+        canvas.height(),
+    ) else {
+        return;
+    };
+    draw_text(canvas, 24, font_region.top as usize - 22, "Font size");
+    draw_text_right(canvas, font_region.top as usize - 22, font_size);
+    for (action, label) in [
+        (DetailsAction::FontDecrease, "A-"),
+        (DetailsAction::FontReset, "Reset"),
+        (DetailsAction::FontIncrease, "A+"),
+    ] {
+        let region = modern_font_region(action, canvas.width(), canvas.height());
+        draw_modern_button(canvas, region, label, "", pressed_action == Some(action));
+    }
+    draw_modern_toggle(
+        canvas,
+        DetailsPage::Reading,
+        DetailsAction::ReadingProgress,
+        "Reading progress",
+        progress,
+        pressed_action,
+    );
+    draw_modern_page_action(
+        canvas,
+        DetailsPage::Reading,
+        DetailsAction::ReturnToEntryPoint,
+        pressed_action,
+    );
+    draw_modern_page_action(
+        canvas,
+        DetailsPage::Reading,
+        DetailsAction::BackToReading,
+        pressed_action,
+    );
+}
+
+fn draw_sync_settings(
+    canvas: &mut DisplayCanvas<'_>,
+    details: &DetailsViewModel,
+    pressed_action: Option<DetailsAction>,
+) {
+    draw_text(canvas, 24, 106, "Synchronization status");
+    let status = row_value(details, "Status").unwrap_or("Idle");
+    let failure = row_value(details, "Failure").unwrap_or("None");
+    draw_text(
+        canvas,
+        24,
+        DETAILS_SYNC_STATUS_TOP,
+        &format!("Status: {status}"),
+    );
+    draw_text(
+        canvas,
+        24,
+        DETAILS_SYNC_STATUS_TOP + 24,
+        &format!("Failure: {failure}"),
+    );
+    draw_modern_page_action(
+        canvas,
+        DetailsPage::Synchronization,
+        DetailsAction::SyncNow,
+        pressed_action,
+    );
+    draw_modern_page_action(
+        canvas,
+        DetailsPage::Synchronization,
+        DetailsAction::BackToReading,
+        pressed_action,
+    );
+}
+
+fn draw_device_settings(
+    canvas: &mut DisplayCanvas<'_>,
+    details: &DetailsViewModel,
+    pressed_action: Option<DetailsAction>,
+) {
+    draw_text(canvas, 24, 106, "Device maintenance and diagnostics");
+    let debug = row_toggle(details, "Debug messages").unwrap_or(false);
+    draw_modern_toggle(
+        canvas,
+        DetailsPage::DeviceDiagnostics,
+        DetailsAction::DebugMessages,
+        "Debug messages",
+        debug,
+        pressed_action,
+    );
+    for action in [
+        DetailsAction::DisplayTest,
+        DetailsAction::Reboot,
+        DetailsAction::PowerOff,
+    ] {
+        draw_modern_page_action(
+            canvas,
+            DetailsPage::DeviceDiagnostics,
+            action,
+            pressed_action,
+        );
+    }
+    draw_modern_page_action(
+        canvas,
+        DetailsPage::DeviceDiagnostics,
+        DetailsAction::BackToReading,
+        pressed_action,
+    );
+}
+
+fn row_toggle<'a>(details: &'a DetailsViewModel, label: &str) -> Option<bool> {
+    details.rows.iter().find_map(|row| match row {
+        DetailsRow::Toggle {
+            label: row_label,
+            enabled,
+        } if row_label == label => Some(*enabled),
+        _ => None,
+    })
+}
+
+fn row_choice<'a>(details: &'a DetailsViewModel, label: &str) -> Option<&'a str> {
+    details.rows.iter().find_map(|row| match row {
+        DetailsRow::Choice {
+            label: row_label,
+            value,
+        } if row_label == label => Some(value.as_str()),
+        _ => None,
+    })
+}
+
+fn row_value<'a>(details: &'a DetailsViewModel, label: &str) -> Option<&'a str> {
+    details.rows.iter().find_map(|row| match row {
+        DetailsRow::Value(value) => value.strip_prefix(label).map(str::trim),
+        _ => None,
+    })
+}
+
+fn modern_font_region(action: DetailsAction, width: usize, height: usize) -> DisplayRegion {
+    details_action_region_for_page(DetailsPage::Reading, action, width, height)
+        .expect("font controls have a region")
+}
+
+fn draw_modern_choice(
+    canvas: &mut DisplayCanvas<'_>,
+    page: DetailsPage,
+    action: DetailsAction,
+    label: &str,
+    value: &str,
+    pressed_action: Option<DetailsAction>,
+) {
+    let Some(region) =
+        details_action_region_for_page(page, action, canvas.width(), canvas.height())
+    else {
+        return;
+    };
+    draw_text(canvas, 24, region.top as usize + 14, label);
+    draw_value_box(canvas, region, value, pressed_action == Some(action));
+}
+
+fn draw_modern_toggle(
+    canvas: &mut DisplayCanvas<'_>,
+    page: DetailsPage,
+    action: DetailsAction,
+    label: &str,
+    enabled: bool,
+    pressed_action: Option<DetailsAction>,
+) {
+    let Some(region) =
+        details_action_region_for_page(page, action, canvas.width(), canvas.height())
+    else {
+        return;
+    };
+    draw_text(canvas, 24, region.top as usize + 14, label);
+    draw_value_box(
+        canvas,
+        region,
+        if enabled { "ON" } else { "OFF" },
+        pressed_action == Some(action),
+    );
+}
+
+fn draw_modern_page_action(
+    canvas: &mut DisplayCanvas<'_>,
+    page: DetailsPage,
+    action: DetailsAction,
+    pressed_action: Option<DetailsAction>,
+) {
+    let Some(region) =
+        details_action_region_for_page(page, action, canvas.width(), canvas.height())
+    else {
+        return;
+    };
+    draw_modern_button(
+        canvas,
+        region,
+        action.label(),
+        "",
+        pressed_action == Some(action),
+    );
+}
+
+fn draw_modern_button(
+    canvas: &mut DisplayCanvas<'_>,
+    region: DisplayRegion,
+    label: &str,
+    hint: &str,
+    pressed: bool,
+) {
+    let left = region.left as usize;
+    let top = region.top as usize;
+    let width = region.width as usize;
+    let height = region.height as usize;
+    if width == 0 || height == 0 {
+        return;
+    }
+    if pressed {
+        canvas.fill_rect(left, top, width, height, BLACK);
+    } else {
+        canvas.stroke_rect(left, top, width, height, BLACK);
+    }
+    draw_text_centered_in_rect(
+        canvas,
+        left,
+        top,
+        width,
+        if hint.is_empty() {
+            height
+        } else {
+            height / 2 + 2
+        },
+        label,
+        if pressed {
+            Rgb565::WHITE
+        } else {
+            Rgb565::BLACK
+        },
+    );
+    if !hint.is_empty() {
+        draw_text_centered_in_rect(
+            canvas,
+            left,
+            top + height / 2,
+            width,
+            height / 2,
+            hint,
+            if pressed {
+                Rgb565::WHITE
+            } else {
+                Rgb565::BLACK
+            },
+        );
+    }
+}
+
+fn draw_value_box(
+    canvas: &mut DisplayCanvas<'_>,
+    region: DisplayRegion,
+    value: &str,
+    pressed: bool,
+) {
+    let left = region.left as usize;
+    let top = region.top as usize;
+    let width = (region.width as usize / 3).max(64);
+    let height = region.height as usize;
+    let box_left = canvas.width().saturating_sub(width + 24);
+    if pressed {
+        canvas.fill_rect(box_left, top, width, height, BLACK);
+    } else {
+        canvas.stroke_rect(box_left, top, width, height, BLACK);
+    }
+    draw_text_centered_in_rect(
+        canvas,
+        box_left,
+        top,
+        width,
+        height,
+        value,
+        if pressed {
+            Rgb565::WHITE
+        } else {
+            Rgb565::BLACK
+        },
+    );
+    let _ = left;
+}
+
+fn draw_text_right(canvas: &mut DisplayCanvas<'_>, y: usize, text: &str) {
+    let style = MonoTextStyle::new(&FONT_8X13, Rgb565::BLACK);
+    let measured = Text::with_baseline(text, Point::zero(), style, Baseline::Top);
+    let width = measured.bounding_box().size.width as usize;
+    measured
+        .translate(Point::new(
+            canvas.width().saturating_sub(24 + width) as i32,
+            y as i32,
+        ))
+        .draw(canvas)
+        .expect("RGB565 framebuffer drawing is infallible");
 }
 
 /// Render a logical screen into the format expected by the EPDC standby
@@ -1565,13 +2186,14 @@ impl DrawTarget for DisplayCanvas<'_> {
 #[cfg(test)]
 mod tests {
     use super::{
-        details_action_at, details_action_region, details_toggle_at, details_toggle_region,
-        gray565, render_authorization_qr, render_details_settings_host,
-        render_details_settings_host_at, render_details_settings_host_pressed, render_display_test,
-        render_status_bar_host, rgb565_to_png, standby_screen, DetailsAction, DetailsRow,
-        DetailsToggle, DetailsViewModel, StatusBarViewModel, UiViewModel, BLACK,
-        DETAILS_ACTION_HEADER_TOP, DETAILS_ACTION_HEIGHT, DETAILS_ACTION_TOP, DETAILS_LINE_STEP,
-        SCREEN_HEIGHT, SCREEN_WIDTH, WHITE,
+        details_action_at, details_action_at_for_page, details_action_region,
+        details_action_region_for_page, details_toggle_at, details_toggle_region, gray565,
+        render_authorization_qr, render_details_settings_host, render_details_settings_host_at,
+        render_details_settings_host_pressed, render_display_test, render_status_bar_host,
+        rgb565_to_png, standby_screen, DetailsAction, DetailsPage, DetailsRow, DetailsToggle,
+        DetailsViewModel, StatusBarViewModel, UiViewModel, BLACK, DETAILS_ACTION_HEADER_TOP,
+        DETAILS_ACTION_HEIGHT, DETAILS_ACTION_TOP, DETAILS_LINE_STEP, SCREEN_HEIGHT, SCREEN_WIDTH,
+        WHITE,
     };
     use std::env;
     use std::fs;
@@ -1634,6 +2256,57 @@ mod tests {
             status_bar,
             DetailsViewModel::new("Details / Settings", rows),
         )
+    }
+
+    fn modern_screenshot_view(page: DetailsPage) -> UiViewModel {
+        let status_bar = StatusBarViewModel {
+            battery: "87%".into(),
+            wifi: "UP".into(),
+            usb: "ON".into(),
+            adb: "ON".into(),
+            mode: "".into(),
+            clock: "12:34".into(),
+        };
+        let (title, rows) = match page {
+            DetailsPage::Menu => ("Settings", Vec::new()),
+            DetailsPage::Reading => (
+                "Reading",
+                vec![
+                    DetailsRow::Choice {
+                        label: "Orientation".into(),
+                        value: "Portrait".into(),
+                    },
+                    DetailsRow::Toggle {
+                        label: "Show status bar".into(),
+                        enabled: true,
+                    },
+                    DetailsRow::Choice {
+                        label: "Font size".into(),
+                        value: "100%".into(),
+                    },
+                    DetailsRow::Toggle {
+                        label: "Reading progress".into(),
+                        enabled: true,
+                    },
+                ],
+            ),
+            DetailsPage::Synchronization => (
+                "Synchronization",
+                vec![
+                    DetailsRow::Value("Status Idle".into()),
+                    DetailsRow::Value("Failure None".into()),
+                ],
+            ),
+            DetailsPage::DeviceDiagnostics => (
+                "Device & diagnostics",
+                vec![DetailsRow::Toggle {
+                    label: "Debug messages".into(),
+                    enabled: false,
+                }],
+            ),
+            DetailsPage::Legacy => panic!("modern test view cannot use the legacy page"),
+        };
+        UiViewModel::new(status_bar, DetailsViewModel::new_page(page, title, rows))
     }
 
     fn assert_png_golden(name: &str, actual: &[u8]) {
@@ -1938,6 +2611,148 @@ mod tests {
             differences.len(),
             &differences[..differences.len().min(12)]
         );
+    }
+
+    #[test]
+    fn modern_settings_controls_fit_and_hit_test_in_both_orientations() {
+        let pages = [
+            (
+                DetailsPage::Menu,
+                [
+                    DetailsAction::OpenReading,
+                    DetailsAction::OpenSynchronization,
+                    DetailsAction::OpenDeviceDiagnostics,
+                    DetailsAction::BackToReading,
+                ]
+                .as_slice(),
+            ),
+            (
+                DetailsPage::Reading,
+                [
+                    DetailsAction::Orientation,
+                    DetailsAction::ShowStatusBar,
+                    DetailsAction::FontDecrease,
+                    DetailsAction::FontReset,
+                    DetailsAction::FontIncrease,
+                    DetailsAction::ReadingProgress,
+                    DetailsAction::ReturnToEntryPoint,
+                    DetailsAction::BackToReading,
+                ]
+                .as_slice(),
+            ),
+            (
+                DetailsPage::Synchronization,
+                [DetailsAction::SyncNow, DetailsAction::BackToReading].as_slice(),
+            ),
+            (
+                DetailsPage::DeviceDiagnostics,
+                [
+                    DetailsAction::DebugMessages,
+                    DetailsAction::DisplayTest,
+                    DetailsAction::Reboot,
+                    DetailsAction::PowerOff,
+                    DetailsAction::BackToReading,
+                ]
+                .as_slice(),
+            ),
+        ];
+        for (page, controls) in pages {
+            for (width, height) in [(SCREEN_WIDTH, SCREEN_HEIGHT), (800, 600)] {
+                let regions = controls
+                    .iter()
+                    .map(|action| {
+                        details_action_region_for_page(page, *action, width, height)
+                            .expect("modern control has a region")
+                    })
+                    .collect::<Vec<_>>();
+                for (action, region) in controls.iter().zip(&regions) {
+                    assert!(region.right() <= width as u32);
+                    assert!(region.bottom() <= height as u32);
+                    assert_eq!(
+                        details_action_at_for_page(
+                            page,
+                            region.left as i32 + 1,
+                            region.top as i32 + 1,
+                            width,
+                            height,
+                        ),
+                        Some(*action)
+                    );
+                }
+                for left in &regions {
+                    for right in &regions {
+                        if left.left == right.left && left.top == right.top {
+                            continue;
+                        }
+                        let overlaps = left.left < right.right()
+                            && right.left < left.right()
+                            && left.top < right.bottom()
+                            && right.top < left.bottom();
+                        assert!(!overlaps);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn modern_settings_pages_match_portrait_and_landscape_goldens() {
+        for (page, name) in [
+            (DetailsPage::Menu, "settings-menu"),
+            (DetailsPage::Reading, "settings-reading"),
+            (DetailsPage::Synchronization, "settings-synchronization"),
+            (DetailsPage::DeviceDiagnostics, "settings-device"),
+        ] {
+            let view = modern_screenshot_view(page);
+            let portrait = render_details_settings_host(&view);
+            let portrait_png = rgb565_to_png(&portrait, SCREEN_WIDTH, SCREEN_HEIGHT)
+                .expect("encode modern portrait PNG");
+            assert_png_golden(name, &portrait_png);
+
+            let landscape = render_details_settings_host_at(&view, 800, 600);
+            let landscape_png =
+                rgb565_to_png(&landscape, 800, 600).expect("encode modern landscape PNG");
+            assert_png_golden(&format!("{name}-landscape"), &landscape_png);
+        }
+    }
+
+    #[test]
+    fn modern_settings_pressed_controls_have_visible_feedback() {
+        let reading = modern_screenshot_view(DetailsPage::Reading);
+        let normal = render_details_settings_host(&reading);
+        let pressed = render_details_settings_host_pressed(&reading, DetailsAction::FontIncrease);
+        assert_ne!(normal, pressed);
+        assert_eq!(
+            pixel(
+                &pressed,
+                SCREEN_WIDTH,
+                30,
+                super::DETAILS_READING_FONT_TOP + 10
+            ),
+            WHITE
+        );
+        let font_region = details_action_region_for_page(
+            DetailsPage::Reading,
+            DetailsAction::FontIncrease,
+            SCREEN_WIDTH,
+            SCREEN_HEIGHT,
+        )
+        .expect("font increase region");
+        assert_eq!(
+            pixel(
+                &pressed,
+                SCREEN_WIDTH,
+                font_region.left as usize + 2,
+                font_region.top as usize + 2,
+            ),
+            BLACK
+        );
+
+        let device = modern_screenshot_view(DetailsPage::DeviceDiagnostics);
+        let pressed = render_details_settings_host_pressed(&device, DetailsAction::DisplayTest);
+        let png = rgb565_to_png(&pressed, SCREEN_WIDTH, SCREEN_HEIGHT)
+            .expect("encode pressed device PNG");
+        assert_png_golden("settings-device-pressed", &png);
     }
 
     #[test]
