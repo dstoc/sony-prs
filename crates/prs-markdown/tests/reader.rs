@@ -6,8 +6,7 @@ use prs_markdown::{
     BrowserResourceProvider, ContentAnchor, DocumentId, DocumentLocation,
     FileSystemResourceProvider, NavigationTarget, Reader, ReaderLayout, ReaderLimits, ReaderStyle,
     ReadingProgress, Viewport, DEFAULT_FONT_SCALE_PERCENT, MAX_FONT_SCALE_PERCENT,
-    MIN_FONT_SCALE_PERCENT,
-    T1_LANDSCAPE_VIEWPORT, T1_VIEWPORT,
+    MIN_FONT_SCALE_PERCENT, T1_LANDSCAPE_VIEWPORT, T1_VIEWPORT,
 };
 use std::collections::HashMap;
 use std::fs;

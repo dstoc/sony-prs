@@ -38,8 +38,7 @@ pub use geometry::{
     clamp_font_scale_percent, intersection, translate, ProgressLineArea, ReaderLayout,
     ReadingProgress, Rect, Viewport, DEFAULT_FONT_SCALE_PERCENT, FONT_SCALE_STEP_PERCENT,
     MAX_FONT_SCALE_PERCENT, MIN_FONT_SCALE_PERCENT, T1_LANDSCAPE_VIEWPORT, T1_VIEWPORT,
-    TASK_CHECKBOX_GAP,
-    TASK_CHECKBOX_SIZE,
+    TASK_CHECKBOX_GAP, TASK_CHECKBOX_SIZE,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use harness::{render_page, HostImage, HostReader};
