@@ -65,20 +65,30 @@ pub const DETAILS_MENU_BACK_TOP: usize = 500;
 pub const DETAILS_MENU_ACTION_HEIGHT: usize = 48;
 pub const DETAILS_READING_ORIENTATION_TOP: usize = 132;
 pub const DETAILS_READING_STATUS_TOP: usize = 194;
-pub const DETAILS_READING_FONT_TOP: usize = 264;
-pub const DETAILS_READING_PROGRESS_TOP: usize = 336;
-pub const DETAILS_READING_ENTRY_TOP: usize = 430;
-pub const DETAILS_READING_BACK_TOP: usize = 492;
+pub const DETAILS_READING_FONT_TOP: usize = 274;
+pub const DETAILS_READING_PROGRESS_TOP: usize = 364;
+pub const DETAILS_READING_ENTRY_TOP: usize = 454;
+pub const DETAILS_READING_BACK_TOP: usize = 520;
 pub const DETAILS_SYNC_STATUS_TOP: usize = 132;
-pub const DETAILS_SYNC_NOW_TOP: usize = 226;
-pub const DETAILS_SYNC_BACK_TOP: usize = 492;
+pub const DETAILS_SYNC_NOW_TOP: usize = 250;
+pub const DETAILS_SYNC_BACK_TOP: usize = 500;
 pub const DETAILS_DEVICE_DEBUG_TOP: usize = 132;
 pub const DETAILS_DEVICE_DISPLAY_TOP: usize = 220;
-pub const DETAILS_DEVICE_REBOOT_TOP: usize = 292;
-pub const DETAILS_DEVICE_POWER_OFF_TOP: usize = 364;
-pub const DETAILS_DEVICE_BACK_TOP: usize = 492;
+pub const DETAILS_DEVICE_REBOOT_TOP: usize = 316;
+pub const DETAILS_DEVICE_POWER_OFF_TOP: usize = 388;
+pub const DETAILS_DEVICE_BACK_TOP: usize = 500;
 pub const DETAILS_MODERN_CONTROL_HEIGHT: usize = 44;
 pub const DETAILS_MODERN_CONTROL_GAP: usize = 8;
+pub const DETAILS_CONFIRM_CANCEL_TOP: usize = 300;
+pub const DETAILS_CONFIRM_CONFIRM_TOP: usize = 372;
+
+const DETAILS_LANDSCAPE_COLUMN_GAP: usize = 24;
+const DETAILS_LANDSCAPE_READING_FONT_TOP: usize = 160;
+const DETAILS_LANDSCAPE_READING_PROGRESS_TOP: usize = 232;
+const DETAILS_LANDSCAPE_DEVICE_REBOOT_TOP: usize = 132;
+const DETAILS_LANDSCAPE_DEVICE_POWER_OFF_TOP: usize = 204;
+const DETAILS_LANDSCAPE_DEVICE_DISPLAY_TOP: usize = 220;
+const DETAILS_LANDSCAPE_CONFIRM_TOP: usize = 300;
 pub const SCREEN_WIDTH: usize = 600;
 pub const SCREEN_HEIGHT: usize = 800;
 const LANDSCAPE_LINE_STEP: usize = 20;
@@ -146,6 +156,7 @@ pub enum DetailsPage {
     Reading,
     Synchronization,
     DeviceDiagnostics,
+    PowerConfirmation,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -226,6 +237,7 @@ pub enum DetailsAction {
     Reboot,
     PowerOff,
     BackToReading,
+    BackToSettings,
     Orientation,
     ShowStatusBar,
     FontDecrease,
@@ -233,6 +245,8 @@ pub enum DetailsAction {
     FontIncrease,
     ReadingProgress,
     DebugMessages,
+    ConfirmPower,
+    CancelPowerAction,
 }
 
 impl DetailsAction {
@@ -256,6 +270,7 @@ impl DetailsAction {
             Self::Reboot => "Reboot",
             Self::PowerOff => "Power off",
             Self::BackToReading => "Back to reading",
+            Self::BackToSettings => "Back to Settings",
             Self::Orientation => "Orientation",
             Self::ShowStatusBar => "Show status bar",
             Self::FontDecrease => "A-",
@@ -263,6 +278,8 @@ impl DetailsAction {
             Self::FontIncrease => "A+",
             Self::ReadingProgress => "Reading progress",
             Self::DebugMessages => "Debug messages",
+            Self::ConfirmPower => "Confirm",
+            Self::CancelPowerAction => "Cancel",
         }
     }
 
@@ -298,6 +315,62 @@ fn modern_button_region(
     )
 }
 
+fn modern_column_region(
+    column: usize,
+    top: usize,
+    width: usize,
+    height: usize,
+    button_height: usize,
+) -> DisplayRegion {
+    let margin = DETAILS_ACTION_MARGIN.min(width / 2);
+    let gap = DETAILS_LANDSCAPE_COLUMN_GAP.min(width);
+    let column_width = width.saturating_sub(margin.saturating_mul(2).saturating_add(gap)) / 2;
+    DisplayRegion::new(
+        margin.saturating_add(
+            column
+                .min(1)
+                .saturating_mul(column_width.saturating_add(gap)),
+        ) as u32,
+        top.min(height) as u32,
+        column_width as u32,
+        button_height.min(height.saturating_sub(top)) as u32,
+    )
+}
+
+fn modern_region(
+    top: usize,
+    width: usize,
+    height: usize,
+    button_height: usize,
+    landscape_column: Option<usize>,
+) -> DisplayRegion {
+    if width > height {
+        if let Some(column) = landscape_column {
+            return modern_column_region(column, top, width, height, button_height);
+        }
+    }
+    modern_button_region(top, width, height, button_height)
+}
+
+fn modern_font_group_region(width: usize, height: usize) -> DisplayRegion {
+    if width > height {
+        modern_column_region(
+            1,
+            DETAILS_LANDSCAPE_READING_FONT_TOP,
+            width,
+            height,
+            DETAILS_MODERN_CONTROL_HEIGHT,
+        )
+    } else {
+        modern_button_region(
+            DETAILS_READING_FONT_TOP,
+            width,
+            height,
+            DETAILS_MODERN_CONTROL_HEIGHT,
+        )
+    }
+}
+
 /// Return the rectangle for a control on one of the modern Settings pages.
 pub fn details_action_region_for_page(
     page: DetailsPage,
@@ -323,22 +396,28 @@ pub fn details_action_region_for_page(
         (DetailsPage::Menu, DetailsAction::BackToReading) => {
             (DETAILS_MENU_BACK_TOP, DETAILS_MENU_ACTION_HEIGHT)
         }
-        (DetailsPage::Reading, DetailsAction::Orientation) => (
-            DETAILS_READING_ORIENTATION_TOP,
-            DETAILS_MODERN_CONTROL_HEIGHT,
-        ),
+        (DetailsPage::Reading, DetailsAction::Orientation) => {
+            return Some(modern_region(
+                DETAILS_READING_ORIENTATION_TOP,
+                width,
+                height,
+                DETAILS_MODERN_CONTROL_HEIGHT,
+                Some(0),
+            ));
+        }
         (DetailsPage::Reading, DetailsAction::ShowStatusBar) => {
-            (DETAILS_READING_STATUS_TOP, DETAILS_MODERN_CONTROL_HEIGHT)
+            return Some(modern_region(
+                DETAILS_READING_STATUS_TOP,
+                width,
+                height,
+                DETAILS_MODERN_CONTROL_HEIGHT,
+                Some(0),
+            ));
         }
         (DetailsPage::Reading, DetailsAction::FontDecrease)
         | (DetailsPage::Reading, DetailsAction::FontReset)
         | (DetailsPage::Reading, DetailsAction::FontIncrease) => {
-            let base = modern_button_region(
-                DETAILS_READING_FONT_TOP,
-                width,
-                height,
-                DETAILS_MODERN_CONTROL_HEIGHT,
-            );
+            let base = modern_font_group_region(width, height);
             let gap = DETAILS_MODERN_CONTROL_GAP.min(width);
             let button_width = base.width.saturating_sub((gap.saturating_mul(2)) as u32) / 3;
             let index = match action {
@@ -355,34 +434,116 @@ pub fn details_action_region_for_page(
             ));
         }
         (DetailsPage::Reading, DetailsAction::ReadingProgress) => {
-            (DETAILS_READING_PROGRESS_TOP, DETAILS_MODERN_CONTROL_HEIGHT)
+            return Some(modern_region(
+                if width > height {
+                    DETAILS_LANDSCAPE_READING_PROGRESS_TOP
+                } else {
+                    DETAILS_READING_PROGRESS_TOP
+                },
+                width,
+                height,
+                DETAILS_MODERN_CONTROL_HEIGHT,
+                Some(1),
+            ));
         }
         (DetailsPage::Reading, DetailsAction::ReturnToEntryPoint) => {
             (DETAILS_READING_ENTRY_TOP, DETAILS_MODERN_CONTROL_HEIGHT)
         }
-        (DetailsPage::Reading, DetailsAction::BackToReading) => {
-            (DETAILS_READING_BACK_TOP, DETAILS_MODERN_CONTROL_HEIGHT)
+        (DetailsPage::Reading, DetailsAction::BackToSettings) => {
+            (DETAILS_READING_BACK_TOP, DETAILS_MENU_ACTION_HEIGHT)
         }
         (DetailsPage::Synchronization, DetailsAction::SyncNow) => {
             (DETAILS_SYNC_NOW_TOP, DETAILS_MENU_ACTION_HEIGHT)
         }
-        (DetailsPage::Synchronization, DetailsAction::BackToReading) => {
+        (DetailsPage::Synchronization, DetailsAction::BackToSettings) => {
             (DETAILS_SYNC_BACK_TOP, DETAILS_MENU_ACTION_HEIGHT)
         }
         (DetailsPage::DeviceDiagnostics, DetailsAction::DebugMessages) => {
-            (DETAILS_DEVICE_DEBUG_TOP, DETAILS_MODERN_CONTROL_HEIGHT)
+            return Some(modern_region(
+                DETAILS_DEVICE_DEBUG_TOP,
+                width,
+                height,
+                DETAILS_MODERN_CONTROL_HEIGHT,
+                Some(0),
+            ));
         }
         (DetailsPage::DeviceDiagnostics, DetailsAction::DisplayTest) => {
-            (DETAILS_DEVICE_DISPLAY_TOP, DETAILS_MENU_ACTION_HEIGHT)
+            return Some(modern_region(
+                if width > height {
+                    DETAILS_LANDSCAPE_DEVICE_DISPLAY_TOP
+                } else {
+                    DETAILS_DEVICE_DISPLAY_TOP
+                },
+                width,
+                height,
+                DETAILS_MENU_ACTION_HEIGHT,
+                Some(0),
+            ));
         }
         (DetailsPage::DeviceDiagnostics, DetailsAction::Reboot) => {
-            (DETAILS_DEVICE_REBOOT_TOP, DETAILS_MENU_ACTION_HEIGHT)
+            return Some(modern_region(
+                if width > height {
+                    DETAILS_LANDSCAPE_DEVICE_REBOOT_TOP
+                } else {
+                    DETAILS_DEVICE_REBOOT_TOP
+                },
+                width,
+                height,
+                DETAILS_MENU_ACTION_HEIGHT,
+                Some(1),
+            ));
         }
         (DetailsPage::DeviceDiagnostics, DetailsAction::PowerOff) => {
-            (DETAILS_DEVICE_POWER_OFF_TOP, DETAILS_MENU_ACTION_HEIGHT)
+            return Some(modern_region(
+                if width > height {
+                    DETAILS_LANDSCAPE_DEVICE_POWER_OFF_TOP
+                } else {
+                    DETAILS_DEVICE_POWER_OFF_TOP
+                },
+                width,
+                height,
+                DETAILS_MENU_ACTION_HEIGHT,
+                Some(1),
+            ));
         }
-        (DetailsPage::DeviceDiagnostics, DetailsAction::BackToReading) => {
+        (DetailsPage::DeviceDiagnostics, DetailsAction::BackToSettings) => {
             (DETAILS_DEVICE_BACK_TOP, DETAILS_MENU_ACTION_HEIGHT)
+        }
+        (DetailsPage::PowerConfirmation, DetailsAction::CancelPowerAction) => {
+            return Some(if width > height {
+                modern_column_region(
+                    0,
+                    DETAILS_LANDSCAPE_CONFIRM_TOP,
+                    width,
+                    height,
+                    DETAILS_MENU_ACTION_HEIGHT,
+                )
+            } else {
+                modern_button_region(
+                    DETAILS_CONFIRM_CANCEL_TOP,
+                    width,
+                    height,
+                    DETAILS_MENU_ACTION_HEIGHT,
+                )
+            });
+        }
+        (DetailsPage::PowerConfirmation, DetailsAction::ConfirmPower) => {
+            return Some(if width > height {
+                modern_column_region(
+                    1,
+                    DETAILS_LANDSCAPE_CONFIRM_TOP,
+                    width,
+                    height,
+                    DETAILS_MENU_ACTION_HEIGHT,
+                )
+            } else {
+                modern_button_region(
+                    DETAILS_CONFIRM_CONFIRM_TOP,
+                    width,
+                    height,
+                    DETAILS_MENU_ACTION_HEIGHT,
+                )
+            });
         }
         _ => return None,
     };
@@ -416,15 +577,19 @@ pub fn details_action_at_for_page(
             DetailsAction::FontIncrease,
             DetailsAction::ReadingProgress,
             DetailsAction::ReturnToEntryPoint,
-            DetailsAction::BackToReading,
+            DetailsAction::BackToSettings,
         ],
-        DetailsPage::Synchronization => &[DetailsAction::SyncNow, DetailsAction::BackToReading],
+        DetailsPage::Synchronization => &[DetailsAction::SyncNow, DetailsAction::BackToSettings],
         DetailsPage::DeviceDiagnostics => &[
             DetailsAction::DebugMessages,
             DetailsAction::DisplayTest,
             DetailsAction::Reboot,
             DetailsAction::PowerOff,
-            DetailsAction::BackToReading,
+            DetailsAction::BackToSettings,
+        ],
+        DetailsPage::PowerConfirmation => &[
+            DetailsAction::CancelPowerAction,
+            DetailsAction::ConfirmPower,
         ],
     };
     actions.iter().copied().find(|action| {
@@ -1455,6 +1620,7 @@ fn draw_modern_details_model(
         DetailsPage::Reading => draw_reading_settings(canvas, details, pressed_action),
         DetailsPage::Synchronization => draw_sync_settings(canvas, details, pressed_action),
         DetailsPage::DeviceDiagnostics => draw_device_settings(canvas, details, pressed_action),
+        DetailsPage::PowerConfirmation => draw_power_confirmation(canvas, details, pressed_action),
         DetailsPage::Legacy => unreachable!(),
     }
 }
@@ -1534,16 +1700,14 @@ fn draw_reading_settings(
         status_bar,
         pressed_action,
     );
-    let Some(font_region) = details_action_region_for_page(
-        DetailsPage::Reading,
-        DetailsAction::FontReset,
-        canvas.width(),
-        canvas.height(),
-    ) else {
-        return;
-    };
-    draw_text(canvas, 24, font_region.top as usize - 22, "Font size");
-    draw_text_right(canvas, font_region.top as usize - 22, font_size);
+    let font_group = modern_font_group_region(canvas.width(), canvas.height());
+    draw_text(
+        canvas,
+        font_group.left as usize,
+        font_group.top as usize - 22,
+        "Font size",
+    );
+    draw_text_right_in_rect(canvas, font_group, font_group.top as usize - 22, font_size);
     for (action, label) in [
         (DetailsAction::FontDecrease, "A-"),
         (DetailsAction::FontReset, "Reset"),
@@ -1569,7 +1733,7 @@ fn draw_reading_settings(
     draw_modern_page_action(
         canvas,
         DetailsPage::Reading,
-        DetailsAction::BackToReading,
+        DetailsAction::BackToSettings,
         pressed_action,
     );
 }
@@ -1603,7 +1767,7 @@ fn draw_sync_settings(
     draw_modern_page_action(
         canvas,
         DetailsPage::Synchronization,
-        DetailsAction::BackToReading,
+        DetailsAction::BackToSettings,
         pressed_action,
     );
 }
@@ -1614,6 +1778,11 @@ fn draw_device_settings(
     pressed_action: Option<DetailsAction>,
 ) {
     draw_text(canvas, 24, 106, "Device maintenance and diagnostics");
+    if canvas.width() <= canvas.height() {
+        draw_text(canvas, 24, 286, "Maintenance");
+    } else {
+        draw_text(canvas, 412, 106, "Maintenance");
+    }
     let debug = row_toggle(details, "Debug messages").unwrap_or(false);
     draw_modern_toggle(
         canvas,
@@ -1638,9 +1807,38 @@ fn draw_device_settings(
     draw_modern_page_action(
         canvas,
         DetailsPage::DeviceDiagnostics,
-        DetailsAction::BackToReading,
+        DetailsAction::BackToSettings,
         pressed_action,
     );
+}
+
+fn draw_power_confirmation(
+    canvas: &mut DisplayCanvas<'_>,
+    details: &DetailsViewModel,
+    pressed_action: Option<DetailsAction>,
+) {
+    let power_label = if details.title.contains("Power off") {
+        "Power off"
+    } else {
+        "Reboot"
+    };
+    draw_text(canvas, 24, 132, "This action cannot be undone.");
+    draw_text(canvas, 24, 164, &format!("Confirm {power_label}?"));
+    let confirm_label = format!("{power_label} now");
+    for (action, label) in [
+        (DetailsAction::CancelPowerAction, "Cancel"),
+        (DetailsAction::ConfirmPower, confirm_label.as_str()),
+    ] {
+        let Some(region) = details_action_region_for_page(
+            DetailsPage::PowerConfirmation,
+            action,
+            canvas.width(),
+            canvas.height(),
+        ) else {
+            continue;
+        };
+        draw_modern_button(canvas, region, label, "", pressed_action == Some(action));
+    }
 }
 
 fn row_toggle<'a>(details: &'a DetailsViewModel, label: &str) -> Option<bool> {
@@ -1793,11 +1991,12 @@ fn draw_value_box(
     value: &str,
     pressed: bool,
 ) {
-    let left = region.left as usize;
     let top = region.top as usize;
-    let width = (region.width as usize / 3).max(64);
+    let width = (region.width as usize / 3)
+        .max(64)
+        .min(region.width as usize);
     let height = region.height as usize;
-    let box_left = canvas.width().saturating_sub(width + 24);
+    let box_left = (region.right() as usize).saturating_sub(width);
     if pressed {
         canvas.fill_rect(box_left, top, width, height, BLACK);
     } else {
@@ -1816,16 +2015,20 @@ fn draw_value_box(
             Rgb565::BLACK
         },
     );
-    let _ = left;
 }
 
-fn draw_text_right(canvas: &mut DisplayCanvas<'_>, y: usize, text: &str) {
+fn draw_text_right_in_rect(
+    canvas: &mut DisplayCanvas<'_>,
+    region: DisplayRegion,
+    y: usize,
+    text: &str,
+) {
     let style = MonoTextStyle::new(&FONT_8X13, Rgb565::BLACK);
     let measured = Text::with_baseline(text, Point::zero(), style, Baseline::Top);
     let width = measured.bounding_box().size.width as usize;
     measured
         .translate(Point::new(
-            canvas.width().saturating_sub(24 + width) as i32,
+            (region.right() as usize).saturating_sub(width) as i32,
             y as i32,
         ))
         .draw(canvas)
@@ -2259,6 +2462,13 @@ mod tests {
     }
 
     fn modern_screenshot_view(page: DetailsPage) -> UiViewModel {
+        modern_screenshot_view_with_orientation(page, "Portrait")
+    }
+
+    fn modern_screenshot_view_with_orientation(
+        page: DetailsPage,
+        orientation: &str,
+    ) -> UiViewModel {
         let status_bar = StatusBarViewModel {
             battery: "87%".into(),
             wifi: "UP".into(),
@@ -2274,7 +2484,7 @@ mod tests {
                 vec![
                     DetailsRow::Choice {
                         label: "Orientation".into(),
-                        value: "Portrait".into(),
+                        value: orientation.into(),
                     },
                     DetailsRow::Toggle {
                         label: "Show status bar".into(),
@@ -2304,9 +2514,17 @@ mod tests {
                     enabled: false,
                 }],
             ),
+            DetailsPage::PowerConfirmation => ("Confirm Reboot", Vec::new()),
             DetailsPage::Legacy => panic!("modern test view cannot use the legacy page"),
         };
         UiViewModel::new(status_bar, DetailsViewModel::new_page(page, title, rows))
+    }
+
+    fn confirmation_screenshot_view(power_label: &str, orientation: &str) -> UiViewModel {
+        let mut view =
+            modern_screenshot_view_with_orientation(DetailsPage::PowerConfirmation, orientation);
+        view.details.title = format!("Confirm {power_label}");
+        view
     }
 
     fn assert_png_golden(name: &str, actual: &[u8]) {
@@ -2636,13 +2854,13 @@ mod tests {
                     DetailsAction::FontIncrease,
                     DetailsAction::ReadingProgress,
                     DetailsAction::ReturnToEntryPoint,
-                    DetailsAction::BackToReading,
+                    DetailsAction::BackToSettings,
                 ]
                 .as_slice(),
             ),
             (
                 DetailsPage::Synchronization,
-                [DetailsAction::SyncNow, DetailsAction::BackToReading].as_slice(),
+                [DetailsAction::SyncNow, DetailsAction::BackToSettings].as_slice(),
             ),
             (
                 DetailsPage::DeviceDiagnostics,
@@ -2651,7 +2869,15 @@ mod tests {
                     DetailsAction::DisplayTest,
                     DetailsAction::Reboot,
                     DetailsAction::PowerOff,
-                    DetailsAction::BackToReading,
+                    DetailsAction::BackToSettings,
+                ]
+                .as_slice(),
+            ),
+            (
+                DetailsPage::PowerConfirmation,
+                [
+                    DetailsAction::CancelPowerAction,
+                    DetailsAction::ConfirmPower,
                 ]
                 .as_slice(),
             ),
@@ -2668,6 +2894,8 @@ mod tests {
                 for (action, region) in controls.iter().zip(&regions) {
                     assert!(region.right() <= width as u32);
                     assert!(region.bottom() <= height as u32);
+                    assert!(region.width >= 44, "{page:?} {action:?} is too narrow");
+                    assert!(region.height >= 44, "{page:?} {action:?} is too short");
                     assert_eq!(
                         details_action_at_for_page(
                             page,
@@ -2696,6 +2924,50 @@ mod tests {
     }
 
     #[test]
+    fn modern_settings_layout_has_explicit_dimensions_and_text_clearance() {
+        for (width, height) in [(SCREEN_WIDTH, SCREEN_HEIGHT), (800, 600)] {
+            let font_group = super::modern_font_group_region(width, height);
+            if width <= height {
+                assert!(font_group.top as usize >= super::DETAILS_READING_STATUS_TOP + 44);
+            } else {
+                let status = details_action_region_for_page(
+                    DetailsPage::Reading,
+                    DetailsAction::ShowStatusBar,
+                    width,
+                    height,
+                )
+                .expect("landscape status region");
+                assert!(font_group.left >= status.right());
+            }
+            assert!(font_group.right() <= width as u32);
+            assert!(font_group.bottom() <= height as u32);
+            for action in [
+                DetailsAction::FontDecrease,
+                DetailsAction::FontReset,
+                DetailsAction::FontIncrease,
+            ] {
+                let region =
+                    details_action_region_for_page(DetailsPage::Reading, action, width, height)
+                        .expect("font action region");
+                assert!(region.width >= 44);
+                assert_eq!(region.top, font_group.top);
+                assert!(region.right() <= font_group.right());
+            }
+            for page in [
+                DetailsPage::Menu,
+                DetailsPage::Reading,
+                DetailsPage::Synchronization,
+                DetailsPage::DeviceDiagnostics,
+                DetailsPage::PowerConfirmation,
+            ] {
+                let view = modern_screenshot_view(page);
+                let frame = render_details_settings_host_at(&view, width, height);
+                assert_eq!(frame.len(), width * height * 2);
+            }
+        }
+    }
+
+    #[test]
     fn modern_settings_pages_match_portrait_and_landscape_goldens() {
         for (page, name) in [
             (DetailsPage::Menu, "settings-menu"),
@@ -2709,9 +2981,30 @@ mod tests {
                 .expect("encode modern portrait PNG");
             assert_png_golden(name, &portrait_png);
 
-            let landscape = render_details_settings_host_at(&view, 800, 600);
+            let landscape_view = modern_screenshot_view_with_orientation(page, "Landscape");
+            if page == DetailsPage::Reading {
+                assert!(landscape_view.details.rows.iter().any(|row| {
+                    matches!(row, DetailsRow::Choice { label, value } if label == "Orientation" && value == "Landscape")
+                }));
+            }
+            let landscape = render_details_settings_host_at(&landscape_view, 800, 600);
             let landscape_png =
                 rgb565_to_png(&landscape, 800, 600).expect("encode modern landscape PNG");
+            assert_png_golden(&format!("{name}-landscape"), &landscape_png);
+        }
+        for (power_label, name) in [
+            ("Reboot", "settings-confirm-reboot"),
+            ("Power off", "settings-confirm-power-off"),
+        ] {
+            let confirmation = confirmation_screenshot_view(power_label, "Portrait");
+            let portrait = render_details_settings_host(&confirmation);
+            let portrait_png = rgb565_to_png(&portrait, SCREEN_WIDTH, SCREEN_HEIGHT)
+                .expect("encode confirmation portrait PNG");
+            assert_png_golden(name, &portrait_png);
+            let landscape_view = confirmation_screenshot_view(power_label, "Landscape");
+            let landscape = render_details_settings_host_at(&landscape_view, 800, 600);
+            let landscape_png =
+                rgb565_to_png(&landscape, 800, 600).expect("encode confirmation landscape PNG");
             assert_png_golden(&format!("{name}-landscape"), &landscape_png);
         }
     }

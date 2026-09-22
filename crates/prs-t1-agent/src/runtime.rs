@@ -874,6 +874,7 @@ impl DirtyArea {
                     UiPage::Reading => display::DetailsPage::Reading,
                     UiPage::Synchronization => display::DetailsPage::Synchronization,
                     UiPage::DeviceDiagnostics => display::DetailsPage::DeviceDiagnostics,
+                    UiPage::PowerConfirmation => display::DetailsPage::PowerConfirmation,
                     UiPage::Home | UiPage::DisplayTest => display::DetailsPage::Legacy,
                 };
                 display::details_action_region_for_page(
@@ -1086,6 +1087,15 @@ fn screen_view_model(state: &UiState, wake_lock_held: bool) -> display::UiViewMo
                 enabled: state.debug_messages,
             }],
         ),
+        UiPage::PowerConfirmation => (
+            display::DetailsPage::PowerConfirmation,
+            match state.pending_power_action {
+                Some(PowerAction::PowerOff) => "Confirm Power off",
+                Some(PowerAction::Reboot) => "Confirm Reboot",
+                Some(PowerAction::None | PowerAction::Sleep) | None => "Confirm action",
+            },
+            Vec::new(),
+        ),
         UiPage::Details => (
             display::DetailsPage::Legacy,
             "Details / Settings",
@@ -1242,13 +1252,15 @@ fn sleep_cycle(
             display.width() as usize,
             display.height() as usize,
         ),
-        UiPage::Details | UiPage::Reading | UiPage::Synchronization | UiPage::DeviceDiagnostics => {
-            display::render_details_settings_frame(
-                &view,
-                display.width() as usize,
-                display.height() as usize,
-            )
-        }
+        UiPage::Details
+        | UiPage::Reading
+        | UiPage::Synchronization
+        | UiPage::DeviceDiagnostics
+        | UiPage::PowerConfirmation => display::render_details_settings_frame(
+            &view,
+            display.width() as usize,
+            display.height() as usize,
+        ),
     };
     display
         .write_standby(&standby)
@@ -1808,6 +1820,7 @@ enum UiPage {
     Reading,
     Synchronization,
     DeviceDiagnostics,
+    PowerConfirmation,
     DisplayTest,
 }
 
@@ -1835,6 +1848,7 @@ struct UiState {
     debug_messages: bool,
     reading_progress: bool,
     fullscreen: bool,
+    pending_power_action: Option<PowerAction>,
     reader_tap: Option<Point>,
     reader_operation: Option<ReaderOperation>,
     touch_seen: bool,
@@ -1895,6 +1909,7 @@ impl UiState {
             debug_messages: false,
             reading_progress: true,
             fullscreen: false,
+            pending_power_action: None,
             reader_tap: None,
             reader_operation: None,
             touch_seen: false,
@@ -1967,7 +1982,11 @@ impl UiState {
     fn is_settings_page(&self) -> bool {
         matches!(
             self.page,
-            UiPage::Details | UiPage::Reading | UiPage::Synchronization | UiPage::DeviceDiagnostics
+            UiPage::Details
+                | UiPage::Reading
+                | UiPage::Synchronization
+                | UiPage::DeviceDiagnostics
+                | UiPage::PowerConfirmation
         )
     }
 
@@ -1978,6 +1997,7 @@ impl UiState {
             UiPage::Reading => display::DetailsPage::Reading,
             UiPage::Synchronization => display::DetailsPage::Synchronization,
             UiPage::DeviceDiagnostics => display::DetailsPage::DeviceDiagnostics,
+            UiPage::PowerConfirmation => display::DetailsPage::PowerConfirmation,
             UiPage::Home | UiPage::DisplayTest => display::DetailsPage::Legacy,
         }
     }
@@ -1999,6 +2019,7 @@ impl UiState {
         self.page = UiPage::Home;
         self.settings_menu = false;
         self.ui_history.clear();
+        self.pending_power_action = None;
         self.set_debug_feedback(message);
     }
 
@@ -2025,12 +2046,17 @@ impl UiState {
             | UiPage::Reading
             | UiPage::Synchronization
             | UiPage::DeviceDiagnostics
+            | UiPage::PowerConfirmation
             | UiPage::DisplayTest => {
+                if self.page == UiPage::PowerConfirmation {
+                    self.pending_power_action = None;
+                }
                 let previous = self.ui_history.pop().unwrap_or(match self.page {
                     UiPage::Details => UiPage::Home,
                     UiPage::Reading | UiPage::Synchronization | UiPage::DeviceDiagnostics => {
                         UiPage::Details
                     }
+                    UiPage::PowerConfirmation => UiPage::DeviceDiagnostics,
                     UiPage::DisplayTest => UiPage::Details,
                     UiPage::Home => unreachable!(),
                 });
@@ -2045,6 +2071,7 @@ impl UiState {
                     UiPage::Reading => "Returned to Reading",
                     UiPage::Synchronization => "Returned to Synchronization",
                     UiPage::DeviceDiagnostics => "Returned to Device & diagnostics",
+                    UiPage::PowerConfirmation => unreachable!(),
                     UiPage::DisplayTest => unreachable!(),
                 });
                 Some(DirtyArea::Full)
@@ -2503,6 +2530,23 @@ impl UiState {
         DirtyArea::Full
     }
 
+    fn open_power_confirmation(&mut self, action: PowerAction) -> (PowerAction, Option<DirtyArea>) {
+        self.pending_power_action = Some(action);
+        self.open_ui_page(
+            UiPage::PowerConfirmation,
+            match action {
+                PowerAction::Reboot => "Reboot confirmation open",
+                PowerAction::PowerOff => "Power off confirmation open",
+                PowerAction::None | PowerAction::Sleep => "Power confirmation open",
+            },
+        );
+        (PowerAction::None, Some(DirtyArea::Full))
+    }
+
+    fn return_to_settings(&mut self) -> (PowerAction, Option<DirtyArea>) {
+        (PowerAction::None, self.back_button())
+    }
+
     fn activate_tap(&mut self) -> (PowerAction, Option<DirtyArea>) {
         let touch_action = self.touch_action.take().or_else(|| {
             if !self.touch_action_initialized && self.is_settings_page() {
@@ -2639,17 +2683,14 @@ impl UiState {
                 self.open_ui_page(UiPage::DisplayTest, "Display test open");
                 (PowerAction::None, Some(DirtyArea::Full))
             }
-            display::DetailsAction::Reboot => {
-                self.set_debug_feedback("Reboot requested");
-                (PowerAction::Reboot, Some(DirtyArea::Action(touch_action)))
-            }
-            display::DetailsAction::PowerOff => {
-                self.set_debug_feedback("Power off requested");
-                (PowerAction::PowerOff, Some(DirtyArea::Action(touch_action)))
-            }
+            display::DetailsAction::Reboot => self.open_power_confirmation(PowerAction::Reboot),
+            display::DetailsAction::PowerOff => self.open_power_confirmation(PowerAction::PowerOff),
             display::DetailsAction::BackToReading => {
                 self.return_to_reader("Returned to reading");
                 (PowerAction::None, Some(DirtyArea::Full))
+            }
+            display::DetailsAction::BackToSettings | display::DetailsAction::CancelPowerAction => {
+                self.return_to_settings()
             }
             display::DetailsAction::OpenReading
             | display::DetailsAction::OpenSynchronization
@@ -2660,7 +2701,8 @@ impl UiState {
             | display::DetailsAction::FontReset
             | display::DetailsAction::FontIncrease
             | display::DetailsAction::ReadingProgress
-            | display::DetailsAction::DebugMessages => unreachable!(),
+            | display::DetailsAction::DebugMessages
+            | display::DetailsAction::ConfirmPower => unreachable!(),
         }
     }
 
@@ -2684,6 +2726,9 @@ impl UiState {
             display::DetailsAction::BackToReading => {
                 self.return_to_reader("Returned to reading");
                 (PowerAction::None, Some(DirtyArea::Full))
+            }
+            display::DetailsAction::BackToSettings | display::DetailsAction::CancelPowerAction => {
+                self.return_to_settings()
             }
             display::DetailsAction::Orientation => {
                 let target = self.orientation.toggle();
@@ -2742,13 +2787,23 @@ impl UiState {
                 self.open_ui_page(UiPage::DisplayTest, "Display test open");
                 (PowerAction::None, Some(DirtyArea::Full))
             }
-            display::DetailsAction::Reboot => {
-                self.set_debug_feedback("Reboot requested");
-                (PowerAction::Reboot, Some(DirtyArea::Action(action)))
-            }
-            display::DetailsAction::PowerOff => {
-                self.set_debug_feedback("Power off requested");
-                (PowerAction::PowerOff, Some(DirtyArea::Action(action)))
+            display::DetailsAction::Reboot => self.open_power_confirmation(PowerAction::Reboot),
+            display::DetailsAction::PowerOff => self.open_power_confirmation(PowerAction::PowerOff),
+            display::DetailsAction::ConfirmPower => {
+                let power_action = self
+                    .pending_power_action
+                    .take()
+                    .unwrap_or(PowerAction::None);
+                if matches!(power_action, PowerAction::Reboot | PowerAction::PowerOff) {
+                    self.set_debug_feedback(match power_action {
+                        PowerAction::Reboot => "Reboot requested",
+                        PowerAction::PowerOff => "Power off requested",
+                        PowerAction::None | PowerAction::Sleep => unreachable!(),
+                    });
+                    (power_action, Some(DirtyArea::Full))
+                } else {
+                    self.return_to_settings()
+                }
             }
         }
     }
@@ -2892,6 +2947,87 @@ mod tests {
         state.observe(InputSourceKind::Keys, event(KEY_BACK, 1, 1_000_002));
         assert_eq!(state.page, UiPage::Home);
         assert!(state.ui_history.is_empty());
+    }
+
+    #[test]
+    fn on_screen_back_controls_follow_settings_history_and_cancel_power_actions() {
+        let mut state = UiState::new();
+        state.open_ui_page(UiPage::Details, "Settings open");
+        let reading = display::details_action_region_for_page(
+            display::DetailsPage::Menu,
+            display::DetailsAction::OpenReading,
+            600,
+            800,
+        )
+        .expect("reading section region");
+        state.touch_x = reading.left as i32 + 4;
+        state.touch_y = reading.top as i32 + 4;
+        state.touch_down = true;
+        state.observe(InputSourceKind::Touch, event(BTN_TOUCH, 0, 1_000_000));
+        assert_eq!(state.page, UiPage::Reading);
+
+        let back_to_settings = display::details_action_region_for_page(
+            display::DetailsPage::Reading,
+            display::DetailsAction::BackToSettings,
+            600,
+            800,
+        )
+        .expect("nested back region");
+        state.touch_x = back_to_settings.left as i32 + 4;
+        state.touch_y = back_to_settings.top as i32 + 4;
+        state.touch_down = true;
+        state.observe(InputSourceKind::Touch, event(BTN_TOUCH, 0, 1_000_001));
+        assert_eq!(state.page, UiPage::Details);
+        assert!(state.settings_menu);
+
+        let back_to_reading = display::details_action_region_for_page(
+            display::DetailsPage::Menu,
+            display::DetailsAction::BackToReading,
+            600,
+            800,
+        )
+        .expect("root back region");
+        state.touch_x = back_to_reading.left as i32 + 4;
+        state.touch_y = back_to_reading.top as i32 + 4;
+        state.touch_down = true;
+        state.observe(InputSourceKind::Touch, event(BTN_TOUCH, 0, 1_000_002));
+        assert_eq!(state.page, UiPage::Home);
+        assert!(state.ui_history.is_empty());
+
+        state.open_ui_page(UiPage::Details, "Settings open");
+        state.open_ui_page(UiPage::DeviceDiagnostics, "Device settings open");
+        let reboot = display::details_action_region_for_page(
+            display::DetailsPage::DeviceDiagnostics,
+            display::DetailsAction::Reboot,
+            600,
+            800,
+        )
+        .expect("reboot region");
+        state.touch_x = reboot.left as i32 + 4;
+        state.touch_y = reboot.top as i32 + 4;
+        state.touch_down = true;
+        state.observe(InputSourceKind::Touch, event(BTN_TOUCH, 0, 1_000_003));
+        assert_eq!(state.page, UiPage::PowerConfirmation);
+
+        let cancel = display::details_action_region_for_page(
+            display::DetailsPage::PowerConfirmation,
+            display::DetailsAction::CancelPowerAction,
+            600,
+            800,
+        )
+        .expect("cancel region");
+        state.touch_x = cancel.left as i32 + 4;
+        state.touch_y = cancel.top as i32 + 4;
+        state.touch_down = true;
+        let (dirty, action) = state.observe(InputSourceKind::Touch, event(BTN_TOUCH, 0, 1_000_004));
+        assert_eq!(dirty, Some(DirtyArea::Full));
+        assert_eq!(action, PowerAction::None);
+        assert_eq!(state.page, UiPage::DeviceDiagnostics);
+        assert_eq!(state.pending_power_action, None);
+
+        state.observe(InputSourceKind::Keys, event(KEY_BACK, 1, 1_000_005));
+        assert_eq!(state.page, UiPage::Details);
+        assert!(state.settings_menu);
     }
 
     #[test]
@@ -3650,16 +3786,55 @@ mod tests {
         state.touch_x = 100;
         state.touch_y = super::display::DETAILS_REBOOT_TOP as i32 + 10;
         let (_, action) = state.observe(InputSourceKind::Touch, event(BTN_TOUCH, 0, 1_000_000));
+        assert_eq!(action, super::PowerAction::None);
+        assert_eq!(state.page, UiPage::PowerConfirmation);
+        assert_eq!(state.pending_power_action, Some(super::PowerAction::Reboot));
+
+        let confirm = display::details_action_region_for_page(
+            display::DetailsPage::PowerConfirmation,
+            display::DetailsAction::ConfirmPower,
+            600,
+            800,
+        )
+        .expect("reboot confirm region");
+        state.touch_down = true;
+        state.touch_x = confirm.left as i32 + 4;
+        state.touch_y = confirm.top as i32 + 4;
+        let (_, action) = state.observe(InputSourceKind::Touch, event(BTN_TOUCH, 0, 1_500_000));
         assert_eq!(action, super::PowerAction::Reboot);
 
+        let mut state = UiState::new();
+        state.page = UiPage::Details;
         state.touch_down = true;
         state.touch_x = 400;
         state.touch_y = super::display::DETAILS_POWER_OFF_TOP as i32 + 10;
         let (_, action) = state.observe(InputSourceKind::Touch, event(BTN_TOUCH, 0, 2_000_000));
+        assert_eq!(action, super::PowerAction::None);
+        assert_eq!(state.page, UiPage::PowerConfirmation);
+        assert_eq!(
+            state.pending_power_action,
+            Some(super::PowerAction::PowerOff)
+        );
+
+        let confirm = display::details_action_region_for_page(
+            display::DetailsPage::PowerConfirmation,
+            display::DetailsAction::ConfirmPower,
+            600,
+            800,
+        )
+        .expect("power-off confirm region");
+        state.touch_down = true;
+        state.touch_x = confirm.left as i32 + 4;
+        state.touch_y = confirm.top as i32 + 4;
+        let (_, action) = state.observe(InputSourceKind::Touch, event(BTN_TOUCH, 0, 2_500_000));
         assert_eq!(action, super::PowerAction::PowerOff);
 
+        let mut state = UiState::new();
+        state.page = UiPage::Details;
         state.touch_down = true;
+        state.touch_x = 100;
         state.touch_y = super::display::DETAILS_BACK_TOP as i32 + 10;
+        state.touch_down = true;
         let (_, action) = state.observe(InputSourceKind::Touch, event(BTN_TOUCH, 0, 3_000_000));
         assert_eq!(action, super::PowerAction::None);
         assert_eq!(state.page, UiPage::Home);
@@ -3782,19 +3957,19 @@ mod tests {
 
         assert_eq!(
             tap(display::DETAILS_REBOOT_TOP),
-            (super::PowerAction::Reboot, UiPage::Details)
+            (super::PowerAction::None, UiPage::PowerConfirmation)
         );
         assert_eq!(
             tap(display::DETAILS_REBOOT_TOP + display::DETAILS_ACTION_HEIGHT - 1),
-            (super::PowerAction::Reboot, UiPage::Details)
+            (super::PowerAction::None, UiPage::PowerConfirmation)
         );
         assert_eq!(
             tap(display::DETAILS_POWER_OFF_TOP),
-            (super::PowerAction::PowerOff, UiPage::Details)
+            (super::PowerAction::None, UiPage::PowerConfirmation)
         );
         assert_eq!(
             tap(display::DETAILS_POWER_OFF_TOP + display::DETAILS_ACTION_HEIGHT - 1),
-            (super::PowerAction::PowerOff, UiPage::Details)
+            (super::PowerAction::None, UiPage::PowerConfirmation)
         );
         assert_eq!(
             tap(display::DETAILS_BACK_TOP),
