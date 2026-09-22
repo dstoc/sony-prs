@@ -11,6 +11,9 @@ comrak = { version = "0.55.0", default-features = false }
 embedded-graphics = { version = "0.8.2", default-features = false }
 fontdue = "0.9.4"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
+# QR generation is part of the shared reader session so native and WASM
+# adapters use the same external-link presentation.
+qrcode = { version = "0.14.1", default-features = false }
 # Syntect's bundled upstream syntax definitions are loaded directly at runtime.
 # The pure-Rust regex backend keeps the shared reader buildable for WASM.
 syntect = { version = "5.3.0", default-features = false, features = ["default-syntaxes", "regex-fancy"] }

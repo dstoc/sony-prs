@@ -26,6 +26,7 @@ pub mod parse;
 pub mod reader;
 pub mod render;
 pub mod resources;
+pub mod session;
 pub mod style;
 pub mod typography;
 
@@ -64,6 +65,12 @@ pub use render::EmbeddedGraphicsRenderer;
 pub use resources::{BrowserResourceProvider, ResourceProvider, ResourceTarget};
 #[cfg(not(target_arch = "wasm32"))]
 pub use resources::{FileSystemResourceProvider, FileSystemResources};
+pub use session::{
+    external_link_overlay_region, truncated_url_lines, ExternalLinkOverlay, QrError, QrMatrix,
+    ReaderController, ReaderControllerError, EXTERNAL_LINK_BOTTOM_MARGIN,
+    EXTERNAL_LINK_OVERLAY_HEIGHT, EXTERNAL_LINK_OVERLAY_MARGIN, EXTERNAL_LINK_OVERLAY_WIDTH,
+    EXTERNAL_LINK_QR_BOX_SIZE, EXTERNAL_LINK_QR_QUIET_ZONE,
+};
 pub use style::{BorderStyle, Color, FillStyle, Insets, ReaderStyle, TextStyle};
 pub use typography::{
     FontConfig, FontError, FontFace, FontLoadConfig, FontdueTextEngine, GlyphBitmap, LineMetrics,

@@ -5,12 +5,12 @@ use embedded_graphics::prelude::Pixel;
 use js_sys::{Array, Object, Reflect, Uint8Array};
 use prs_markdown::navigation::{DocumentId, DocumentLocation, NavigationTarget};
 use prs_markdown::parse::ComrakParser;
-use prs_markdown::reader::{ReaderError, ReaderEvent};
+use prs_markdown::reader::ReaderEvent;
 use prs_markdown::render::EmbeddedGraphicsRenderer;
 use prs_markdown::typography::{FontConfig, FontdueTextEngine};
 use prs_markdown::{
-    BrowserResourceProvider as DirectoryResourceProvider, Reader, ReaderStyle, ResourceProvider,
-    ResourceTarget, T1_VIEWPORT,
+    BrowserResourceProvider as DirectoryResourceProvider, Reader, ReaderController,
+    ReaderControllerError, ReaderStyle, ResourceProvider, ResourceTarget, T1_VIEWPORT,
 };
 use std::convert::Infallible;
 use std::path::{Path, PathBuf};
@@ -24,7 +24,7 @@ struct ReaderSurface<P>
 where
     P: ResourceProvider,
 {
-    reader: Reader<P, FontdueTextEngine, ComrakParser>,
+    controller: ReaderController<P, FontdueTextEngine, ComrakParser>,
     renderer: EmbeddedGraphicsRenderer<FontdueTextEngine>,
     framebuffer: RgbaFramebuffer,
     feedback: String,
@@ -59,7 +59,7 @@ where
             .map_err(|error| format!("open browser reader: {error}"))?;
 
         Ok(Self {
-            reader,
+            controller: ReaderController::new(reader),
             renderer: EmbeddedGraphicsRenderer::new(engine),
             framebuffer: RgbaFramebuffer::new(Size::new(T1_VIEWPORT.width, T1_VIEWPORT.height)),
             feedback: "Ready. Use a link, a control, or a keyboard shortcut.".to_owned(),
@@ -70,8 +70,12 @@ where
         self.framebuffer
             .clear(Rgb888::WHITE)
             .expect("framebuffer clear cannot fail");
-        self.reader
-            .render_current_page(&mut self.renderer, &mut self.framebuffer)
+        self.controller
+            .render_current_page_with_overlay(
+                &mut self.renderer,
+                &mut self.framebuffer,
+                Point::zero(),
+            )
             .map_err(|error| format!("render browser reader: {error}"))?;
         Ok(self.framebuffer.pixels().to_vec())
     }
@@ -89,39 +93,35 @@ where
         }
 
         let point = Point::new(x.floor() as i32, y.floor() as i32);
-        let result = self.reader.activate_at(point);
-        let result = match result {
-            Ok(ReaderEvent::NoAction) => {
-                if point.x >= self.reader.viewport().width as i32 / 2 {
-                    self.reader.next_page_event()
-                } else {
-                    self.reader.previous_page_event()
-                }
-            }
-            result => result,
-        };
+        let result = self.controller.activate_at_or_page_turn(point);
         self.apply_result(result)
     }
 
     fn previous(&mut self) -> String {
-        let result = self.reader.previous_page_event();
+        let result = self.controller.previous_page();
         self.apply_result(result)
     }
 
     fn next(&mut self) -> String {
-        let result = self.reader.next_page_event();
+        let result = self.controller.next_page();
         self.apply_result(result)
     }
 
     fn back(&mut self) -> String {
-        let result = self.reader.back_event();
+        let result = self.controller.back();
         self.apply_result(result)
     }
 
     fn home(&mut self) -> String {
-        let entry_point = self.reader.provider().entry_point().display().to_string();
+        let entry_point = self
+            .controller
+            .reader()
+            .provider()
+            .entry_point()
+            .display()
+            .to_string();
         let result = self
-            .reader
+            .controller
             .activate(NavigationTarget::Location(DocumentLocation::new(
                 DocumentId::from(entry_point),
                 None,
@@ -130,25 +130,33 @@ where
     }
 
     fn current_document(&self) -> String {
-        self.reader
+        self.controller
+            .reader()
             .current_location()
             .map(|location| location.document.as_ref().to_owned())
             .unwrap_or_default()
     }
 
     fn page_count(&self) -> u32 {
-        self.reader.page_count().try_into().unwrap_or(u32::MAX)
+        self.controller
+            .reader()
+            .page_count()
+            .try_into()
+            .unwrap_or(u32::MAX)
     }
 
     fn current_page(&self) -> u32 {
-        self.reader.current_page_number().unwrap_or_default() as u32
+        self.controller
+            .reader()
+            .current_page_number()
+            .unwrap_or_default() as u32
     }
 
     fn feedback(&self) -> String {
         self.feedback.clone()
     }
 
-    fn apply_result(&mut self, result: Result<ReaderEvent, ReaderError>) -> String {
+    fn apply_result(&mut self, result: Result<ReaderEvent, ReaderControllerError>) -> String {
         self.feedback = match result {
             Ok(ReaderEvent::ExternalUrl(url)) => format!("External link: {url}"),
             Ok(ReaderEvent::Asset(path)) => format!("Asset link: {}", path.display()),
@@ -193,7 +201,8 @@ pub fn load_directory(files: Array, entry_point: String) -> Result<BrowserReader
 impl BrowserReader {
     pub fn entry_point(&self) -> String {
         self.surface
-            .reader
+            .controller
+            .reader()
             .provider()
             .entry_point()
             .display()
@@ -246,13 +255,15 @@ impl BrowserReader {
     pub fn resolve_reference(&self, reference: &str) -> Result<JsValue, JsValue> {
         let containing_document = self
             .surface
-            .reader
+            .controller
+            .reader()
             .current_location()
             .map(|location| PathBuf::from(location.document.as_ref()))
             .ok_or_else(|| structured_error("reader", "no document is open"))?;
         let target = self
             .surface
-            .reader
+            .controller
+            .reader()
             .provider()
             .resolve_reference_from(&containing_document, reference)
             .map_err(|error| structured_error("resource", error))?;
@@ -263,7 +274,7 @@ impl BrowserReader {
     pub fn follow_reference(&mut self, reference: &str) -> Result<JsValue, JsValue> {
         let event = self
             .surface
-            .reader
+            .controller
             .follow_reference(reference)
             .map_err(|error| structured_reader_error("navigate", error))?;
         Ok(event_value(&event))
@@ -274,7 +285,8 @@ impl BrowserReader {
     pub fn read_asset(&self, path: &str) -> Result<Uint8Array, JsValue> {
         let bytes = self
             .surface
-            .reader
+            .controller
+            .reader()
             .provider()
             .read_binary(Path::new(path))
             .map_err(|error| structured_error("resource", error))?;
@@ -306,7 +318,7 @@ fn parse_files(files: Array) -> Result<Vec<(PathBuf, Vec<u8>)>, JsValue> {
         .collect()
 }
 
-fn structured_reader_error(kind: &str, error: ReaderError) -> JsValue {
+fn structured_reader_error(kind: &str, error: impl std::fmt::Display) -> JsValue {
     structured_error(kind, error)
 }
 
@@ -626,10 +638,11 @@ mod tests {
     #[test]
     fn browser_reader_exposes_shared_links_and_history() {
         let mut app = ReaderSimulator::new().expect("demo reader opens");
-        assert!(app.surface.reader.page_count() > 1);
+        assert!(app.surface.controller.reader().page_count() > 1);
         let link = app
             .surface
-            .reader
+            .controller
+            .reader()
             .current_page()
             .expect("entry page")
             .hit_regions
@@ -641,25 +654,77 @@ mod tests {
         app.pointer_up(f64::from(link.x + 1), f64::from(link.y + 1));
         assert_eq!(
             app.surface
-                .reader
+                .controller
+                .reader()
                 .current_location()
                 .map(|location| location.document.as_ref()),
             Some("guide/chapter.md")
         );
-        assert!(app.surface.reader.can_go_back());
+        assert!(app.surface.controller.reader().can_go_back());
 
         app.back();
         assert_eq!(
             app.surface
-                .reader
+                .controller
+                .reader()
                 .current_location()
                 .map(|location| location.document.as_ref()),
             Some(ENTRY_POINT)
         );
         app.next();
-        assert_eq!(app.surface.reader.current_page_index(), Some(1));
+        assert_eq!(
+            app.surface.controller.reader().current_page_index(),
+            Some(1)
+        );
         app.previous();
-        assert_eq!(app.surface.reader.current_page_index(), Some(0));
+        assert_eq!(
+            app.surface.controller.reader().current_page_index(),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn browser_external_link_overlay_renders_and_next_input_clears_it() {
+        let mut app = ReaderSimulator::new().expect("demo reader opens");
+        let external_link = app
+            .surface
+            .controller
+            .reader()
+            .current_page()
+            .expect("entry page")
+            .hit_regions
+            .iter()
+            .find(|region| matches!(region.target, NavigationTarget::External(_)))
+            .expect("entry page external link");
+
+        let feedback = app.pointer_up(
+            f64::from(external_link.bounds.top_left.x + 1),
+            f64::from(external_link.bounds.top_left.y + 1),
+        );
+        assert!(feedback.starts_with("External link: https://"));
+        assert!(app.surface.controller.external_link_overlay().is_some());
+
+        let overlay_frame = app.render_frame().expect("render external-link overlay");
+        let region = prs_markdown::external_link_overlay_region(600, 800);
+        let dark_pixels = overlay_frame
+            .chunks_exact(4)
+            .enumerate()
+            .filter(|(index, pixel)| {
+                let x = (*index % 600) as i32;
+                let y = (*index / 600) as i32;
+                region.contains(embedded_graphics::geometry::Point::new(x, y))
+                    && pixel[..3].iter().any(|channel| *channel < u8::MAX)
+            })
+            .count();
+        assert!(
+            dark_pixels > 0,
+            "overlay should add visible text or QR pixels"
+        );
+
+        app.next();
+        assert!(app.surface.controller.external_link_overlay().is_none());
+        let cleared_frame = app.render_frame().expect("render dismissed overlay");
+        assert_ne!(overlay_frame, cleared_frame);
     }
 
     #[test]
@@ -703,13 +768,21 @@ mod tests {
         let mut surface = ReaderSurface::new(provider).expect("open demo fixture");
         assert_eq!(surface.current_document(), ENTRY_POINT);
         assert!(surface.page_count() > 1);
-        assert!(surface.reader.cache_stats().image_retained_bytes > 0);
+        assert!(
+            surface
+                .controller
+                .reader()
+                .cache_stats()
+                .image_retained_bytes
+                > 0
+        );
 
         let frame = surface.render_frame().expect("render demo fixture");
         assert_eq!(frame.len(), 600 * 800 * 4);
 
         let chapter_link = surface
-            .reader
+            .controller
+            .reader()
             .current_page()
             .expect("demo entry page")
             .hit_regions
@@ -728,16 +801,16 @@ mod tests {
 
         assert!(matches!(
             surface
-                .reader
+                .controller
                 .follow_reference("https://example.com/prs-t1-demo"),
             Ok(ReaderEvent::ExternalUrl(url)) if url == "https://example.com/prs-t1-demo"
         ));
         surface.home();
         assert_eq!(surface.current_document(), ENTRY_POINT);
         surface.next();
-        assert_eq!(surface.reader.current_page_index(), Some(1));
+        assert_eq!(surface.controller.reader().current_page_index(), Some(1));
         surface.previous();
-        assert_eq!(surface.reader.current_page_index(), Some(0));
+        assert_eq!(surface.controller.reader().current_page_index(), Some(0));
         surface.back();
         assert_eq!(surface.current_document(), "guide/chapter.md");
     }

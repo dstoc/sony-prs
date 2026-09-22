@@ -8,16 +8,10 @@
 
 use crate::display::{self, CONTENT_TOP};
 use crate::framebuffer::{DisplayCanvas, DisplayRegion, NativeDisplay};
-use crate::qr::QrMatrix;
 use crate::refresh::{PageTone, RefreshPlan};
 use embedded_graphics::geometry::Point;
-use embedded_graphics::mono_font::{
-    ascii::{FONT_8X13, FONT_8X13_BOLD},
-    MonoTextStyle,
-};
 use embedded_graphics::pixelcolor::{Rgb565, RgbColor};
-use embedded_graphics::prelude::{Drawable, IntoStorage};
-use embedded_graphics::text::{Baseline, Text};
+use embedded_graphics::prelude::IntoStorage;
 use prs_markdown::geometry::Viewport;
 use prs_markdown::navigation::{DocumentId, DocumentLocation, NavigationTarget};
 use prs_markdown::pagination::{DisplayCommand, PageLayout};
@@ -28,6 +22,7 @@ use prs_markdown::resources::FileSystemResourceProvider;
 use prs_markdown::style::ReaderStyle;
 use prs_markdown::typography::{FontConfig, FontdueTextEngine};
 use prs_markdown::Color;
+use prs_markdown::{ReaderController, ReaderControllerError};
 use std::env;
 use std::fmt::Display;
 use std::fs;
@@ -44,79 +39,16 @@ pub const DEFAULT_MONOSPACE_BOLD_ITALIC_FONT: &str =
     "/system/fonts/HelveticaMonospacedW1G-BdIt.otf";
 pub const PAGE_BOTTOM_MARGIN: u32 = 16;
 const GLYPH_CACHE_CAPACITY: usize = 256;
-const EXTERNAL_LINK_OVERLAY_WIDTH: usize = 360;
-const EXTERNAL_LINK_OVERLAY_HEIGHT: usize = 214;
-const EXTERNAL_LINK_OVERLAY_MARGIN: usize = 12;
-const EXTERNAL_LINK_QR_BOX_SIZE: usize = 176;
-const EXTERNAL_LINK_QR_QUIET_ZONE: usize = 4;
 
 /// The damage region used for the transient external-link overlay.
 pub(crate) fn external_link_overlay_region(width: u32, height: u32) -> DisplayRegion {
-    let width = width as usize;
-    let height = height as usize;
-    let overlay_width = EXTERNAL_LINK_OVERLAY_WIDTH.min(width);
-    let overlay_height =
-        EXTERNAL_LINK_OVERLAY_HEIGHT.min(height.saturating_sub(PAGE_BOTTOM_MARGIN as usize));
-    let right_margin = EXTERNAL_LINK_OVERLAY_MARGIN.min(width.saturating_sub(overlay_width));
-    let bottom = height
-        .saturating_sub(PAGE_BOTTOM_MARGIN as usize)
-        .min(height);
-    let top = bottom.saturating_sub(overlay_height);
+    let region = prs_markdown::external_link_overlay_region(width, height);
     DisplayRegion::new(
-        width
-            .saturating_sub(right_margin)
-            .saturating_sub(overlay_width) as u32,
-        top as u32,
-        overlay_width as u32,
-        overlay_height as u32,
+        region.top_left.x.max(0) as u32,
+        region.top_left.y.max(0) as u32,
+        region.size.width,
+        region.size.height,
     )
-}
-
-fn truncated_url_lines(url: &str, chars_per_line: usize, max_lines: usize) -> Vec<String> {
-    if chars_per_line == 0 || max_lines == 0 {
-        return Vec::new();
-    }
-
-    let mut remaining = url.chars().peekable();
-    let mut lines = Vec::new();
-    for line_index in 0..max_lines {
-        let mut line = remaining.by_ref().take(chars_per_line).collect::<String>();
-        let has_more = remaining.peek().is_some();
-        if has_more && line_index + 1 == max_lines {
-            let suffix = "...";
-            line = line
-                .chars()
-                .take(chars_per_line.saturating_sub(suffix.len()))
-                .collect();
-            line.push_str(suffix);
-        }
-        if line.is_empty() {
-            break;
-        }
-        lines.push(line);
-        if !has_more {
-            break;
-        }
-    }
-    lines
-}
-
-#[derive(Clone, Debug)]
-struct ExternalLinkOverlay {
-    url: String,
-    qr: QrMatrix,
-}
-
-impl ExternalLinkOverlay {
-    fn new(url: String) -> io::Result<Self> {
-        let qr = QrMatrix::encode(&url).map_err(|error| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("encode external URL as QR: {error}"),
-            )
-        })?;
-        Ok(Self { url, qr })
-    }
 }
 
 /// Runtime-selectable paths for the initial Markdown document and its fonts.
@@ -223,12 +155,11 @@ pub fn viewport_for_display(width: u32, height: u32) -> Viewport {
 
 /// A T1-owned adapter around the generic Markdown reader and renderer.
 pub struct T1Reader {
-    reader: Reader<FileSystemResourceProvider, FontdueTextEngine, ComrakParser>,
+    controller: ReaderController<FileSystemResourceProvider, FontdueTextEngine, ComrakParser>,
     renderer: EmbeddedGraphicsRenderer<FontdueTextEngine>,
     config: ReaderConfig,
     entry_point: PathBuf,
     library_root: PathBuf,
-    external_link_overlay: Option<ExternalLinkOverlay>,
     library_empty: bool,
 }
 
@@ -270,12 +201,11 @@ impl T1Reader {
             .map_err(|error| integration_error("open T1 Markdown document", error))?;
 
         Ok(Self {
-            reader,
+            controller: ReaderController::new(reader),
             renderer: EmbeddedGraphicsRenderer::new(engine),
             config: reload_config,
             entry_point: config.document,
             library_root: library_root.as_ref().to_owned(),
-            external_link_overlay: None,
             library_empty: false,
         })
     }
@@ -286,29 +216,29 @@ impl T1Reader {
     /// so an active reader keeps using its old complete generation until this
     /// method is called at an idle boundary.
     pub fn reload_current_bundle(&mut self) -> io::Result<()> {
-        let viewport = self.reader.viewport();
+        let viewport = self.controller.reader().viewport();
         let mut config = match ReaderConfig::from_library_root(&self.library_root) {
             Ok(config) => config,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 self.library_empty = true;
-                self.external_link_overlay = None;
+                self.controller.clear_external_link_overlay();
                 return Ok(());
             }
             Err(error) => return Err(error),
         };
         config.copy_font_paths_from(&self.config);
         let previous = (!self.library_empty)
-            .then(|| self.reader.current_location().cloned())
+            .then(|| self.controller.reader().current_location().cloned())
             .flatten();
         let mut replacement = Self::open_with_library_root(config, viewport, &self.library_root)?;
         if let Some(location) = previous {
             if replacement
-                .reader
+                .controller
                 .open_document(Path::new(location.document.as_ref()))
                 .is_ok()
             {
                 if let Some(anchor) = location.anchor.as_deref() {
-                    let _ = replacement.reader.navigate_to_anchor(anchor);
+                    let _ = replacement.controller.navigate_to_anchor(anchor);
                 }
             }
         }
@@ -322,12 +252,12 @@ impl T1Reader {
 
     /// Return to the entry point of the currently open bundle through reader
     /// history, preserving the location that the caller left.
-    pub fn return_to_entry_point(&mut self) -> Result<ReaderEvent, ReaderError> {
+    pub fn return_to_entry_point(&mut self) -> Result<ReaderEvent, ReaderControllerError> {
         if self.library_empty {
-            return Err(ReaderError::NoDocumentOpen);
+            return Err(ReaderControllerError::Reader(ReaderError::NoDocumentOpen));
         }
         let document = DocumentId::from(self.entry_point.to_string_lossy().into_owned());
-        self.reader
+        self.controller
             .activate(NavigationTarget::Location(DocumentLocation::new(
                 document, None,
             )))
@@ -341,7 +271,8 @@ impl T1Reader {
             return None;
         }
         let page_point = Point::new(screen_point.x, screen_point.y - content_top);
-        self.reader
+        self.controller
+            .reader()
             .viewport()
             .contains(page_point)
             .then_some(page_point)
@@ -350,58 +281,46 @@ impl T1Reader {
     /// Translate a screen-space content tap into a shared-reader action.
     /// Links get first refusal; a blank tap on the right half advances and a
     /// blank tap on the left half goes back.
-    pub fn tap(&mut self, screen_point: Point) -> Result<ReaderEvent, ReaderError> {
+    pub fn tap(&mut self, screen_point: Point) -> Result<ReaderEvent, ReaderControllerError> {
         if self.library_empty {
-            return Err(ReaderError::NoDocumentOpen);
+            return Err(ReaderControllerError::Reader(ReaderError::NoDocumentOpen));
         }
         let Some(page_point) = self.screen_to_viewport(screen_point) else {
             return Ok(ReaderEvent::NoAction);
         };
 
-        let event = self.reader.activate_at(page_point)?;
-        if !matches!(event, ReaderEvent::NoAction) {
-            return Ok(event);
-        }
-        if page_point.x >= self.reader.viewport().width as i32 / 2 {
-            self.reader.next_page_event()
-        } else {
-            self.reader.previous_page_event()
-        }
+        self.controller.activate_at_or_page_turn(page_point)
     }
 
-    pub fn next_page(&mut self) -> Result<ReaderEvent, ReaderError> {
+    pub fn next_page(&mut self) -> Result<ReaderEvent, ReaderControllerError> {
         if self.library_empty {
-            return Err(ReaderError::NoDocumentOpen);
+            return Err(ReaderControllerError::Reader(ReaderError::NoDocumentOpen));
         }
-        self.reader.next_page_event()
+        self.controller.next_page()
     }
 
-    pub fn previous_page(&mut self) -> Result<ReaderEvent, ReaderError> {
+    pub fn previous_page(&mut self) -> Result<ReaderEvent, ReaderControllerError> {
         if self.library_empty {
-            return Err(ReaderError::NoDocumentOpen);
+            return Err(ReaderControllerError::Reader(ReaderError::NoDocumentOpen));
         }
-        self.reader.previous_page_event()
+        self.controller.previous_page()
     }
 
-    pub fn back(&mut self) -> Result<ReaderEvent, ReaderError> {
+    pub fn back(&mut self) -> Result<ReaderEvent, ReaderControllerError> {
         if self.library_empty {
-            return Err(ReaderError::NoDocumentOpen);
+            return Err(ReaderControllerError::Reader(ReaderError::NoDocumentOpen));
         }
-        self.reader.back_event()
-    }
-
-    /// Show an application-owned QR overlay for an external URL. The shared
-    /// reader reports the URL but deliberately does not launch a browser or
-    /// perform network I/O on the T1.
-    pub fn set_external_link_overlay(&mut self, url: String) -> io::Result<()> {
-        self.external_link_overlay = Some(ExternalLinkOverlay::new(url)?);
-        Ok(())
+        self.controller.back()
     }
 
     /// Dismiss the transient external-link overlay before the next input is
     /// handled. The caller uses the return value to request overlay damage.
     pub fn clear_external_link_overlay(&mut self) -> bool {
-        self.external_link_overlay.take().is_some()
+        self.controller.clear_external_link_overlay()
+    }
+
+    pub fn reader(&self) -> &Reader<FileSystemResourceProvider, FontdueTextEngine, ComrakParser> {
+        self.controller.reader()
     }
 
     /// Build a complete packed RGB565 screen, including the T1 status bar and
@@ -430,124 +349,19 @@ impl T1Reader {
             display::draw_reader_feedback(&mut canvas, feedback);
         }
 
-        let page = self.reader.current_page().ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                "T1 Markdown reader has no current page",
+        self.controller
+            .render_current_page_with_overlay(
+                &mut self.renderer,
+                &mut canvas,
+                Point::new(0, CONTENT_TOP as i32),
             )
-        })?;
-        self.renderer
-            .render_at(page, &mut canvas, Point::new(0, CONTENT_TOP as i32))
-            .expect("RGB565 DisplayCanvas drawing is infallible");
-        self.draw_external_link_overlay(&mut canvas, width, height);
+            .map_err(|error| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("render T1 Markdown reader: {error}"),
+                )
+            })?;
         Ok(frame)
-    }
-
-    fn draw_external_link_overlay(
-        &self,
-        canvas: &mut DisplayCanvas<'_>,
-        width: usize,
-        height: usize,
-    ) {
-        let Some(overlay) = self.external_link_overlay.as_ref() else {
-            return;
-        };
-        let region = external_link_overlay_region(width as u32, height as u32);
-        let left = region.left as usize;
-        let top = region.top as usize;
-        let panel_width = region.width as usize;
-        let panel_height = region.height as usize;
-        if panel_width == 0 || panel_height == 0 {
-            return;
-        }
-        canvas.fill_rect(
-            left,
-            top,
-            panel_width,
-            panel_height,
-            Rgb565::WHITE.into_storage(),
-        );
-        canvas.stroke_rect(
-            left,
-            top,
-            panel_width,
-            panel_height,
-            Rgb565::BLACK.into_storage(),
-        );
-
-        let qr_box_size = EXTERNAL_LINK_QR_BOX_SIZE
-            .min(panel_width.saturating_sub(EXTERNAL_LINK_OVERLAY_MARGIN * 2))
-            .min(panel_height.saturating_sub(EXTERNAL_LINK_OVERLAY_MARGIN * 2));
-        let module_count = overlay
-            .qr
-            .size()
-            .saturating_add(EXTERNAL_LINK_QR_QUIET_ZONE * 2);
-        let scale = qr_box_size.checked_div(module_count).unwrap_or(0);
-        if scale == 0 {
-            return;
-        }
-        let qr_size = module_count.saturating_mul(scale);
-        let qr_left = left
-            .saturating_add(panel_width)
-            .saturating_sub(EXTERNAL_LINK_OVERLAY_MARGIN)
-            .saturating_sub(qr_size);
-        let qr_top = top.saturating_add(panel_height.saturating_sub(qr_size) / 2);
-        for y in 0..overlay.qr.size() {
-            for x in 0..overlay.qr.size() {
-                if overlay.qr.is_dark(x, y) {
-                    canvas.fill_rect(
-                        qr_left.saturating_add((x + EXTERNAL_LINK_QR_QUIET_ZONE) * scale),
-                        qr_top.saturating_add((y + EXTERNAL_LINK_QR_QUIET_ZONE) * scale),
-                        scale,
-                        scale,
-                        Rgb565::BLACK.into_storage(),
-                    );
-                }
-            }
-        }
-
-        let text_left = left.saturating_add(EXTERNAL_LINK_OVERLAY_MARGIN);
-        let text_right = qr_left.saturating_sub(EXTERNAL_LINK_OVERLAY_MARGIN);
-        let text_width = text_right.saturating_sub(text_left);
-        let chars_per_line = text_width / FONT_8X13.character_size.width as usize;
-        Text::with_baseline(
-            "External link",
-            Point::new(text_left as i32, top.saturating_add(14) as i32),
-            MonoTextStyle::new(&FONT_8X13_BOLD, Rgb565::BLACK),
-            Baseline::Top,
-        )
-        .draw(canvas)
-        .expect("RGB565 DisplayCanvas drawing is infallible");
-        Text::with_baseline(
-            "URL:",
-            Point::new(text_left as i32, top.saturating_add(36) as i32),
-            MonoTextStyle::new(&FONT_8X13, Rgb565::BLACK),
-            Baseline::Top,
-        )
-        .draw(canvas)
-        .expect("RGB565 DisplayCanvas drawing is infallible");
-
-        let line_height = FONT_8X13.character_size.height as usize + 2;
-        let max_lines = panel_height
-            .saturating_sub(56)
-            .checked_div(line_height)
-            .unwrap_or(0);
-        for (index, line) in truncated_url_lines(&overlay.url, chars_per_line, max_lines)
-            .into_iter()
-            .enumerate()
-        {
-            Text::with_baseline(
-                &line,
-                Point::new(
-                    text_left as i32,
-                    top.saturating_add(54).saturating_add(index * line_height) as i32,
-                ),
-                MonoTextStyle::new(&FONT_8X13, Rgb565::BLACK),
-                Baseline::Top,
-            )
-            .draw(canvas)
-            .expect("RGB565 DisplayCanvas drawing is infallible");
-        }
     }
 
     /// Classify the current page for the T1 refresh policy.
@@ -558,7 +372,8 @@ impl T1Reader {
     /// the responsive DU path; intentional gray paint and loaded rasters get
     /// a synchronous GC16 update.
     pub fn current_page_tone(&self) -> PageTone {
-        self.reader
+        self.controller
+            .reader()
             .current_page()
             .map(page_tone)
             .unwrap_or(PageTone::Grayscale)
@@ -853,7 +668,7 @@ mod tests {
         assert!(frame[content_offset..]
             .iter()
             .any(|pixel| *pixel != Rgb565::WHITE.into_storage().to_ne_bytes()[0]));
-        assert_eq!(reader.reader.page_count(), 1);
+        assert_eq!(reader.reader().page_count(), 1);
         assert_eq!(reader.current_page_tone(), PageTone::Monochrome);
         fs::remove_dir_all(root).expect("remove reader fixture root");
     }
@@ -874,7 +689,7 @@ mod tests {
     #[test]
     fn truncated_url_lines_preserve_characters_between_wrapped_lines() {
         assert_eq!(
-            truncated_url_lines("https://example.com/reader", 10, 3),
+            prs_markdown::truncated_url_lines("https://example.com/reader", 10, 3),
             vec!["https://ex", "ample.com/", "reader"]
         );
     }
@@ -904,7 +719,7 @@ mod tests {
         let mut reader =
             T1Reader::open(fixture_config(&root), Viewport::new(600, 708)).expect("open fixture");
         let link = reader
-            .reader
+            .reader()
             .current_page()
             .expect("current page")
             .hit_regions
@@ -916,9 +731,6 @@ mod tests {
             .tap(Point::new(link.x, link.y + CONTENT_TOP as i32))
             .expect("activate external link");
         assert_eq!(event, ReaderEvent::ExternalUrl(URL.into()));
-        reader
-            .set_external_link_overlay(URL.into())
-            .expect("encode external URL QR");
 
         let frame = reader
             .render_frame("87%|UP|ON|ON||12:34", None, 600, 800)
@@ -938,7 +750,7 @@ mod tests {
         let mut reader =
             T1Reader::open(fixture_config(&root), Viewport::new(600, 708)).expect("open fixture");
         let first_link = reader
-            .reader
+            .reader()
             .current_page()
             .expect("current page")
             .hit_regions[0]
@@ -948,46 +760,55 @@ mod tests {
             .tap(Point::new(first_link.x, first_link.y + CONTENT_TOP as i32))
             .expect("activate first external link");
         assert_eq!(first_event, ReaderEvent::ExternalUrl(FIRST_URL.into()));
-        reader
-            .set_external_link_overlay(FIRST_URL.into())
-            .expect("encode first external URL QR");
         assert_eq!(
             reader
-                .external_link_overlay
-                .as_ref()
-                .map(|overlay| overlay.url.as_str()),
+                .controller
+                .external_link_overlay()
+                .map(|overlay| overlay.url()),
             Some(FIRST_URL)
         );
         assert_eq!(
             reader
-                .external_link_overlay
-                .as_ref()
-                .map(|overlay| &overlay.qr),
-            Some(&QrMatrix::encode(FIRST_URL).expect("encode first URL for test"))
+                .controller
+                .external_link_overlay()
+                .map(|overlay| overlay.qr()),
+            Some(&prs_markdown::QrMatrix::encode(FIRST_URL).expect("encode first URL for test"))
         );
 
-        reader
-            .set_external_link_overlay(SECOND_URL.into())
-            .expect("replace external URL QR");
+        let second_link = reader.reader().current_page().unwrap().hit_regions[1]
+            .bounds
+            .top_left;
+        let second_event = reader
+            .tap(Point::new(
+                second_link.x,
+                second_link.y + CONTENT_TOP as i32,
+            ))
+            .expect("activate second external link");
+        assert_eq!(second_event, ReaderEvent::ExternalUrl(SECOND_URL.into()));
         assert_eq!(
             reader
-                .external_link_overlay
-                .as_ref()
-                .map(|overlay| overlay.url.as_str()),
+                .controller
+                .external_link_overlay()
+                .map(|overlay| overlay.url()),
             Some(SECOND_URL)
         );
         assert_eq!(
             reader
-                .external_link_overlay
-                .as_ref()
-                .map(|overlay| &overlay.qr),
-            Some(&QrMatrix::encode(SECOND_URL).expect("encode second URL for test"))
+                .controller
+                .external_link_overlay()
+                .map(|overlay| overlay.qr()),
+            Some(&prs_markdown::QrMatrix::encode(SECOND_URL).expect("encode second URL for test"))
         );
         assert_eq!(
-            reader.reader.current_location().unwrap().document.as_ref(),
+            reader
+                .reader()
+                .current_location()
+                .unwrap()
+                .document
+                .as_ref(),
             "index.md"
         );
-        assert_eq!(reader.reader.history().len(), 1);
+        assert_eq!(reader.reader().history().len(), 1);
 
         assert!(reader.clear_external_link_overlay());
         assert!(!reader.clear_external_link_overlay());
@@ -1030,7 +851,7 @@ mod tests {
         let root = fixture_root(&"line\n".repeat(80));
         let viewport = Viewport::new(240, 120);
         let mut reader = T1Reader::open(fixture_config(&root), viewport).expect("open fixture");
-        assert!(reader.reader.page_count() > 1);
+        assert!(reader.reader().page_count() > 1);
 
         let event = reader
             .tap(Point::new(220, CONTENT_TOP as i32 + 60))
@@ -1039,7 +860,7 @@ mod tests {
             event,
             ReaderEvent::PageChanged {
                 page: 1,
-                page_count: reader.reader.page_count()
+                page_count: reader.reader().page_count()
             }
         );
 
@@ -1050,7 +871,7 @@ mod tests {
             event,
             ReaderEvent::PageChanged {
                 page: 0,
-                page_count: reader.reader.page_count()
+                page_count: reader.reader().page_count()
             }
         );
         fs::remove_dir_all(root).expect("remove reader fixture root");
@@ -1156,7 +977,7 @@ mod tests {
         assert_eq!(reader.entry_point, PathBuf::from("chapter.md"));
         assert_eq!(
             reader
-                .reader
+                .reader()
                 .current_location()
                 .expect("first document location")
                 .document
@@ -1177,7 +998,7 @@ mod tests {
         assert_eq!(reader.entry_point, PathBuf::from("new-entry.md"));
         assert_eq!(
             reader
-                .reader
+                .reader()
                 .current_location()
                 .expect("second document location")
                 .document
@@ -1211,7 +1032,7 @@ mod tests {
         assert_eq!(reader.entry_point, PathBuf::from("old.md"));
         assert_eq!(
             reader
-                .reader
+                .reader()
                 .current_location()
                 .expect("previous document location")
                 .document
@@ -1230,26 +1051,39 @@ mod tests {
         let mut reader =
             T1Reader::open(fixture_config(&root), Viewport::new(240, 120)).expect("open fixture");
         reader
-            .reader
-            .follow_document("chapter.md")
+            .controller
+            .follow_reference("chapter.md")
             .expect("follow linked document");
-        assert!(reader.reader.next_page().expect("advance chapter page"));
-        assert_eq!(reader.reader.current_page_index(), Some(1));
+        assert!(matches!(
+            reader.controller.next_page().expect("advance chapter page"),
+            ReaderEvent::PageChanged { page: 1, .. }
+        ));
+        assert_eq!(reader.reader().current_page_index(), Some(1));
         let event = reader
             .return_to_entry_point()
             .expect("return to entry point");
         assert!(matches!(event, ReaderEvent::Navigated { .. }));
         assert_eq!(
-            reader.reader.current_location().unwrap().document.as_ref(),
+            reader
+                .reader()
+                .current_location()
+                .unwrap()
+                .document
+                .as_ref(),
             "index.md"
         );
-        let event = reader.reader.back_event().expect("return to chapter");
+        let event = reader.controller.back().expect("return to chapter");
         assert!(matches!(event, ReaderEvent::Back { .. }));
         assert_eq!(
-            reader.reader.current_location().unwrap().document.as_ref(),
+            reader
+                .reader()
+                .current_location()
+                .unwrap()
+                .document
+                .as_ref(),
             "chapter.md"
         );
-        assert_eq!(reader.reader.current_page_index(), Some(1));
+        assert_eq!(reader.reader().current_page_index(), Some(1));
         fs::remove_dir_all(root).expect("remove reader fixture root");
     }
 }

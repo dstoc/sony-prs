@@ -1,5 +1,4 @@
 use crate::framebuffer::{DisplayCanvas, DisplayRegion, NativeDisplay, WaveformMode};
-use crate::qr::QrMatrix;
 use embedded_graphics::mono_font::{
     ascii::{FONT_10X20, FONT_8X13, FONT_8X13_BOLD},
     MonoTextStyle,
@@ -7,6 +6,7 @@ use embedded_graphics::mono_font::{
 use embedded_graphics::pixelcolor::{Rgb565, RgbColor};
 use embedded_graphics::prelude::*;
 use embedded_graphics::text::{Baseline, Text};
+use prs_markdown::QrMatrix;
 use std::convert::Infallible;
 #[cfg(test)]
 use std::io::{self, Write};

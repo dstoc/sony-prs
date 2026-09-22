@@ -4,7 +4,6 @@ mod display;
 mod framebuffer;
 mod input;
 mod network;
-mod qr;
 mod reader;
 mod refresh;
 mod runtime;

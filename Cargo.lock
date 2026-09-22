@@ -1372,6 +1372,7 @@ dependencies = [
  "fontdue",
  "image",
  "notosans",
+ "qrcode",
  "syntect",
 ]
 
@@ -1425,7 +1426,6 @@ dependencies = [
  "prs-markdown",
  "prs-sync-bundle",
  "prs-sync-protocol",
- "qrcode",
  "reqwest",
  "rustls",
  "serde",

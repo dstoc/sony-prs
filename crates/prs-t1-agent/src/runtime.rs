@@ -3,7 +3,8 @@ use crate::input::{EventReader, RawEvent};
 use crate::refresh::{PageTone, RefreshPolicy, RefreshReason};
 use crate::{display, reader, sync};
 use embedded_graphics::geometry::Point;
-use prs_markdown::reader::{ReaderError, ReaderEvent};
+use prs_markdown::reader::ReaderEvent;
+use prs_markdown::ReaderControllerError;
 use std::fs::OpenOptions;
 use std::future::Future;
 use std::io::{self, Read, Write};
@@ -576,7 +577,7 @@ fn record_reader_event_feedback(state: &mut UiState, event: &ReaderEvent) {
 fn apply_reader_result(
     state: &mut UiState,
     markdown_reader: &mut reader::T1Reader,
-    result: Result<ReaderEvent, ReaderError>,
+    result: Result<ReaderEvent, ReaderControllerError>,
 ) -> Option<DirtyArea> {
     match result {
         Ok(event) => {
@@ -590,23 +591,6 @@ fn apply_reader_result(
                     matches!(&event, ReaderEvent::Opened { .. }).then_some(DirtyArea::Full)
                 })
             };
-            match event {
-                ReaderEvent::ExternalUrl(url) => {
-                    if let Err(error) = markdown_reader.set_external_link_overlay(url) {
-                        state.set_error_feedback(format!("External link QR unavailable: {error}"));
-                        return Some(DirtyArea::Full);
-                    }
-                }
-                ReaderEvent::NoAction => {}
-                ReaderEvent::Opened { .. }
-                | ReaderEvent::PageChanged { .. }
-                | ReaderEvent::Navigated { .. }
-                | ReaderEvent::Back { .. }
-                | ReaderEvent::Forward { .. }
-                | ReaderEvent::Asset(_) => {
-                    markdown_reader.clear_external_link_overlay();
-                }
-            }
             dirty
         }
         Err(error) => {
