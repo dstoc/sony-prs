@@ -430,6 +430,23 @@ impl T1Reader {
         self.controller.font_scale_percent()
     }
 
+    /// Set the bounded Markdown font scale while preserving the current
+    /// passage, viewport, and navigation history.
+    pub fn set_font_scale_percent(
+        &mut self,
+        font_scale_percent: u16,
+    ) -> Result<ReaderEvent, ReaderControllerError> {
+        if self.library_empty {
+            return Err(ReaderControllerError::Reader(ReaderError::NoDocumentOpen));
+        }
+        let layout = self
+            .controller
+            .reader()
+            .reader_layout()
+            .with_font_scale_percent(font_scale_percent);
+        self.controller.set_reader_layout(layout)
+    }
+
     /// Decrease the Markdown font size through the shared reader controller.
     pub fn decrease_font_size(&mut self) -> Result<ReaderEvent, ReaderControllerError> {
         if self.library_empty {

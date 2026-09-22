@@ -39,7 +39,8 @@ pub const DETAILS_PROGRESS_TOP: usize = DETAILS_DEBUG_TOP + DETAILS_DEBUG_HEIGHT
 pub const DETAILS_PROGRESS_HEIGHT: usize = DETAILS_DEBUG_HEIGHT;
 pub const DETAILS_FULLSCREEN_TOP: usize = DETAILS_PROGRESS_TOP + DETAILS_PROGRESS_HEIGHT;
 pub const DETAILS_FULLSCREEN_HEIGHT: usize = DETAILS_DEBUG_HEIGHT;
-pub const DETAILS_ORIENTATION_TOP: usize = DETAILS_FULLSCREEN_TOP + DETAILS_FULLSCREEN_HEIGHT;
+pub const DETAILS_FONT_SIZE_TOP: usize = DETAILS_FULLSCREEN_TOP + DETAILS_FULLSCREEN_HEIGHT;
+pub const DETAILS_ORIENTATION_TOP: usize = DETAILS_FONT_SIZE_TOP + DETAILS_LINE_STEP;
 pub const DETAILS_ACTION_HEADER_TOP: usize = 520;
 pub const DETAILS_ACTION_TOP: usize = 548;
 const DETAILS_LANDSCAPE_ACTION_HEADER_TOP: usize = 456;
@@ -119,6 +120,7 @@ pub enum DetailsRow {
 pub enum DetailsPreference {
     DebugMessages,
     ReadingProgress,
+    FontSize,
     Orientation,
 }
 
@@ -287,7 +289,8 @@ fn details_preference_top(preference: DetailsPreference, width: usize, height: u
     let row: usize = match preference {
         DetailsPreference::DebugMessages => 1,
         DetailsPreference::ReadingProgress => 2,
-        DetailsPreference::Orientation => 4,
+        DetailsPreference::FontSize => 4,
+        DetailsPreference::Orientation => 5,
     };
     CONTENT_TOP
         .saturating_add((row + 1).saturating_mul(details_line_step(width, height)))
@@ -314,10 +317,11 @@ pub fn details_preference_at(
 }
 
 impl DetailsPreference {
-    pub const fn all() -> [Self; 3] {
+    pub const fn all() -> [Self; 4] {
         [
             Self::DebugMessages,
             Self::ReadingProgress,
+            Self::FontSize,
             Self::Orientation,
         ]
     }
@@ -349,11 +353,8 @@ impl DetailsViewModel {
             .map(|line| {
                 if let Some((label, enabled)) = toggle_state(line) {
                     DetailsRow::Toggle { label, enabled }
-                } else if let Some(value) = line.strip_prefix("Orientation ") {
-                    DetailsRow::Choice {
-                        label: "Orientation".into(),
-                        value: value.into(),
-                    }
+                } else if let Some((label, value)) = choice_state(line) {
+                    DetailsRow::Choice { label, value }
                 } else if is_section_heading(line) {
                     DetailsRow::Section(line.clone())
                 } else {
@@ -1370,6 +1371,13 @@ fn toggle_state(line: &str) -> Option<(String, bool)> {
         })
 }
 
+fn choice_state(line: &str) -> Option<(String, String)> {
+    ["Font size", "Orientation"].into_iter().find_map(|label| {
+        let value = line.strip_prefix(label)?.strip_prefix(' ')?;
+        (!value.is_empty()).then(|| (label.to_owned(), value.to_owned()))
+    })
+}
+
 fn draw_debug_toggle(canvas: &mut DisplayCanvas<'_>, y: usize, label: &str, enabled: bool) {
     draw_text(canvas, 24, y, label);
     let left = canvas.width().saturating_sub(170);
@@ -1598,6 +1606,10 @@ mod tests {
                 enabled: false,
             },
             DetailsRow::Choice {
+                label: "Font size".into(),
+                value: "100%".into(),
+            },
+            DetailsRow::Choice {
                 label: "Orientation".into(),
                 value: "Portrait".into(),
             },
@@ -1614,8 +1626,9 @@ mod tests {
             DetailsRow::Value("SD card 654321 KiB".into()),
             DetailsRow::Section("Diagnostics".into()),
             DetailsRow::Value("System: FB ACTIVE  Rotate 0  zygote STOP  dispd STOP".into()),
-            DetailsRow::Value("Runtime: Wake yes  Date 21 Sep 2026 12:34".into()),
-            DetailsRow::Value("Input: 0 touch  0 key  Power none".into()),
+            DetailsRow::Value(
+                "Runtime: Wake yes  Date 21 Sep 2026 12:34  Input 0 touch 0 key  Power none".into(),
+            ),
         ];
         UiViewModel::new(
             status_bar,
@@ -1823,6 +1836,7 @@ mod tests {
             "Debug messages OFF".into(),
             "Reading progress ON".into(),
             "Fullscreen reader ON".into(),
+            "Font size 100%".into(),
             "Orientation Landscape".into(),
         ]);
         assert_eq!(
@@ -1840,6 +1854,10 @@ mod tests {
                 DetailsRow::Toggle {
                     label: "Fullscreen reader".into(),
                     enabled: true,
+                },
+                DetailsRow::Choice {
+                    label: "Font size".into(),
+                    value: "100%".into(),
                 },
                 DetailsRow::Choice {
                     label: "Orientation".into(),
@@ -1887,7 +1905,7 @@ mod tests {
             Some(super::DetailsPreference::Orientation)
         );
         assert_eq!(
-            super::details_preference_at(100, 174, 800, 600),
+            super::details_preference_at(100, 194, 800, 600),
             Some(super::DetailsPreference::Orientation)
         );
     }

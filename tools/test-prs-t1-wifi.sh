@@ -9,6 +9,7 @@ runtime_source="$repo_root/crates/prs-t1-agent/src/runtime.rs"
 display_source="$repo_root/crates/prs-t1-agent/src/display.rs"
 framebuffer_source="$repo_root/crates/prs-t1-agent/src/framebuffer.rs"
 orientation_source="$repo_root/crates/prs-t1-agent/src/orientation.rs"
+preferences_source="$repo_root/crates/prs-t1-agent/src/preferences.rs"
 network_source="$repo_root/crates/prs-t1-agent/src/network.rs"
 network_readme="$repo_root/crates/prs-t1-agent/README.md"
 main_source="$repo_root/crates/prs-t1-agent/src/main.rs"
@@ -73,7 +74,7 @@ PY
 grep -Fq '  prs-t1-agent sync [HTTPS_ENDPOINT] [FRAMEBUFFER]' "$main_source"
 grep -Fq 'fixed 16 MiB encoded archive limit' "$agent_readme"
 
-python3 - "$wifi_source" "$runtime_source" "$display_source" "$framebuffer_source" "$orientation_source" <<'PY'
+python3 - "$wifi_source" "$runtime_source" "$display_source" "$framebuffer_source" "$orientation_source" "$preferences_source" <<'PY'
 from pathlib import Path
 import sys
 
@@ -82,6 +83,7 @@ runtime = Path(sys.argv[2]).read_text()
 display = Path(sys.argv[3]).read_text()
 framebuffer = Path(sys.argv[4]).read_text()
 orientation = Path(sys.argv[5]).read_text()
+preferences = Path(sys.argv[6]).read_text()
 shutdown = source[source.index("fn shutdown()"):source.index("fn stop_dhcp()")]
 stop_dhcp = source[source.index("fn stop_dhcp()"):source.index("fn wait_for_dhcp_service_stop()")]
 
@@ -129,6 +131,11 @@ runtime_run = runtime[runtime.index("pub fn run("):runtime.index("/// Start the 
 assert runtime_run.index("NativeDisplay::open_with_orientation(path, requested_orientation)") < runtime_run.index(
     "let sleep_inactivity_timeout = sleep_inactivity_timeout()?;"
 )
+assert runtime_run.index("NativeDisplay::open_with_orientation(path, requested_orientation)") < runtime_run.index(
+    "let mut preferences = ReaderPreferences::load();"
+)
+assert "set_orientation(preferences.orientation)" in runtime_run
+assert "with_font_scale_percent(preferences.font_scale_percent)" in runtime_run
 assert "requires the first\n    // writable mapping before this environment/configuration parse" in runtime_run
 
 assert "shutdown_after_sync_cancellation_async()" in runtime
@@ -160,6 +167,9 @@ assert "const FBIOPUT_VSCREENINFO: c_ulong = 0x4601;" in framebuffer
 assert "ReaderOrientation::Portrait" in orientation
 assert "ReaderOrientation::Landscape" in orientation
 assert "framebuffer_rotation" in orientation
+assert 'DEFAULT_PREFERENCES_PATH: &str = "/data/misc/prs-t1/reader-preferences.json"' in preferences
+assert 'PRS_T1_PREFERENCES_PATH' in preferences
+assert 'fs::rename(&temporary.path, path)' in preferences
 assert native_display.index("MappedFramebuffer::new_with_protection") < native_display.index(
     "establish_native_orientation"
 )

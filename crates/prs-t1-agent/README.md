@@ -394,6 +394,16 @@ logical content anchor, and keeps the one-pixel reading progress indicator.
 The status bar remains visible on Details / Settings and other operational
 screens. The toggle does not persist across a restart.
 
+The same Settings section shows the persisted **Font size** choice and
+**Orientation** choice. Tap Font size to cycle through 75%, 100%, 125%, and
+150%. Tap Orientation to switch between portrait and landscape. Both choices
+are saved atomically in `/data/misc/prs-t1/reader-preferences.json` and are
+loaded after the first writable framebuffer mapping, so the saved rotation is
+applied without changing the established T1 mmap order. Fresh installs use
+portrait and 100%. A missing, corrupt, unsupported, or newer-format file uses
+those defaults. The file contains no credentials, authorization state, or
+reader content. Fullscreen remains session-scoped and defaults off.
+
 Tap the status bar to open Details / Settings. Tap Display test to show the
 full-screen grayscale calibration pattern. Press MENU briefly to return to
 Details / Settings. A long MENU press still requests a full EPDC redraw.
@@ -422,6 +432,7 @@ The default configuration is:
 | `PRS_T1_LIBRARY_ROOT` | `/mnt/prs-reader` | Absolute tmpfs root for bundle staging and the atomic `current` symlink. |
 | `PRS_T1_TMPFS_LIMIT_BYTES` | `50331648` | Device-specific bound for the current library, streamed archive, and extraction staging. |
 | `PRS_T1_SLEEP_INACTIVITY_SECONDS` | `300` | Awake inactivity period before the native shell enters sleep. The default is five minutes. |
+| `PRS_T1_PREFERENCES_PATH` | `/data/misc/prs-t1/reader-preferences.json` | Durable orientation and font-size preferences. Host tests can override this path. |
 | `PRS_T1_FRAMEBUFFER` | `/dev/graphics/fb0` | Framebuffer used by `sync` when no path argument is supplied. |
 | `PRS_T1_FONT` | `/system/fonts/DroidSans.ttf` | Required regular TrueType face. |
 | `PRS_T1_FONT_BOLD` | regular face | Optional bold face. |
@@ -476,9 +487,11 @@ history, and transient overlays are not history entries.
 Tap the status bar to open **Details / Settings**. The details page groups the
 live snapshot under:
 
-- **Settings** — the **Debug messages** and **Fullscreen reader** toggles are
-  off by default. Enable debug messages when troubleshooting. Fullscreen is a
-  session-only reader presentation setting.
+- **Settings** — **Debug messages** and **Reading progress** default to off and
+  on. **Fullscreen reader** defaults off and is session-only. **Font size**
+  cycles through the bounded 75%–150% range. **Orientation** switches the
+  physical surface. Font size and orientation are the only settings persisted
+  across a restart.
 - **Power** — battery state, temperature, voltage, AC, USB, and supported power states.
 - **Connectivity** — Wi-Fi interface/link/supplicant state, USB gadget state, and ADB.
 - **Synchronization** — the current sync state and the latest failure summary.
@@ -499,8 +512,10 @@ hit testing. The multitouch stream uses the portrait-sized screen coordinate
 order; portrait keeps it unchanged and landscape swaps it into the active
 surface. Portrait uses the existing fbdev rotation `3` and swaps the legacy
 axes to 600x800. Landscape uses fbdev rotation `0` and keeps the legacy
-800x600 axes in their native order. The preference is an in-memory setting
-until persistence is added by a separate change.
+800x600 axes in their native order. The native shell persists only the
+orientation and font-size choices. It stores them in the durable preference
+file described above, separate from the boot-scoped authorization/session state
+and the temporary synchronized library.
 
 The reader feedback strip between the status bar and document content is quiet
 in normal mode. It shows actionable errors until the next touch or physical

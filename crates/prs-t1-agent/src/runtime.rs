@@ -1,6 +1,7 @@
 use crate::framebuffer::{DisplayRegion, NativeDisplay, WaveformMode};
 use crate::input::{EventReader, RawEvent};
 use crate::orientation::ReaderOrientation;
+use crate::preferences::{next_font_scale_percent, ReaderPreferences};
 use crate::refresh::{PageTone, RefreshPolicy, RefreshReason};
 use crate::{display, reader, sync};
 use embedded_graphics::geometry::Point;
@@ -103,10 +104,18 @@ pub fn run(path: &Path, suspend_mode: SuspendMode) -> io::Result<()> {
     let requested_orientation = ReaderOrientation::default();
     let mut display = NativeDisplay::open_with_orientation(path, requested_orientation)
         .map_err(|error| display_error("open native display", error))?;
-    let orientation = display.orientation();
     // Preserve the five-minute default and the test override, but do not move
     // this parse above NativeDisplay::open() without physical T1 validation.
     let sleep_inactivity_timeout = sleep_inactivity_timeout()?;
+    // Read durable presentation settings only after the first writable mmap.
+    // NativeDisplay retains that mapping while applying the saved rotation.
+    let mut preferences = ReaderPreferences::load();
+    if preferences.orientation != display.orientation() {
+        display
+            .set_orientation(preferences.orientation)
+            .map_err(|error| display_error("apply saved display orientation", error))?;
+    }
+    let orientation = display.orientation();
     crate::status::ensure_native_ownership()?;
     let mut wake_lock = WakeLock::open().map_err(|error| display_error("open wake lock", error))?;
     wake_lock
@@ -125,11 +134,15 @@ pub fn run(path: &Path, suspend_mode: SuspendMode) -> io::Result<()> {
     // long-lived synchronization task.
     let mut markdown_reader = reader::T1Reader::open_with_library_root_and_layout(
         reader_config,
-        reader::reader_layout_for_display(display.width(), display.height()),
+        reader::reader_layout_for_display(display.width(), display.height())
+            .with_font_scale_percent(preferences.font_scale_percent),
         sync_task.library_root(),
     )
     .map_err(|error| display_error("open development Markdown reader", error))?;
-    let mut state = UiState::with_orientation(orientation);
+    let mut state = UiState::with_preferences(ReaderPreferences {
+        orientation,
+        ..preferences
+    });
     if sync_task.start() {
         state.sync_started();
     }
@@ -195,6 +208,8 @@ pub fn run(path: &Path, suspend_mode: SuspendMode) -> io::Result<()> {
                 if let Some(operation) = state.take_reader_operation() {
                     let fullscreen_operation =
                         matches!(operation, ReaderOperation::SetFullscreen(_));
+                    let font_scale_operation =
+                        matches!(operation, ReaderOperation::SetFontScale(_));
                     let previous_fullscreen = markdown_reader.fullscreen();
                     let result = match operation {
                         ReaderOperation::PreviousPage => markdown_reader.previous_page(),
@@ -210,11 +225,34 @@ pub fn run(path: &Path, suspend_mode: SuspendMode) -> io::Result<()> {
                                 markdown_reader.toggle_fullscreen()
                             }
                         }
+                        ReaderOperation::SetFontScale(font_scale_percent) => {
+                            markdown_reader.set_font_scale_percent(font_scale_percent)
+                        }
                     };
+                    let result_succeeded = result.is_ok();
                     let mut dirty = apply_reader_result(&mut state, &mut markdown_reader, result);
                     if fullscreen_operation {
                         state.fullscreen = markdown_reader.fullscreen();
                         if state.fullscreen != previous_fullscreen {
+                            dirty = Some(DirtyArea::Full);
+                        }
+                    }
+                    if font_scale_operation && result_succeeded {
+                        let font_scale_percent = markdown_reader.font_scale_percent();
+                        if state.font_scale_percent != font_scale_percent {
+                            state.font_scale_percent = font_scale_percent;
+                            preferences.font_scale_percent = font_scale_percent;
+                            if let Err(error) = preferences.save() {
+                                state.set_error_feedback(format!(
+                                    "Font size changed but could not be saved: {error}"
+                                ));
+                                eprintln!(
+                                    "standalone-test: saving reader font preference failed: {error}"
+                                );
+                            } else {
+                                state
+                                    .set_debug_feedback(format!("Font size {font_scale_percent}%"));
+                            }
                             dirty = Some(DirtyArea::Full);
                         }
                     }
@@ -231,6 +269,7 @@ pub fn run(path: &Path, suspend_mode: SuspendMode) -> io::Result<()> {
                         &mut markdown_reader,
                         &mut state,
                         target,
+                        &mut preferences,
                     );
                     redraw_area = merge_optional_dirty(redraw_area, dirty);
                 }
@@ -636,6 +675,7 @@ fn apply_orientation_change(
     markdown_reader: &mut reader::T1Reader,
     state: &mut UiState,
     target: ReaderOrientation,
+    preferences: &mut ReaderPreferences,
 ) -> Option<DirtyArea> {
     let previous = state.orientation;
     if target == previous {
@@ -658,7 +698,19 @@ fn apply_orientation_change(
     }
 
     state.orientation = target;
-    state.set_debug_feedback(format!("Orientation {}", target.label()));
+    preferences.orientation = target;
+    let saved = if let Err(error) = preferences.save() {
+        state.set_error_feedback(format!(
+            "Orientation changed but could not be saved: {error}"
+        ));
+        eprintln!("standalone-test: saving reader orientation preference failed: {error}");
+        false
+    } else {
+        true
+    };
+    if saved {
+        state.set_debug_feedback(format!("Orientation {}", target.label()));
+    }
     eprintln!(
         "standalone-test: orientation={} framebuffer={}x{} touch-map={}",
         target.label(),
@@ -891,6 +943,10 @@ fn screen_view_model(state: &UiState, wake_lock_held: bool) -> display::UiViewMo
             enabled: state.fullscreen,
         },
         display::DetailsRow::Choice {
+            label: "Font size".into(),
+            value: format!("{}%", state.font_scale_percent),
+        },
+        display::DetailsRow::Choice {
             label: "Orientation".into(),
             value: state.orientation.label().into(),
         },
@@ -951,12 +1007,9 @@ fn screen_view_model(state: &UiState, wake_lock_held: bool) -> display::UiViewMo
             pretty_value(dispd)
         )),
         display::DetailsRow::Value(format!(
-            "Runtime: Wake {}  Date {}",
+            "Runtime: Wake {}  Date {}  Input {} touch {} key  Power {}",
             pretty_value(if wake_lock_held { "yes" } else { "no" }),
-            current_date
-        )),
-        display::DetailsRow::Value(format!(
-            "Input: {} touch  {} key  Power {}",
+            current_date,
             state.touch_events,
             state.key_events,
             state
@@ -1536,6 +1589,7 @@ enum ReaderOperation {
     Back,
     ReturnToEntryPoint,
     SetFullscreen(bool),
+    SetFontScale(u16),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1685,6 +1739,7 @@ enum Feedback {
 struct UiState {
     orientation: ReaderOrientation,
     orientation_change: Option<ReaderOrientation>,
+    font_scale_percent: u16,
     page: UiPage,
     ui_history: Vec<UiPage>,
     mode: &'static str,
@@ -1729,13 +1784,21 @@ struct UiState {
 
 impl UiState {
     fn new() -> Self {
-        Self::with_orientation(ReaderOrientation::default())
+        Self::with_preferences(ReaderPreferences::default())
     }
 
     fn with_orientation(orientation: ReaderOrientation) -> Self {
-        Self {
+        Self::with_preferences(ReaderPreferences {
             orientation,
+            ..ReaderPreferences::default()
+        })
+    }
+
+    fn with_preferences(preferences: ReaderPreferences) -> Self {
+        Self {
+            orientation: preferences.orientation,
             orientation_change: None,
+            font_scale_percent: preferences.font_scale_percent,
             page: UiPage::Home,
             ui_history: Vec::new(),
             mode: "ACTIVE",
@@ -2169,7 +2232,8 @@ impl UiState {
                             ReaderOperation::NextPage => "Next page",
                             ReaderOperation::Back
                             | ReaderOperation::ReturnToEntryPoint
-                            | ReaderOperation::SetFullscreen(_) => {
+                            | ReaderOperation::SetFullscreen(_)
+                            | ReaderOperation::SetFontScale(_) => {
                                 unreachable!()
                             }
                         });
@@ -2376,17 +2440,32 @@ impl UiState {
                     return (PowerAction::None, None);
                 }
                 None => {
-                    if display::details_preference_at(
+                    match display::details_preference_at(
                         self.touch_x,
                         self.touch_y,
                         self.screen_width(),
                         self.screen_height(),
-                    ) == Some(display::DetailsPreference::Orientation)
-                    {
-                        let target = self.orientation.toggle();
-                        self.orientation_change = Some(target);
-                        self.set_debug_feedback(format!("Orientation {} selected", target.label()));
-                        return (PowerAction::None, Some(DirtyArea::Full));
+                    ) {
+                        Some(display::DetailsPreference::FontSize) => {
+                            let target = next_font_scale_percent(self.font_scale_percent);
+                            self.reader_operation = Some(ReaderOperation::SetFontScale(target));
+                            self.set_debug_feedback(format!("Font size {target}% selected"));
+                            return (PowerAction::None, Some(DirtyArea::Full));
+                        }
+                        Some(display::DetailsPreference::Orientation) => {
+                            let target = self.orientation.toggle();
+                            self.orientation_change = Some(target);
+                            self.set_debug_feedback(format!(
+                                "Orientation {} selected",
+                                target.label()
+                            ));
+                            return (PowerAction::None, Some(DirtyArea::Full));
+                        }
+                        Some(
+                            display::DetailsPreference::DebugMessages
+                            | display::DetailsPreference::ReadingProgress,
+                        )
+                        | None => {}
                     }
                 }
             }
@@ -2498,10 +2577,11 @@ impl UiState {
 mod tests {
     use super::{
         display, record_reader_event_feedback, BundleHandoff, DirtyArea, Feedback, InputSourceKind,
-        PageTone, Point, PowerAction, ReaderOperation, ReaderOrientation, RefreshReason,
-        SuspendMode, SyncEvent, UiPage, UiState, ABS_MT_POSITION_X, ABS_MT_POSITION_Y,
-        ABS_MT_TOUCH_MAJOR, ABS_MT_TRACKING_ID, ABS_X, ABS_Y, BTN_TOUCH, EVENT_ABS, EVENT_KEY,
-        EVENT_SYN, KEY_BACK, KEY_HOME, KEY_LEFT, KEY_MENU, KEY_RIGHT, SYN_REPORT,
+        PageTone, Point, PowerAction, ReaderOperation, ReaderOrientation, ReaderPreferences,
+        RefreshReason, SuspendMode, SyncEvent, UiPage, UiState, ABS_MT_POSITION_X,
+        ABS_MT_POSITION_Y, ABS_MT_TOUCH_MAJOR, ABS_MT_TRACKING_ID, ABS_X, ABS_Y, BTN_TOUCH,
+        EVENT_ABS, EVENT_KEY, EVENT_SYN, KEY_BACK, KEY_HOME, KEY_LEFT, KEY_MENU, KEY_RIGHT,
+        SYN_REPORT,
     };
     use crate::input::RawEvent;
     use prs_markdown::reader::ReaderEvent;
@@ -2884,6 +2964,36 @@ mod tests {
     }
 
     #[test]
+    fn font_size_preference_cycles_and_requests_reader_reflow() {
+        let mut state = UiState::new();
+        assert_eq!(state.font_scale_percent, 100);
+        state.page = UiPage::Details;
+        state.touch_x = 100;
+        state.touch_y = (display::DETAILS_FONT_SIZE_TOP + 10) as i32;
+        state.touch_down = true;
+
+        let (dirty, action) = state.observe(InputSourceKind::Touch, event(BTN_TOUCH, 0, 1_000_000));
+
+        assert_eq!(action, PowerAction::None);
+        assert_eq!(dirty, Some(DirtyArea::Full));
+        assert_eq!(
+            state.take_reader_operation(),
+            Some(ReaderOperation::SetFontScale(125))
+        );
+    }
+
+    #[test]
+    fn saved_preferences_seed_orientation_and_font_size_state() {
+        let state = UiState::with_preferences(ReaderPreferences {
+            orientation: ReaderOrientation::Landscape,
+            font_scale_percent: 150,
+        });
+
+        assert_eq!(state.orientation, ReaderOrientation::Landscape);
+        assert_eq!(state.font_scale_percent, 150);
+    }
+
+    #[test]
     fn legacy_touch_axes_follow_landscape_framebuffer_orientation() {
         let mut state = UiState::with_orientation(ReaderOrientation::Landscape);
         let mut axis_x = event(ABS_X, 770, 1_000_000);
@@ -2907,7 +3017,7 @@ mod tests {
         // The inverse axis order reaches the landscape Orientation row.
         let mut position_y = event(ABS_MT_POSITION_Y, 100, 1_000_000);
         position_y.event_type = EVENT_ABS;
-        let mut position_x = event(ABS_MT_POSITION_X, 174, 1_000_001);
+        let mut position_x = event(ABS_MT_POSITION_X, 194, 1_000_001);
         position_x.event_type = EVENT_ABS;
         let mut press = event(ABS_MT_TOUCH_MAJOR, 12, 1_000_002);
         press.event_type = EVENT_ABS;
@@ -2924,7 +3034,7 @@ mod tests {
 
         assert_eq!(action, super::PowerAction::None);
         assert_eq!(state.touch_x, 100);
-        assert_eq!(state.touch_y, 174);
+        assert_eq!(state.touch_y, 194);
         assert_eq!(
             state.take_orientation_change(),
             Some(ReaderOrientation::Portrait)

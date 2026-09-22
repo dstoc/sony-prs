@@ -5,6 +5,7 @@ mod framebuffer;
 mod input;
 mod network;
 mod orientation;
+mod preferences;
 mod reader;
 mod refresh;
 mod runtime;
