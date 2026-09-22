@@ -16,15 +16,13 @@ const canvas = document.querySelector("#reader-canvas");
 const context = canvas.getContext("2d", { alpha: false });
 const chooseButton = document.querySelector("#choose-directory");
 const entryPoint = document.querySelector("#entry-point");
-const reference = document.querySelector("#reference");
-const resolveButton = document.querySelector("#resolve-reference");
 const commands = new Map(
   [...document.querySelectorAll("[data-command]")].map((button) => [
     button.dataset.command,
     button,
   ]),
 );
-let simulator;
+const controlButtons = [...commands.values()];
 let reader;
 
 function drawFrame(frame) {
@@ -33,13 +31,22 @@ function drawFrame(frame) {
 }
 
 function render(feedback) {
-  drawFrame(simulator.render_frame());
-  status.textContent = feedback + " · page " + simulator.current_page()
-    + " of " + simulator.page_count();
+  drawFrame(reader.render_frame());
+  status.textContent = feedback + " · " + reader.current_document()
+    + " · page " + reader.current_page() + " of " + reader.page_count();
 }
 
 function apply(command) {
-  render(simulator[command]());
+  if (!reader) {
+    return;
+  }
+  render(reader[command]());
+}
+
+function setControlsDisabled(disabled) {
+  for (const button of controlButtons) {
+    button.disabled = disabled;
+  }
 }
 
 function errorMessage(error) {
@@ -48,33 +55,17 @@ function errorMessage(error) {
 
 async function chooseLibrary() {
   chooseButton.disabled = true;
-  resolveButton.disabled = true;
   status.textContent = "Reading the selected directory…";
   try {
     const selected = await chooseDirectory();
     const path = entryPoint.value.trim() || ENTRY_POINT;
-    reader = load_directory(selected.files, path);
-    resolveButton.disabled = false;
-    status.textContent = "Loaded " + reader.current_document() + " from "
-      + selected.name + " (" + reader.page_count() + " page"
-      + (reader.page_count() === 1 ? "" : "s") + ").";
+    const selectedReader = load_directory(selected.files, path);
+    reader = selectedReader;
+    render("Loaded " + selected.name);
   } catch (error) {
     status.textContent = "Reader error: " + errorMessage(error);
   } finally {
     chooseButton.disabled = false;
-  }
-}
-
-function resolveReference() {
-  if (!reader) {
-    return;
-  }
-  try {
-    const target = reader.resolve_reference(reference.value);
-    status.textContent = "Resolved " + reference.value + " as " + target.kind
-      + (target.path ? " (" + target.path + ")" : "") + ".";
-  } catch (error) {
-    status.textContent = "Reader error: " + errorMessage(error);
   }
 }
 
@@ -86,14 +77,14 @@ function isEditableTarget(target) {
 }
 
 chooseButton.addEventListener("click", chooseLibrary);
-resolveButton.addEventListener("click", resolveReference);
 
 try {
   await init();
   canvas.width = logical_width();
   canvas.height = logical_height();
-  simulator = new ReaderSimulator();
-  render(proof_of_life() + " " + simulator.feedback());
+  reader = new ReaderSimulator();
+  render(proof_of_life() + " " + reader.feedback());
+  setControlsDisabled(false);
   chooseButton.disabled = false;
 
   canvas.addEventListener("pointerdown", (event) => {
@@ -109,7 +100,7 @@ try {
       logical_height(),
     );
     if (point) {
-      render(simulator.pointer_up(point.x, point.y));
+      render(reader.pointer_up(point.x, point.y));
     }
   });
 
@@ -129,5 +120,6 @@ try {
   });
 } catch (error) {
   status.textContent = "WASM load failed: " + errorMessage(error);
+  setControlsDisabled(true);
   chooseButton.disabled = true;
 }

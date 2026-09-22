@@ -56,16 +56,23 @@ The script checks both tool versions. It writes the complete static page to
 target/reader-web/ and writes the intermediate Rust artifact to
 target/wasm32-unknown-unknown/release/prs_reader_web.wasm.
 
+This is the one assembly command. It removes the previous assembled output,
+builds the Rust/WASM module, runs wasm-bindgen, and copies the hand-written
+HTML, CSS, and JavaScript files. The generated binding files stay under
+`target/reader-web/pkg/`; the copied static shell stays at the output root.
+
 ## Local server
 
-Serve the assembled page from its output directory:
+Serve the assembled page with the repository helper:
 
-python3 -m http.server 8000 --directory target/reader-web
+tools/reader-web-serve.sh 8000
 
 Open <http://127.0.0.1:8000/> in a browser. Use the canvas, Previous, Next,
 Home, and Back controls. The keyboard shortcuts are Left Arrow, Right Arrow,
-Home, Backspace, and Alt+Left for Back. Use a static server because the browser
-loads the generated ES module and WASM file through HTTP.
+Home, Backspace, and Alt+Left for Back. Select **Open directory** to load a
+root-relative Markdown library through the browser File System Access API. Use
+a static server because the browser loads the generated ES module and WASM file
+through HTTP.
 
 The canvas backing store stays at 600 by 800 while CSS may scale its display
 size. Pointer coordinates are mapped through getBoundingClientRect() before

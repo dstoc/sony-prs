@@ -11,7 +11,7 @@ use prs_markdown::resources::ResourceError;
 use prs_markdown::typography::{FontConfig, FontdueTextEngine};
 use prs_markdown::{
     BrowserResourceProvider as DirectoryResourceProvider, Reader, ReaderStyle, ResourceProvider,
-    ResourceTarget, Viewport, T1_VIEWPORT,
+    ResourceTarget, T1_VIEWPORT,
 };
 use std::collections::BTreeMap;
 use std::convert::Infallible;
@@ -19,15 +19,162 @@ use std::path::{Path, PathBuf};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 
+/// The rendered reader surface shared by the demo and directory-backed
+/// sessions. The browser only supplies a resource provider; parsing, layout,
+/// navigation, hit testing, and rasterization stay in the shared Rust reader.
+struct ReaderSurface<P>
+where
+    P: ResourceProvider,
+{
+    reader: Reader<P, FontdueTextEngine, ComrakParser>,
+    renderer: EmbeddedGraphicsRenderer<FontdueTextEngine>,
+    framebuffer: RgbaFramebuffer,
+    feedback: String,
+}
+
+impl<P> ReaderSurface<P>
+where
+    P: ResourceProvider,
+{
+    fn new(provider: P) -> Result<Self, String> {
+        let fonts = FontConfig::from_faces_with_monospace(
+            notosans::REGULAR_TTF,
+            notosans::BOLD_TTF,
+            notosans::ITALIC_TTF,
+            notosans::BOLD_ITALIC_TTF,
+            notosans::REGULAR_TTF,
+            notosans::BOLD_TTF,
+            notosans::ITALIC_TTF,
+            notosans::BOLD_ITALIC_TTF,
+        );
+        let engine = FontdueTextEngine::new(fonts, GLYPH_CACHE_CAPACITY)
+            .map_err(|error| format!("load browser reader fonts: {error}"))?;
+        let mut reader = Reader::with_components(
+            provider,
+            ComrakParser::default(),
+            engine.clone(),
+            ReaderStyle::default(),
+            T1_VIEWPORT,
+        );
+        reader
+            .open()
+            .map_err(|error| format!("open browser reader: {error}"))?;
+
+        Ok(Self {
+            reader,
+            renderer: EmbeddedGraphicsRenderer::new(engine),
+            framebuffer: RgbaFramebuffer::new(Size::new(T1_VIEWPORT.width, T1_VIEWPORT.height)),
+            feedback: "Ready. Use a link, a control, or a keyboard shortcut.".to_owned(),
+        })
+    }
+
+    fn render_frame(&mut self) -> Result<Vec<u8>, String> {
+        self.framebuffer
+            .clear(Rgb888::WHITE)
+            .expect("framebuffer clear cannot fail");
+        self.reader
+            .render_current_page(&mut self.renderer, &mut self.framebuffer)
+            .map_err(|error| format!("render browser reader: {error}"))?;
+        Ok(self.framebuffer.pixels().to_vec())
+    }
+
+    fn pointer_up(&mut self, x: f64, y: f64) -> String {
+        if !x.is_finite()
+            || !y.is_finite()
+            || x < 0.0
+            || x >= f64::from(T1_VIEWPORT.width)
+            || y < 0.0
+            || y >= f64::from(T1_VIEWPORT.height)
+        {
+            self.feedback = "No reader action.".to_owned();
+            return self.feedback.clone();
+        }
+
+        let point = Point::new(x.floor() as i32, y.floor() as i32);
+        let result = self.reader.activate_at(point);
+        let result = match result {
+            Ok(ReaderEvent::NoAction) => {
+                if point.x >= self.reader.viewport().width as i32 / 2 {
+                    self.reader.next_page_event()
+                } else {
+                    self.reader.previous_page_event()
+                }
+            }
+            result => result,
+        };
+        self.apply_result(result)
+    }
+
+    fn previous(&mut self) -> String {
+        let result = self.reader.previous_page_event();
+        self.apply_result(result)
+    }
+
+    fn next(&mut self) -> String {
+        let result = self.reader.next_page_event();
+        self.apply_result(result)
+    }
+
+    fn back(&mut self) -> String {
+        let result = self.reader.back_event();
+        self.apply_result(result)
+    }
+
+    fn home(&mut self) -> String {
+        let entry_point = self.reader.provider().entry_point().display().to_string();
+        let result = self
+            .reader
+            .activate(NavigationTarget::Location(DocumentLocation::new(
+                DocumentId::from(entry_point),
+                None,
+            )));
+        self.apply_result(result)
+    }
+
+    fn current_document(&self) -> String {
+        self.reader
+            .current_location()
+            .map(|location| location.document.as_ref().to_owned())
+            .unwrap_or_default()
+    }
+
+    fn page_count(&self) -> u32 {
+        self.reader.page_count().try_into().unwrap_or(u32::MAX)
+    }
+
+    fn current_page(&self) -> u32 {
+        self.reader.current_page_number().unwrap_or_default() as u32
+    }
+
+    fn feedback(&self) -> String {
+        self.feedback.clone()
+    }
+
+    fn apply_result(&mut self, result: Result<ReaderEvent, ReaderError>) -> String {
+        self.feedback = match result {
+            Ok(ReaderEvent::ExternalUrl(url)) => format!("External link: {url}"),
+            Ok(ReaderEvent::Asset(path)) => format!("Asset link: {}", path.display()),
+            Ok(ReaderEvent::NoAction) => "No reader action.".to_owned(),
+            Ok(ReaderEvent::Opened { .. }) => "Opened the entry document.".to_owned(),
+            Ok(ReaderEvent::PageChanged { .. }) => "Page changed.".to_owned(),
+            Ok(ReaderEvent::Navigated { .. }) => "Followed the reader link.".to_owned(),
+            Ok(ReaderEvent::Back { .. }) => "Returned through reader history.".to_owned(),
+            Ok(ReaderEvent::Forward { .. }) => "Moved forward through reader history.".to_owned(),
+            Err(error) => format!("Reader error: {error}"),
+        };
+        self.feedback.clone()
+    }
+}
+
 /// A reader backed by a snapshot of the directory selected in the browser.
 ///
 /// The File System Access API is asynchronous, so JavaScript creates the
 /// snapshot before calling [`load_directory`]. Once constructed, the shared
 /// reader uses the same synchronous `ResourceProvider` boundary as native
-/// readers.
+/// readers and renders through the same WASM framebuffer as the demo reader.
 #[wasm_bindgen]
 pub struct BrowserReader {
-    reader: Reader<DirectoryResourceProvider>,
+    surface: ReaderSurface<DirectoryResourceProvider>,
 }
 
 /// Build and open a reader from the files returned by `directory-library.js`.
@@ -40,46 +187,73 @@ pub fn load_directory(files: Array, entry_point: String) -> Result<BrowserReader
     let files = parse_files(files)?;
     let provider = DirectoryResourceProvider::new(Path::new(&entry_point), files)
         .map_err(|error| structured_error("resource", error))?;
-    let mut reader = Reader::new(
-        provider,
-        prs_markdown::ReaderStyle::default(),
-        Viewport::new(600, 800),
-    );
-    reader
-        .open()
-        .map_err(|error| structured_reader_error("open", error))?;
-    Ok(BrowserReader { reader })
+    let surface = ReaderSurface::new(provider).map_err(|error| structured_error("open", error))?;
+    Ok(BrowserReader { surface })
 }
 
 #[wasm_bindgen]
 impl BrowserReader {
     pub fn entry_point(&self) -> String {
-        self.reader.provider().entry_point().display().to_string()
+        self.surface
+            .reader
+            .provider()
+            .entry_point()
+            .display()
+            .to_string()
     }
 
     pub fn current_document(&self) -> String {
-        self.reader
-            .current_location()
-            .map(|location| location.document.as_ref().to_owned())
-            .unwrap_or_default()
+        self.surface.current_document()
     }
 
     pub fn page_count(&self) -> u32 {
-        self.reader.page_count().try_into().unwrap_or(u32::MAX)
+        self.surface.page_count()
+    }
+
+    pub fn current_page(&self) -> u32 {
+        self.surface.current_page()
+    }
+
+    pub fn feedback(&self) -> String {
+        self.surface.feedback()
+    }
+
+    pub fn render_frame(&mut self) -> Result<Vec<u8>, JsValue> {
+        self.surface
+            .render_frame()
+            .map_err(|error| JsValue::from_str(&error))
+    }
+
+    pub fn pointer_up(&mut self, x: f64, y: f64) -> String {
+        self.surface.pointer_up(x, y)
+    }
+
+    pub fn previous(&mut self) -> String {
+        self.surface.previous()
+    }
+
+    pub fn next(&mut self) -> String {
+        self.surface.next()
+    }
+
+    pub fn back(&mut self) -> String {
+        self.surface.back()
+    }
+
+    pub fn home(&mut self) -> String {
+        self.surface.home()
     }
 
     /// Resolve a local document or asset through the selected directory.
-    ///
-    /// This is useful to the simulator shell until its display renderer is
-    /// wired to link hit regions. It also ensures browser navigation goes
-    /// through the shared Rust resource policy.
     pub fn resolve_reference(&self, reference: &str) -> Result<JsValue, JsValue> {
         let containing_document = self
+            .surface
             .reader
             .current_location()
             .map(|location| PathBuf::from(location.document.as_ref()))
             .ok_or_else(|| structured_error("reader", "no document is open"))?;
         let target = self
+            .surface
             .reader
             .provider()
             .resolve_reference_from(&containing_document, reference)
@@ -90,6 +264,7 @@ impl BrowserReader {
     /// Follow a document, anchor, asset, or external URL reference.
     pub fn follow_reference(&mut self, reference: &str) -> Result<JsValue, JsValue> {
         let event = self
+            .surface
             .reader
             .follow_reference(reference)
             .map_err(|error| structured_reader_error("navigate", error))?;
@@ -100,6 +275,7 @@ impl BrowserReader {
     /// used by Markdown image loading.
     pub fn read_asset(&self, path: &str) -> Result<Uint8Array, JsValue> {
         let bytes = self
+            .surface
             .reader
             .provider()
             .read_binary(Path::new(path))
@@ -444,142 +620,58 @@ impl ResourceProvider for DemoResourceProvider {
 /// testing, and rasterization to the shared prs-markdown implementation.
 #[wasm_bindgen]
 pub struct ReaderSimulator {
-    reader: Reader<DemoResourceProvider, FontdueTextEngine, ComrakParser>,
-    renderer: EmbeddedGraphicsRenderer<FontdueTextEngine>,
-    framebuffer: RgbaFramebuffer,
-    feedback: String,
+    surface: ReaderSurface<DemoResourceProvider>,
 }
 
 #[wasm_bindgen]
 impl ReaderSimulator {
     #[wasm_bindgen(constructor)]
     pub fn new() -> Result<ReaderSimulator, JsValue> {
-        let fonts = FontConfig::from_faces_with_monospace(
-            notosans::REGULAR_TTF,
-            notosans::BOLD_TTF,
-            notosans::ITALIC_TTF,
-            notosans::BOLD_ITALIC_TTF,
-            notosans::REGULAR_TTF,
-            notosans::BOLD_TTF,
-            notosans::ITALIC_TTF,
-            notosans::BOLD_ITALIC_TTF,
-        );
-        let engine = FontdueTextEngine::new(fonts, GLYPH_CACHE_CAPACITY)
-            .map_err(|error| JsValue::from_str(&format!("load browser reader fonts: {error}")))?;
-        let provider = DemoResourceProvider::demo();
-        let mut reader = Reader::with_components(
-            provider,
-            ComrakParser::default(),
-            engine.clone(),
-            ReaderStyle::default(),
-            T1_VIEWPORT,
-        );
-        reader
-            .open()
-            .map_err(|error| JsValue::from_str(&format!("open browser reader: {error}")))?;
-
-        Ok(Self {
-            reader,
-            renderer: EmbeddedGraphicsRenderer::new(engine),
-            framebuffer: RgbaFramebuffer::new(Size::new(T1_VIEWPORT.width, T1_VIEWPORT.height)),
-            feedback: "Ready. Use a link, a control, or a keyboard shortcut.".to_owned(),
-        })
+        let surface = ReaderSurface::new(DemoResourceProvider::demo())
+            .map_err(|error| JsValue::from_str(&error))?;
+        Ok(Self { surface })
     }
 
-    /// Render the current page and return tightly packed RGBA bytes.
-    ///
-    /// The returned array always contains 600 * 800 * 4 bytes. JavaScript
-    /// may copy it into an ImageData object; CSS can scale the canvas without
-    /// changing these logical dimensions.
-    pub fn render_frame(&mut self) -> Result<Vec<u8>, JsValue> {
-        self.framebuffer
-            .clear(Rgb888::WHITE)
-            .expect("framebuffer clear cannot fail");
-        self.reader
-            .render_current_page(&mut self.renderer, &mut self.framebuffer)
-            .map_err(|error| JsValue::from_str(&format!("render browser reader: {error}")))?;
-        Ok(self.framebuffer.pixels().to_vec())
-    }
-
-    /// Activate a logical screen point. Blank taps retain the native reader's
-    /// conventional left/right page-turn behavior.
-    pub fn pointer_up(&mut self, x: f64, y: f64) -> String {
-        if !x.is_finite()
-            || !y.is_finite()
-            || x < 0.0
-            || x >= f64::from(T1_VIEWPORT.width)
-            || y < 0.0
-            || y >= f64::from(T1_VIEWPORT.height)
-        {
-            self.feedback = "No reader action.".to_owned();
-            return self.feedback.clone();
-        }
-
-        let point = Point::new(x.floor() as i32, y.floor() as i32);
-        let result = self.reader.activate_at(point);
-        let result = match result {
-            Ok(ReaderEvent::NoAction) => {
-                if point.x >= self.reader.viewport().width as i32 / 2 {
-                    self.reader.next_page_event()
-                } else {
-                    self.reader.previous_page_event()
-                }
-            }
-            result => result,
-        };
-        self.apply_result(result)
-    }
-
-    pub fn previous(&mut self) -> String {
-        let result = self.reader.previous_page_event();
-        self.apply_result(result)
-    }
-
-    pub fn next(&mut self) -> String {
-        let result = self.reader.next_page_event();
-        self.apply_result(result)
-    }
-
-    pub fn back(&mut self) -> String {
-        let result = self.reader.back_event();
-        self.apply_result(result)
-    }
-
-    pub fn home(&mut self) -> String {
-        let result = self
-            .reader
-            .activate(NavigationTarget::Location(DocumentLocation::new(
-                DocumentId::from(ENTRY_POINT),
-                None,
-            )));
-        self.apply_result(result)
+    pub fn current_document(&self) -> String {
+        self.surface.current_document()
     }
 
     pub fn current_page(&self) -> u32 {
-        self.reader.current_page_number().unwrap_or_default() as u32
+        self.surface.current_page()
     }
 
     pub fn page_count(&self) -> u32 {
-        self.reader.page_count() as u32
+        self.surface.page_count()
     }
 
     pub fn feedback(&self) -> String {
-        self.feedback.clone()
+        self.surface.feedback()
     }
 
-    fn apply_result(&mut self, result: Result<ReaderEvent, ReaderError>) -> String {
-        self.feedback = match result {
-            Ok(ReaderEvent::ExternalUrl(url)) => format!("External link: {url}"),
-            Ok(ReaderEvent::Asset(path)) => format!("Asset link: {}", path.display()),
-            Ok(ReaderEvent::NoAction) => "No reader action.".to_owned(),
-            Ok(ReaderEvent::Opened { .. }) => "Opened the entry document.".to_owned(),
-            Ok(ReaderEvent::PageChanged { .. }) => "Page changed.".to_owned(),
-            Ok(ReaderEvent::Navigated { .. }) => "Followed the reader link.".to_owned(),
-            Ok(ReaderEvent::Back { .. }) => "Returned through reader history.".to_owned(),
-            Ok(ReaderEvent::Forward { .. }) => "Moved forward through reader history.".to_owned(),
-            Err(error) => format!("Reader error: {error}"),
-        };
-        self.feedback.clone()
+    pub fn render_frame(&mut self) -> Result<Vec<u8>, JsValue> {
+        self.surface
+            .render_frame()
+            .map_err(|error| JsValue::from_str(&error))
+    }
+
+    pub fn pointer_up(&mut self, x: f64, y: f64) -> String {
+        self.surface.pointer_up(x, y)
+    }
+
+    pub fn previous(&mut self) -> String {
+        self.surface.previous()
+    }
+
+    pub fn next(&mut self) -> String {
+        self.surface.next()
+    }
+
+    pub fn back(&mut self) -> String {
+        self.surface.back()
+    }
+
+    pub fn home(&mut self) -> String {
+        self.surface.home()
     }
 }
 
@@ -696,8 +788,9 @@ mod tests {
     #[test]
     fn browser_reader_exposes_shared_links_and_history() {
         let mut app = ReaderSimulator::new().expect("demo reader opens");
-        assert!(app.reader.page_count() > 1);
+        assert!(app.surface.reader.page_count() > 1);
         let link = app
+            .surface
             .reader
             .current_page()
             .expect("entry page")
@@ -709,23 +802,44 @@ mod tests {
 
         app.pointer_up(f64::from(link.x + 1), f64::from(link.y + 1));
         assert_eq!(
-            app.reader
+            app.surface
+                .reader
                 .current_location()
                 .map(|location| location.document.as_ref()),
             Some("chapter.md")
         );
-        assert!(app.reader.can_go_back());
+        assert!(app.surface.reader.can_go_back());
 
         app.back();
         assert_eq!(
-            app.reader
+            app.surface
+                .reader
                 .current_location()
                 .map(|location| location.document.as_ref()),
             Some(ENTRY_POINT)
         );
         app.next();
-        assert_eq!(app.reader.current_page_index(), Some(1));
+        assert_eq!(app.surface.reader.current_page_index(), Some(1));
         app.previous();
-        assert_eq!(app.reader.current_page_index(), Some(0));
+        assert_eq!(app.surface.reader.current_page_index(), Some(0));
+    }
+
+    #[test]
+    fn directory_reader_renders_the_selected_entry_point() {
+        let provider = DirectoryResourceProvider::new(
+            Path::new("README.md"),
+            vec![(
+                PathBuf::from("README.md"),
+                b"# Selected directory\n\nThis is rendered by the live directory reader.\n"
+                    .to_vec(),
+            )],
+        )
+        .expect("create directory provider");
+        let mut surface = ReaderSurface::new(provider).expect("open directory reader");
+
+        assert_eq!(surface.current_document(), "README.md");
+        let frame = surface.render_frame().expect("render directory reader");
+        assert_eq!(frame.len(), 600 * 800 * 4);
+        assert!(frame.chunks_exact(4).any(|pixel| pixel != [u8::MAX; 4]));
     }
 }

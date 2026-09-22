@@ -8,6 +8,8 @@ grep -Fq 'wasm-bindgen = "=0.2.128"' "$repo_root/web/reader-web/Cargo.toml"
 grep -Fq 'js-sys = "=0.3.105"' "$repo_root/web/reader-web/Cargo.toml"
 grep -Fq 'type="module" src="./main.js"' "$repo_root/web/reader-web/index.html"
 grep -Fq 'ReaderSimulator' "$repo_root/web/reader-web/main.js"
+grep -Fq 'BrowserReader' "$repo_root/web/reader-web/src/lib.rs"
+grep -Fq 'pub fn render_frame(&mut self)' "$repo_root/web/reader-web/src/lib.rs"
 grep -Fq 'canvas.width = logical_width();' "$repo_root/web/reader-web/main.js"
 grep -Fq 'canvas.height = logical_height();' "$repo_root/web/reader-web/main.js"
 grep -Fq 'new ImageData' "$repo_root/web/reader-web/main.js"
@@ -21,8 +23,12 @@ grep -Fq 'proof_of_life,' "$repo_root/web/reader-web/main.js"
 grep -Fq 'from "./pkg/prs_reader_web.js"' "$repo_root/web/reader-web/main.js"
 grep -Fq 'showDirectoryPicker' "$repo_root/web/reader-web/directory-library.js"
 grep -Fq 'load_directory(selected.files, path)' "$repo_root/web/reader-web/main.js"
+grep -Fq 'const selectedReader = load_directory(selected.files, path);' "$repo_root/web/reader-web/main.js"
+grep -Fq 'reader = selectedReader;' "$repo_root/web/reader-web/main.js"
+grep -Fq 'render("Loaded " + selected.name);' "$repo_root/web/reader-web/main.js"
 grep -Fq 'logicalPointFromPointer' "$repo_root/web/reader-web/main.js"
 grep -Fq 'pointer_up(point.x, point.y)' "$repo_root/web/reader-web/main.js"
+grep -Fq 'reader.pointer_up(point.x, point.y)' "$repo_root/web/reader-web/main.js"
 grep -Fq 'data-command="previous"' "$repo_root/web/reader-web/index.html"
 grep -Fq 'data-command="next"' "$repo_root/web/reader-web/index.html"
 grep -Fq 'data-command="home"' "$repo_root/web/reader-web/index.html"
@@ -31,6 +37,14 @@ grep -Fq 'width="600"' "$repo_root/web/reader-web/index.html"
 grep -Fq 'height="800"' "$repo_root/web/reader-web/index.html"
 grep -Fq 'getBoundingClientRect' "$repo_root/web/reader-web/input.mjs"
 grep -Fq 'wasm_bindgen_version=0.2.128' <("$repo_root/tools/reader-web-build.sh" print-github-actions)
+test -x "$repo_root/tools/reader-web-serve.sh"
+grep -Fq 'python3 -m http.server' "$repo_root/tools/reader-web-serve.sh"
+grep -Fq 'tools/reader-web-serve.sh 8000' "$repo_root/web/reader-web/README.md"
+
+if grep -Fq 'simulator.' "$repo_root/web/reader-web/main.js"; then
+  printf '%s\n' 'main.js must route all actions through the active reader' >&2
+  exit 1
+fi
 
 node "$repo_root/tools/test-reader-web-input.mjs"
 
