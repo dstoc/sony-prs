@@ -300,7 +300,7 @@ fn rasterize(decoded: DynamicImage, max_width: u32, max_height: u32) -> RasterIm
         max_height.max(1),
     );
     let rgba = if width != decoded.width() || height != decoded.height() {
-        decoded.resize(width, height, image::imageops::FilterType::Triangle)
+        decoded.resize_exact(width, height, image::imageops::FilterType::Triangle)
     } else {
         decoded
     }
@@ -431,6 +431,20 @@ mod tests {
             assert_eq!(image.pixels().len(), 2);
             assert!(image.pixels().iter().any(|pixel| *pixel < 255));
         }
+    }
+
+    #[test]
+    fn decode_keeps_fitted_dimensions_for_large_landscape_images() {
+        let source = ImageBuffer::from_pixel(2600, 1520, Rgba([80, 120, 160, 255]));
+        let mut bytes = Cursor::new(Vec::new());
+        DynamicImage::ImageRgba8(source)
+            .write_to(&mut bytes, ImageFormat::Png)
+            .expect("test image encoding");
+
+        let image = decode(bytes.get_ref(), 552, 676).expect("large image should decode");
+
+        assert_eq!((image.width(), image.height()), (552, 322));
+        assert_eq!(image.pixels().len(), 552 * 322);
     }
 
     #[test]
