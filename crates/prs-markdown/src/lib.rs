@@ -15,6 +15,7 @@
 
 pub mod document;
 pub mod geometry;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod harness;
 pub mod highlighting;
 pub mod image;
@@ -35,6 +36,7 @@ pub use document::{
 pub use geometry::{
     intersection, translate, Rect, Viewport, T1_VIEWPORT, TASK_CHECKBOX_GAP, TASK_CHECKBOX_SIZE,
 };
+#[cfg(not(target_arch = "wasm32"))]
 pub use harness::{render_page, HostImage, HostReader};
 pub use highlighting::{
     CodeHighlighter, HighlightSpan, HighlightedCode, HighlightedLine, SyntectHighlighter,
@@ -59,9 +61,9 @@ pub use reader::{
     ReaderRenderError, ReaderSession, ReadingLocation,
 };
 pub use render::EmbeddedGraphicsRenderer;
-pub use resources::{
-    FileSystemResourceProvider, FileSystemResources, ResourceProvider, ResourceTarget,
-};
+#[cfg(not(target_arch = "wasm32"))]
+pub use resources::{FileSystemResourceProvider, FileSystemResources};
+pub use resources::{ResourceProvider, ResourceTarget};
 pub use style::{BorderStyle, Color, FillStyle, Insets, ReaderStyle, TextStyle};
 pub use typography::{
     FontConfig, FontError, FontFace, FontLoadConfig, FontdueTextEngine, GlyphBitmap, LineMetrics,

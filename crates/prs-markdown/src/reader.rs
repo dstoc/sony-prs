@@ -601,7 +601,7 @@ where
 
     /// Open the provider's configured current document as a new session.
     pub fn open(&mut self) -> Result<ReaderEvent, ReaderError> {
-        let path = self.provider.current_document_path().to_owned();
+        let path = self.provider.entry_point().to_owned();
         self.open_document(path)
     }
 

@@ -8,9 +8,13 @@
 
 use std::error::Error;
 use std::fmt;
+#[cfg(not(target_arch = "wasm32"))]
 use std::fs;
+#[cfg(not(target_arch = "wasm32"))]
 use std::io::{self, Read};
-use std::path::{Component, Path, PathBuf};
+#[cfg(not(target_arch = "wasm32"))]
+use std::path::Component;
+use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ResourceId(String);
@@ -81,8 +85,17 @@ impl ResourceTarget {
 /// reference from the containing document supplied by the caller rather than
 /// from the process working directory.
 pub trait ResourceProvider {
-    /// The current document in the provider's root-relative path namespace.
+    /// The entry-point document in the provider's logical path namespace.
     fn document_path(&self) -> &Path;
+
+    /// Return the document opened by [`crate::reader::Reader::open`].
+    ///
+    /// This is a logical resource identifier, not a process filesystem path.
+    /// Browser-backed providers can use the same reader with an in-memory or
+    /// URL-backed namespace.
+    fn entry_point(&self) -> &Path {
+        self.document_path()
+    }
 
     fn current_document_path(&self) -> &Path {
         self.document_path()
@@ -189,11 +202,13 @@ impl Error for ResourceError {}
 /// symlink inside the root to reach outside it.  The current document and all
 /// resolved local targets are exposed as root-relative paths.
 #[derive(Clone, Debug)]
+#[cfg(not(target_arch = "wasm32"))]
 pub struct FileSystemResourceProvider {
     root: PathBuf,
     document: PathBuf,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl FileSystemResourceProvider {
     pub fn new(root: impl AsRef<Path>, document: impl AsRef<Path>) -> Result<Self, ResourceError> {
         let root = fs::canonicalize(root.as_ref()).map_err(|error| {
@@ -368,8 +383,13 @@ impl FileSystemResourceProvider {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl ResourceProvider for FileSystemResourceProvider {
     fn document_path(&self) -> &Path {
+        self.document_path()
+    }
+
+    fn entry_point(&self) -> &Path {
         self.document_path()
     }
 
@@ -399,10 +419,14 @@ impl ResourceProvider for FileSystemResourceProvider {
 }
 
 /// British-spelling alias for callers that use “filesystem” consistently.
+#[cfg(not(target_arch = "wasm32"))]
 pub type FilesystemResourceProvider = FileSystemResourceProvider;
+#[cfg(not(target_arch = "wasm32"))]
 pub type FileSystemResources = FileSystemResourceProvider;
+#[cfg(not(target_arch = "wasm32"))]
 pub type FilesystemResources = FileSystemResourceProvider;
 
+#[cfg(not(target_arch = "wasm32"))]
 fn namespace_path(root: &Path, path: &Path) -> Result<PathBuf, ResourceError> {
     if path.is_absolute() {
         let relative = path.strip_prefix(root).map_err(|_| {
@@ -414,6 +438,7 @@ fn namespace_path(root: &Path, path: &Path) -> Result<PathBuf, ResourceError> {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn normalize_relative(path: &Path) -> Result<PathBuf, ResourceError> {
     let mut normalized = PathBuf::new();
     for component in path.components() {
@@ -439,6 +464,7 @@ fn normalize_relative(path: &Path) -> Result<PathBuf, ResourceError> {
     Ok(normalized)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn is_markdown_path(path: &Path) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
@@ -447,6 +473,7 @@ fn is_markdown_path(path: &Path) -> bool {
         })
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn is_external_reference(reference: &str) -> bool {
     if reference.starts_with("//") {
         return true;
@@ -466,6 +493,7 @@ fn is_external_reference(reference: &str) -> bool {
         })
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl ResourceError {
     fn io(operation: &str, path: &Path, error: io::Error) -> Self {
         Self::new(format!("{operation} '{}': {error}", path.display()))
@@ -473,6 +501,7 @@ impl ResourceError {
 }
 
 #[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests {
     use super::*;
     use std::fs;

@@ -1,9 +1,12 @@
 # Browser reader simulator proof of life
 
 This directory establishes the minimal browser build for the PRS-T1 reader
-simulator. The Rust module is intentionally small. Later simulator work can
-replace its exported function and static page without adding a JavaScript
-package manager or a frontend framework.
+simulator. The Rust module is intentionally small. It depends on the shared
+`prs-markdown` core so the browser build checks the same parser, layout,
+pagination, navigation, image, hit-testing, and rendering library used by the
+native reader. Later simulator work can replace its exported function and
+static page without adding a JavaScript package manager or a frontend
+framework.
 
 The build uses these pinned versions:
 

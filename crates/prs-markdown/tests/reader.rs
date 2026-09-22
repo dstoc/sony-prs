@@ -1,10 +1,12 @@
 use prs_markdown::document::Document;
 use prs_markdown::parse::{ComrakParser, MarkdownParser, ParseError};
 use prs_markdown::reader::ReaderEvent;
+use prs_markdown::resources::{ResourceError, ResourceProvider, ResourceTarget};
 use prs_markdown::{
     DocumentId, DocumentLocation, FileSystemResourceProvider, NavigationTarget, Reader,
     ReaderLimits, ReaderStyle, Viewport,
 };
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{
@@ -40,6 +42,77 @@ impl Drop for TestRoot {
     }
 }
 
+struct MemoryProvider {
+    entry_point: PathBuf,
+    text: HashMap<String, String>,
+    binary: HashMap<String, Vec<u8>>,
+}
+
+impl ResourceProvider for MemoryProvider {
+    fn document_path(&self) -> &Path {
+        &self.entry_point
+    }
+
+    fn read_text(&self, path: &Path) -> Result<String, ResourceError> {
+        let key = path.to_string_lossy();
+        self.text
+            .get(key.as_ref())
+            .cloned()
+            .ok_or_else(|| ResourceError::new(format!("missing text resource: {key}")))
+    }
+
+    fn read_binary(&self, path: &Path) -> Result<Vec<u8>, ResourceError> {
+        let key = path.to_string_lossy();
+        self.binary
+            .get(key.as_ref())
+            .cloned()
+            .ok_or_else(|| ResourceError::new(format!("missing binary resource: {key}")))
+    }
+
+    fn resolve_reference(&self, reference: &str) -> Result<ResourceTarget, ResourceError> {
+        self.resolve_reference_from(&self.entry_point, reference)
+    }
+
+    fn resolve_reference_from(
+        &self,
+        containing_document: &Path,
+        reference: &str,
+    ) -> Result<ResourceTarget, ResourceError> {
+        if reference.starts_with("https://") {
+            return Ok(ResourceTarget::External(reference.to_owned()));
+        }
+        let (path, anchor) = reference
+            .split_once('#')
+            .map_or((reference, None), |(path, anchor)| (path, Some(anchor)));
+        if path.is_empty() {
+            return anchor.map_or_else(
+                || Ok(ResourceTarget::Document(containing_document.to_owned())),
+                |anchor| Ok(ResourceTarget::Anchor(anchor.to_owned())),
+            );
+        }
+        let resolved = containing_document
+            .parent()
+            .unwrap_or_else(|| Path::new(""))
+            .join(path);
+        let resolved = PathBuf::from(resolved.to_string_lossy().replace('\\', "/"));
+        if resolved
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
+        {
+            Ok(match anchor {
+                Some(anchor) => ResourceTarget::DocumentAnchor {
+                    document: resolved,
+                    anchor: anchor.to_owned(),
+                },
+                None => ResourceTarget::Document(resolved),
+            })
+        } else {
+            Ok(ResourceTarget::Asset(resolved))
+        }
+    }
+}
+
 fn reader(root: &TestRoot) -> Reader<FileSystemResourceProvider> {
     let provider = FileSystemResourceProvider::new(root.path(), "index.md").expect("provider");
     let style = ReaderStyle {
@@ -53,6 +126,26 @@ fn reader(root: &TestRoot) -> Reader<FileSystemResourceProvider> {
         ..ReaderStyle::default()
     };
     Reader::new(provider, style, Viewport::new(80, 32))
+}
+
+#[test]
+fn reader_uses_a_non_filesystem_source_for_entry_documents_and_assets() {
+    let provider = MemoryProvider {
+        entry_point: PathBuf::from("index.md"),
+        text: HashMap::from([(String::from("index.md"), String::from("# In memory\n"))]),
+        binary: HashMap::from([(String::from("cover.png"), vec![1, 2, 3])]),
+    };
+    let mut reader = Reader::new(provider, ReaderStyle::default(), Viewport::new(80, 32));
+
+    assert!(matches!(reader.open(), Ok(ReaderEvent::Opened { .. })));
+    assert_eq!(
+        reader.current_location().unwrap().document.as_ref(),
+        "index.md"
+    );
+    assert_eq!(
+        reader.provider().read_binary(Path::new("cover.png")),
+        Ok(vec![1, 2, 3])
+    );
 }
 
 #[derive(Clone)]

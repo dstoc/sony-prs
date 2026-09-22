@@ -12,9 +12,8 @@ embedded-graphics = { version = "0.8.2", default-features = false }
 fontdue = "0.9.4"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
 # Syntect's bundled upstream syntax definitions are loaded directly at runtime.
-# Runtime regexes use the bundled Oniguruma C backend; the reader must not
-# depend on a system-provided regex library.
-syntect = { version = "5.3.0", default-features = false, features = ["default-syntaxes", "regex-onig"] }
+# The pure-Rust regex backend keeps the shared reader buildable for WASM.
+syntect = { version = "5.3.0", default-features = false, features = ["default-syntaxes", "regex-fancy"] }
 
 [dev-dependencies]
 notosans = "0.1.0"

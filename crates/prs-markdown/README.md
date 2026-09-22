@@ -30,13 +30,16 @@ and image split policies. The renderer translates and clips page coordinates
 at a caller-selected origin and supports any compatible
 `embedded_graphics::DrawTarget`.
 
-`ResourceProvider` is the storage boundary. The supplied
-`FileSystemResourceProvider` keeps paths root-relative, resolves references
-from the containing document, rejects lexical and symlink escapes, and exposes
-bounded binary reads for image loading. `ImageResources` supports PNG, JPEG,
-and WebP, retaining only fitted 8-bit grayscale rasters. The high-level
-`Reader` adds document loading, page movement, anchor/document navigation,
-cursor-aware Back/Forward history, and bounded page/document caches.
+`ResourceProvider` is the storage boundary. It supplies the entry-point
+document, Markdown text, binary assets, and reference resolution through a
+logical path namespace. The supplied `FileSystemResourceProvider` is the
+native host/T1 adapter: it keeps paths root-relative, rejects lexical and
+symlink escapes, and exposes bounded binary reads for image loading. A
+browser-backed provider can implement the same trait with memory, package, or
+URL-backed storage. `ImageResources` supports PNG, JPEG, and WebP, retaining
+only fitted 8-bit grayscale rasters. The high-level `Reader` adds document
+loading, page movement, anchor/document navigation, cursor-aware Back/Forward
+history, and bounded page/document caches.
 
 The T1-specific adapter in `crates/prs-t1-agent/src/reader.rs` constructs this
 pipeline with `ComrakParser`, `FontdueTextEngine`, `ReaderStyle::default()`,
@@ -106,6 +109,21 @@ The important operations are:
 External URLs are events, not side effects: the library never launches a
 browser or chooses a device handler. Page indices are zero-based; the page
 display number stored on `PageLayout` is one-based.
+
+## Browser and WASM builds
+
+The reader, parser, layout, pagination, navigation, image decoding, hit
+testing, and renderer are shared across native and `wasm32-unknown-unknown`
+builds. The filesystem provider and host image harness are native adapters and
+are not part of the WASM build. A browser integration supplies a
+`ResourceProvider` and a caller-owned draw target; it does not duplicate reader
+behavior in JavaScript or TypeScript.
+
+Check the shared reader core with:
+
+```sh
+cargo check -p prs-markdown --lib --target wasm32-unknown-unknown
+```
 
 ## Host harness and preview
 
