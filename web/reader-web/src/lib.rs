@@ -10,7 +10,8 @@ use prs_markdown::render::EmbeddedGraphicsRenderer;
 use prs_markdown::typography::{FontConfig, FontdueTextEngine};
 use prs_markdown::{
     BrowserResourceProvider as DirectoryResourceProvider, Reader, ReaderController,
-    ReaderControllerError, ReaderStyle, ResourceProvider, ResourceTarget, T1_VIEWPORT,
+    ReaderControllerError, ReaderLayout, ReaderStyle, ResourceProvider, ResourceTarget,
+    T1_VIEWPORT,
 };
 use std::convert::Infallible;
 use std::path::{Path, PathBuf};
@@ -35,6 +36,10 @@ where
     P: ResourceProvider,
 {
     fn new(provider: P) -> Result<Self, String> {
+        Self::new_with_layout(provider, ReaderLayout::content(T1_VIEWPORT))
+    }
+
+    fn new_with_layout(provider: P, layout: ReaderLayout) -> Result<Self, String> {
         let fonts = FontConfig::from_faces_with_monospace(
             notosans::REGULAR_TTF,
             notosans::BOLD_TTF,
@@ -47,12 +52,12 @@ where
         );
         let engine = FontdueTextEngine::new(fonts, GLYPH_CACHE_CAPACITY)
             .map_err(|error| format!("load browser reader fonts: {error}"))?;
-        let mut reader = Reader::with_components(
+        let mut reader = Reader::with_layout(
             provider,
             ComrakParser::default(),
             engine.clone(),
+            layout,
             ReaderStyle::default(),
-            T1_VIEWPORT,
         );
         reader
             .open()
@@ -61,7 +66,10 @@ where
         Ok(Self {
             controller: ReaderController::new(reader),
             renderer: EmbeddedGraphicsRenderer::new(engine),
-            framebuffer: RgbaFramebuffer::new(Size::new(T1_VIEWPORT.width, T1_VIEWPORT.height)),
+            framebuffer: RgbaFramebuffer::new(Size::new(
+                layout.display_viewport.width,
+                layout.display_viewport.height,
+            )),
             feedback: "Ready. Use a link, a control, or a keyboard shortcut.".to_owned(),
         })
     }
@@ -74,25 +82,38 @@ where
             .render_current_page_with_overlay(
                 &mut self.renderer,
                 &mut self.framebuffer,
-                Point::zero(),
+                Point::new(
+                    0,
+                    self.controller.reader().reader_layout().content_top() as i32,
+                ),
             )
             .map_err(|error| format!("render browser reader: {error}"))?;
         Ok(self.framebuffer.pixels().to_vec())
     }
 
     fn pointer_up(&mut self, x: f64, y: f64) -> String {
+        let layout = self.controller.reader().reader_layout();
+        let display_viewport = layout.display_viewport;
         if !x.is_finite()
             || !y.is_finite()
             || x < 0.0
-            || x >= f64::from(T1_VIEWPORT.width)
+            || x >= f64::from(display_viewport.width)
             || y < 0.0
-            || y >= f64::from(T1_VIEWPORT.height)
+            || y >= f64::from(display_viewport.height)
+            || y < f64::from(layout.content_top())
         {
             self.feedback = "No reader action.".to_owned();
             return self.feedback.clone();
         }
 
-        let point = Point::new(x.floor() as i32, y.floor() as i32);
+        let point = Point::new(
+            x.floor() as i32,
+            y.floor() as i32 - layout.content_top() as i32,
+        );
+        if !layout.effective_viewport().contains(point) {
+            self.feedback = "No reader action.".to_owned();
+            return self.feedback.clone();
+        }
         let result = self.controller.activate_at_or_page_turn(point);
         self.apply_result(result)
     }

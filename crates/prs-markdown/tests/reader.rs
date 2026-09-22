@@ -4,7 +4,8 @@ use prs_markdown::reader::ReaderEvent;
 use prs_markdown::resources::{ResourceError, ResourceProvider, ResourceTarget};
 use prs_markdown::{
     BrowserResourceProvider, ContentAnchor, DocumentId, DocumentLocation,
-    FileSystemResourceProvider, NavigationTarget, Reader, ReaderLimits, ReaderStyle, Viewport,
+    FileSystemResourceProvider, NavigationTarget, Reader, ReaderLayout, ReaderLimits, ReaderStyle,
+    Viewport, T1_LANDSCAPE_VIEWPORT, T1_VIEWPORT,
 };
 use std::collections::HashMap;
 use std::fs;
@@ -398,6 +399,125 @@ fn reflow_handles_empty_and_short_documents() {
         Some(ContentAnchor::new(0, 0))
     );
     assert!(!reader.next_page().expect("advance short document"));
+}
+
+#[test]
+fn shared_layout_reflows_portrait_landscape_and_scaled_content_together() {
+    let root = TestRoot::new();
+    fs::create_dir_all(root.path().join("assets")).expect("create asset directory");
+    fs::write(
+        root.path().join("assets/observatory.png"),
+        include_bytes!("fixtures/assets/observatory.png"),
+    )
+    .expect("write image fixture");
+    fs::write(
+        root.path().join("index.md"),
+        "# Start\n\n[Finish](#finish)\n\n![Observatory](assets/observatory.png)\n\nA long passage with stable content that wraps differently when the reader changes orientation and font scale. This sentence repeats enough words to force pagination in both layouts.\n\n## Finish\n\nThe destination passage remains stable across presentation changes.\n",
+    )
+    .expect("write document");
+
+    let provider = FileSystemResourceProvider::new(root.path(), "index.md").expect("provider");
+    let base_style = ReaderStyle {
+        page_padding: prs_markdown::Insets::all(4),
+        body: prs_markdown::TextStyle::new(10, 10),
+        heading: prs_markdown::TextStyle::new(12, 12),
+        code: prs_markdown::TextStyle::new(10, 10),
+        paragraph_spacing: 0,
+        heading_spacing_before: 0,
+        heading_spacing_after: 0,
+        ..ReaderStyle::default()
+    };
+    let portrait = ReaderLayout::new(T1_VIEWPORT)
+        .with_status_bar_height(76)
+        .with_progress_line_height(16)
+        .with_font_scale_percent(125);
+    let mut reader = Reader::with_layout(
+        provider,
+        ComrakParser::default(),
+        prs_markdown::ApproximateTextMeasurer,
+        portrait,
+        base_style,
+    );
+    reader.open().expect("open document");
+
+    assert_eq!(reader.viewport(), Viewport::new(600, 708));
+    assert_eq!(reader.style().body.font_size, 13);
+    assert_eq!(reader.reader_layout(), portrait);
+    let portrait_anchor = reader
+        .current_content_anchor()
+        .expect("initial content anchor");
+    let portrait_image = reader
+        .layout()
+        .expect("portrait layout")
+        .blocks()
+        .iter()
+        .flat_map(|block| block.lines.iter())
+        .flat_map(|line| line.fragments.iter())
+        .find_map(|fragment| {
+            fragment
+                .image
+                .as_ref()
+                .map(|image| (image.image.width(), image.image.height()))
+        })
+        .expect("portrait image command");
+    let portrait_link = reader
+        .current_page()
+        .expect("portrait page")
+        .hit_regions
+        .first()
+        .expect("portrait link")
+        .bounds;
+
+    let landscape = ReaderLayout::new(T1_LANDSCAPE_VIEWPORT)
+        .with_status_bar_height(32)
+        .with_progress_line_height(8)
+        .with_font_scale_percent(80);
+    reader
+        .set_reader_layout(landscape)
+        .expect("reflow to landscape");
+
+    assert_eq!(reader.viewport(), Viewport::new(800, 560));
+    assert_eq!(reader.style().body.font_size, 8);
+    assert_eq!(reader.current_content_anchor(), Some(portrait_anchor));
+    assert_eq!(reader.history().len(), 1);
+    assert_eq!(
+        reader.current_page().expect("landscape page").viewport(),
+        reader.viewport()
+    );
+    assert!(reader
+        .current_page()
+        .expect("landscape page")
+        .hit_regions
+        .iter()
+        .all(|region| reader.viewport().contains(region.bounds.top_left)));
+    let landscape_page = reader.current_page().expect("landscape page");
+    let landscape_image = reader
+        .layout()
+        .expect("landscape layout")
+        .blocks()
+        .iter()
+        .flat_map(|block| block.lines.iter())
+        .flat_map(|line| line.fragments.iter())
+        .find_map(|fragment| {
+            fragment
+                .image
+                .as_ref()
+                .map(|image| (image.image.width(), image.image.height()))
+        })
+        .expect("landscape image command");
+    assert_ne!(portrait_image, landscape_image);
+    assert_ne!(portrait_link, landscape_page.hit_regions[0].bounds);
+
+    reader
+        .navigate_to_anchor("finish")
+        .expect("navigate to destination");
+    let finish_anchor = reader
+        .current_content_anchor()
+        .expect("destination content anchor");
+    assert!(reader.back().expect("restore landscape start"));
+    assert_eq!(reader.current_content_anchor(), Some(portrait_anchor));
+    assert!(reader.forward().expect("restore landscape destination"));
+    assert_eq!(reader.current_content_anchor(), Some(finish_anchor));
 }
 
 #[test]

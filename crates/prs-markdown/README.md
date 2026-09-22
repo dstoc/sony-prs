@@ -88,6 +88,14 @@ reader.back()?;
 constructor for callers that need a complete `Pagination`; new device and
 host integrations should use the component constructor.
 
+`Reader::with_layout` accepts a shared `ReaderLayout`. It combines logical
+display dimensions, the reserved status-bar and progress-line areas, and a
+fixed-point font scale into one effective page viewport. Use
+`set_reader_layout` or `reflow_layout` when presentation settings change; the
+reader rebuilds assets, links, hit regions, and pagination around the current
+content anchor. The existing viewport constructors remain available for
+callers that already provide the effective page viewport.
+
 `FontConfig::from_regular` supplies one family for all faces. Keep
 `FontConfig::from_faces` for a separate proportional family and one regular
 monospace fallback. Use `FontConfig::from_faces_with_monospace` when the
@@ -105,8 +113,9 @@ The important operations are:
   `NoAction` as appropriate;
 - `follow_reference`, `navigate_to_anchor`, `back`, and `forward` implement
   root-relative document/anchor navigation and cursor-aware history;
-- `reflow`, `set_viewport`, and `set_style` rebuild pagination while keeping
-  the current passage and history content anchors stable;
+- `reflow`, `reflow_layout`, `set_viewport`, `set_reader_layout`, and
+  `set_style` rebuild pagination while keeping the current passage and
+  history content anchors stable;
 - `document`, `layout`, `pagination_index`, `history`, and `cache_stats` are
   available for inspection and instrumentation.
 

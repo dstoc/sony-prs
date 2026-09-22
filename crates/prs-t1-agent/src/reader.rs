@@ -12,7 +12,7 @@ use crate::refresh::{PageTone, RefreshPlan};
 use embedded_graphics::geometry::Point;
 use embedded_graphics::pixelcolor::{Rgb565, RgbColor};
 use embedded_graphics::prelude::IntoStorage;
-use prs_markdown::geometry::Viewport;
+use prs_markdown::geometry::{ReaderLayout, Viewport};
 use prs_markdown::navigation::{DocumentId, DocumentLocation, NavigationTarget};
 use prs_markdown::pagination::{DisplayCommand, PageLayout};
 use prs_markdown::parse::ComrakParser;
@@ -147,10 +147,26 @@ impl ReaderConfig {
 
 /// The page viewport available below the T1 status bar and its breathing room.
 pub fn viewport_for_display(width: u32, height: u32) -> Viewport {
-    Viewport::new(
-        width,
-        height.saturating_sub(CONTENT_TOP as u32 + PAGE_BOTTOM_MARGIN),
-    )
+    reader_layout_for_display(width, height).effective_viewport()
+}
+
+/// Build the shared reader presentation inputs for a T1 display.
+pub fn reader_layout_for_display(width: u32, height: u32) -> ReaderLayout {
+    ReaderLayout::new(Viewport::new(width, height))
+        .with_status_bar_height(CONTENT_TOP as u32)
+        .with_progress_line_height(PAGE_BOTTOM_MARGIN)
+}
+
+fn reader_layout_for_page_viewport(viewport: Viewport) -> ReaderLayout {
+    ReaderLayout::new(Viewport::new(
+        viewport.width,
+        viewport
+            .height
+            .saturating_add(CONTENT_TOP as u32)
+            .saturating_add(PAGE_BOTTOM_MARGIN),
+    ))
+    .with_status_bar_height(CONTENT_TOP as u32)
+    .with_progress_line_height(PAGE_BOTTOM_MARGIN)
 }
 
 /// A T1-owned adapter around the generic Markdown reader and renderer.
@@ -165,8 +181,13 @@ pub struct T1Reader {
 
 impl T1Reader {
     pub fn open(config: ReaderConfig, viewport: Viewport) -> io::Result<Self> {
+        Self::open_with_layout(config, reader_layout_for_page_viewport(viewport))
+    }
+
+    /// Open a reader with shared display and presentation inputs.
+    pub fn open_with_layout(config: ReaderConfig, layout: ReaderLayout) -> io::Result<Self> {
         let library_root = library_root_for_config(&config);
-        Self::open_with_library_root(config, viewport, library_root)
+        Self::open_with_library_root_and_layout(config, layout, library_root)
     }
 
     /// Open a document while keeping the PRSync publication root separate
@@ -176,6 +197,19 @@ impl T1Reader {
         viewport: Viewport,
         library_root: impl AsRef<Path>,
     ) -> io::Result<Self> {
+        Self::open_with_library_root_and_layout(
+            config,
+            reader_layout_for_page_viewport(viewport),
+            library_root,
+        )
+    }
+
+    pub(crate) fn open_with_library_root_and_layout(
+        config: ReaderConfig,
+        layout: ReaderLayout,
+        library_root: impl AsRef<Path>,
+    ) -> io::Result<Self> {
+        let viewport = layout.effective_viewport();
         if viewport.width == 0 || viewport.height == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -189,12 +223,12 @@ impl T1Reader {
         let fonts = load_fonts(&config)?;
         let engine = FontdueTextEngine::new(fonts, GLYPH_CACHE_CAPACITY)
             .map_err(|error| integration_error("load T1 Markdown fonts", error))?;
-        let mut reader = Reader::with_components(
+        let mut reader = Reader::with_layout(
             provider,
             ComrakParser::default(),
             engine.clone(),
+            layout,
             ReaderStyle::default(),
-            viewport,
         );
         reader
             .open()
@@ -216,7 +250,7 @@ impl T1Reader {
     /// so an active reader keeps using its old complete generation until this
     /// method is called at an idle boundary.
     pub fn reload_current_bundle(&mut self) -> io::Result<()> {
-        let viewport = self.controller.reader().viewport();
+        let layout = self.controller.reader().reader_layout();
         let mut config = match ReaderConfig::from_library_root(&self.library_root) {
             Ok(config) => config,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -230,7 +264,8 @@ impl T1Reader {
         let previous = (!self.library_empty)
             .then(|| self.controller.reader().current_location().cloned())
             .flatten();
-        let mut replacement = Self::open_with_library_root(config, viewport, &self.library_root)?;
+        let mut replacement =
+            Self::open_with_library_root_and_layout(config, layout, &self.library_root)?;
         if let Some(location) = previous {
             if replacement
                 .controller
@@ -266,14 +301,16 @@ impl T1Reader {
     /// Translate a whole-screen point into the page-space coordinates expected
     /// by `prs-markdown`.
     pub fn screen_to_viewport(&self, screen_point: Point) -> Option<Point> {
-        let content_top = CONTENT_TOP as i32;
+        let layout = self.controller.reader().reader_layout();
+        let content_top = layout.content_top() as i32;
         if screen_point.y < content_top {
             return None;
         }
         let page_point = Point::new(screen_point.x, screen_point.y - content_top);
         self.controller
             .reader()
-            .viewport()
+            .reader_layout()
+            .effective_viewport()
             .contains(page_point)
             .then_some(page_point)
     }
@@ -353,7 +390,10 @@ impl T1Reader {
             .render_current_page_with_overlay(
                 &mut self.renderer,
                 &mut canvas,
-                Point::new(0, CONTENT_TOP as i32),
+                Point::new(
+                    0,
+                    self.controller.reader().reader_layout().content_top() as i32,
+                ),
             )
             .map_err(|error| {
                 io::Error::new(
@@ -528,6 +568,13 @@ mod tests {
             monospace_italic_font: paths[6].clone(),
             monospace_bold_italic_font: paths[7].clone(),
         }
+    }
+
+    #[test]
+    fn display_layout_keeps_the_legacy_t1_content_viewport() {
+        let layout = reader_layout_for_display(600, 800);
+        assert_eq!(layout.effective_viewport(), Viewport::new(600, 708));
+        assert_eq!(viewport_for_display(600, 800), Viewport::new(600, 708));
     }
 
     fn fixture_root(source: &str) -> PathBuf {

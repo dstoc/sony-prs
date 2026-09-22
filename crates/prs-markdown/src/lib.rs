@@ -35,7 +35,9 @@ pub use document::{
     SourceSpan, Table, TableAlignment, TaskState,
 };
 pub use geometry::{
-    intersection, translate, Rect, Viewport, T1_VIEWPORT, TASK_CHECKBOX_GAP, TASK_CHECKBOX_SIZE,
+    intersection, translate, ProgressLineArea, ReaderLayout, Rect, Viewport,
+    DEFAULT_FONT_SCALE_PERCENT, T1_LANDSCAPE_VIEWPORT, T1_VIEWPORT, TASK_CHECKBOX_GAP,
+    TASK_CHECKBOX_SIZE,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use harness::{render_page, HostImage, HostReader};

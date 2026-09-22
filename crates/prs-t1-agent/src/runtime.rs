@@ -120,9 +120,9 @@ pub fn run(path: &Path, suspend_mode: SuspendMode) -> io::Result<()> {
     // The startup document can be a placeholder outside the PRSync library.
     // Keep reloads pinned to the same root used for atomic publication by the
     // long-lived synchronization task.
-    let mut markdown_reader = reader::T1Reader::open_with_library_root(
+    let mut markdown_reader = reader::T1Reader::open_with_library_root_and_layout(
         reader_config,
-        reader::viewport_for_display(display.width(), display.height()),
+        reader::reader_layout_for_display(display.width(), display.height()),
         sync_task.library_root(),
     )
     .map_err(|error| display_error("open development Markdown reader", error))?;

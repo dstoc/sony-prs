@@ -5,7 +5,7 @@
 //! native and browser readers. The low-level reader remains responsible for
 //! parsing, pagination, navigation, and history.
 
-use crate::geometry::Rect;
+use crate::geometry::{ReaderLayout, Rect};
 use crate::layout::TextMeasurer;
 use crate::parse::MarkdownParser;
 use crate::reader::{Reader, ReaderError, ReaderEvent, ReaderRenderError};
@@ -431,11 +431,27 @@ where
         self.dispatch(|reader| reader.reflow(viewport, style))
     }
 
+    /// Rebuild the shared reader layout while retaining the active passage.
+    pub fn reflow_layout(
+        &mut self,
+        layout: ReaderLayout,
+        style: crate::style::ReaderStyle,
+    ) -> Result<ReaderEvent, ReaderControllerError> {
+        self.dispatch(|reader| reader.reflow_layout(layout, style))
+    }
+
     pub fn set_viewport(
         &mut self,
         viewport: crate::geometry::Viewport,
     ) -> Result<ReaderEvent, ReaderControllerError> {
         self.dispatch(|reader| reader.set_viewport(viewport))
+    }
+
+    pub fn set_reader_layout(
+        &mut self,
+        layout: ReaderLayout,
+    ) -> Result<ReaderEvent, ReaderControllerError> {
+        self.dispatch(|reader| reader.set_reader_layout(layout))
     }
 
     pub fn set_style(

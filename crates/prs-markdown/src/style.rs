@@ -194,3 +194,24 @@ impl Default for ReaderStyle {
         }
     }
 }
+
+impl ReaderStyle {
+    /// Scale typography without changing the physical reader chrome.
+    ///
+    /// Reader layout uses a fixed-point percentage so native and WASM callers
+    /// make the same rounding decisions and retain deterministic pagination.
+    pub fn scaled_font(self, scale_percent: u16) -> Self {
+        let scale = |value: u32| {
+            let scaled = (u64::from(value) * u64::from(scale_percent) + 50) / 100;
+            scaled.clamp(1, u64::from(u32::MAX)) as u32
+        };
+        let mut style = self;
+        for text in [&mut style.body, &mut style.heading, &mut style.code] {
+            text.font_size = scale(text.font_size);
+            text.line_height = scale(text.line_height);
+        }
+        style.table_min_font_size = scale(style.table_min_font_size);
+        style.table_min_line_height = scale(style.table_min_line_height);
+        style
+    }
+}

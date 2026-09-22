@@ -1,7 +1,7 @@
 //! High-level reader state, kept separate from physical input and display IO.
 
 use crate::document::{image_fallback, Block, Document, Inline, Table};
-use crate::geometry::Viewport;
+use crate::geometry::{ReaderLayout, Viewport};
 use crate::image::ImageResources;
 use crate::layout::{
     ApproximateTextMeasurer, DocumentLayout, LayoutEngine, LayoutLine, TableLayout, TextMeasurer,
@@ -224,8 +224,9 @@ where
     provider: P,
     measurer: M,
     parser: Parser,
+    reader_layout: ReaderLayout,
+    base_style: ReaderStyle,
     style: ReaderStyle,
-    viewport: Viewport,
     current: Option<OpenDocument>,
     document_cache: DocumentCache,
     history: Vec<ReadingLocation>,
@@ -419,12 +420,36 @@ where
         style: ReaderStyle,
         viewport: Viewport,
     ) -> Self {
-        Self::with_limits(
+        Self::with_layout_limits(
             provider,
             parser,
             measurer,
+            ReaderLayout::content(viewport),
             style,
-            viewport,
+            ReaderLimits::default(),
+        )
+    }
+
+    /// Create a reader with explicit presentation inputs.
+    ///
+    /// The layout resolves the host's logical display dimensions into the
+    /// effective Markdown page viewport and applies its fixed-point font
+    /// scale before pagination. Native and browser adapters use this same
+    /// path, while [`Self::with_components`] remains the compatibility entry
+    /// point for callers that already provide a page viewport.
+    pub fn with_layout(
+        provider: P,
+        parser: Parser,
+        measurer: M,
+        layout: ReaderLayout,
+        style: ReaderStyle,
+    ) -> Self {
+        Self::with_layout_limits(
+            provider,
+            parser,
+            measurer,
+            layout,
+            style,
             ReaderLimits::default(),
         )
     }
@@ -440,12 +465,33 @@ where
         viewport: Viewport,
         limits: ReaderLimits,
     ) -> Self {
+        Self::with_layout_limits(
+            provider,
+            parser,
+            measurer,
+            ReaderLayout::content(viewport),
+            style,
+            limits,
+        )
+    }
+
+    /// Create a reader with explicit presentation inputs and resource bounds.
+    pub fn with_layout_limits(
+        provider: P,
+        parser: Parser,
+        measurer: M,
+        reader_layout: ReaderLayout,
+        base_style: ReaderStyle,
+        limits: ReaderLimits,
+    ) -> Self {
+        let style = reader_layout.effective_style(base_style);
         Self {
             provider,
             measurer,
             parser,
+            reader_layout,
+            base_style,
             style,
-            viewport,
             current: None,
             document_cache: DocumentCache::new(limits.max_cached_documents),
             history: Vec::new(),
@@ -462,12 +508,14 @@ where
         style: ReaderStyle,
         viewport: Viewport,
     ) -> Self {
+        let reader_layout = ReaderLayout::content(viewport);
         Self {
             provider,
             measurer,
             parser,
+            reader_layout,
+            base_style: style,
             style,
-            viewport,
             current: None,
             document_cache: DocumentCache::new(0),
             history: Vec::new(),
@@ -492,8 +540,9 @@ where
             provider: self.provider,
             measurer: self.measurer,
             parser,
+            reader_layout: self.reader_layout,
+            base_style: self.base_style,
             style: self.style,
-            viewport: self.viewport,
             current: self.current,
             document_cache: self.document_cache,
             history: self.history,
@@ -513,8 +562,9 @@ where
             provider: self.provider,
             measurer,
             parser: self.parser,
+            reader_layout: self.reader_layout,
+            base_style: self.base_style,
             style: self.style,
-            viewport: self.viewport,
             current: self.current,
             document_cache: self.document_cache,
             history: self.history,
@@ -532,8 +582,18 @@ where
         self.style
     }
 
+    /// Return the unscaled style used as the base for the current layout.
+    pub fn base_style(&self) -> ReaderStyle {
+        self.base_style
+    }
+
     pub fn viewport(&self) -> Viewport {
-        self.viewport
+        self.reader_layout.effective_viewport()
+    }
+
+    /// Return the shared presentation inputs used to build the current page.
+    pub fn reader_layout(&self) -> ReaderLayout {
+        self.reader_layout
     }
 
     pub fn limits(&self) -> ReaderLimits {
@@ -645,19 +705,39 @@ where
         viewport: Viewport,
         style: ReaderStyle,
     ) -> Result<ReaderEvent, ReaderError> {
+        self.reflow_layout(ReaderLayout::content(viewport), style)
+    }
+
+    /// Rebuild the current document for a new shared presentation layout.
+    ///
+    /// The current content anchor remains stable while the effective
+    /// viewport, font scale, assets, pagination, links, and hit targets are
+    /// rebuilt together.
+    pub fn reflow_layout(
+        &mut self,
+        reader_layout: ReaderLayout,
+        base_style: ReaderStyle,
+    ) -> Result<ReaderEvent, ReaderError> {
         let Some(current) = self.current.take() else {
             return Err(ReaderError::NoDocumentOpen);
         };
         let content = content_anchor_for(&current.document, &current.layout, current.cursor);
         let location = current.location.clone();
-        self.viewport = viewport;
-        self.style = style;
+        let previous_layout = self.reader_layout;
+        let previous_base_style = self.base_style;
+        let previous_style = self.style;
+        self.reader_layout = reader_layout;
+        self.base_style = base_style;
+        self.style = reader_layout.effective_style(base_style);
         self.document_cache.entries.clear();
 
         let rebuilt = self.build_open_document(&location, current.document.clone());
         let mut rebuilt = match rebuilt {
             Ok(rebuilt) => rebuilt,
             Err(error) => {
+                self.reader_layout = previous_layout;
+                self.base_style = previous_base_style;
+                self.style = previous_style;
                 self.current = Some(current);
                 return Err(error);
             }
@@ -669,6 +749,9 @@ where
             .page_index_for_cursor(cursor)
             .unwrap_or(rebuilt.page.min(rebuilt.page_count().saturating_sub(1)));
         if let Err(error) = rebuilt.ensure_page(rebuilt.page, &self.style) {
+            self.reader_layout = previous_layout;
+            self.base_style = previous_base_style;
+            self.style = previous_style;
             self.current = Some(current);
             return Err(error);
         }
@@ -679,12 +762,23 @@ where
 
     /// Change only the viewport while preserving the current passage.
     pub fn set_viewport(&mut self, viewport: Viewport) -> Result<ReaderEvent, ReaderError> {
-        self.reflow(viewport, self.style)
+        let reader_layout = ReaderLayout::content(viewport)
+            .with_font_scale_percent(self.reader_layout.font_scale_percent);
+        self.reflow_layout(reader_layout, self.base_style)
+    }
+
+    /// Change the shared presentation layout while preserving the current
+    /// passage and the active document history.
+    pub fn set_reader_layout(
+        &mut self,
+        reader_layout: ReaderLayout,
+    ) -> Result<ReaderEvent, ReaderError> {
+        self.reflow_layout(reader_layout, self.base_style)
     }
 
     /// Change only the reader style while preserving the current passage.
     pub fn set_style(&mut self, style: ReaderStyle) -> Result<ReaderEvent, ReaderError> {
-        self.reflow(self.viewport, style)
+        self.reflow_layout(self.reader_layout, style)
     }
 
     /// Open the provider's configured current document as a new session.
@@ -991,13 +1085,14 @@ where
         document: Document,
     ) -> Result<OpenDocument, ReaderError> {
         let path = PathBuf::from(location.document.as_ref());
-        let image_width = self.viewport.width.saturating_sub(
+        let viewport = self.reader_layout.effective_viewport();
+        let image_width = viewport.width.saturating_sub(
             self.style
                 .page_padding
                 .left
                 .saturating_add(self.style.page_padding.right),
         );
-        let image_height = self.viewport.height.saturating_sub(
+        let image_height = viewport.height.saturating_sub(
             self.style
                 .page_padding
                 .top
@@ -1013,7 +1108,7 @@ where
             self.limits.image_entry_capacity,
         );
         let layout = LayoutEngine::with_measurer(self.style, self.measurer.clone())
-            .layout_with_images(&document, self.viewport, &images);
+            .layout_with_images(&document, viewport, &images);
         let paginator = Paginator::new(self.style);
         let (pagination, page_index) = if self.eager_pagination {
             (Some(paginator.paginate(&layout)), None)
