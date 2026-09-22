@@ -1,6 +1,6 @@
 //! High-level reader state, kept separate from physical input and display IO.
 
-use crate::document::Document;
+use crate::document::{image_fallback, Document};
 use crate::geometry::Viewport;
 use crate::image::ImageResources;
 use crate::layout::{ApproximateTextMeasurer, DocumentLayout, LayoutEngine, TextMeasurer};
@@ -107,7 +107,7 @@ impl From<ParseError> for ReaderError {
 
 /// A stable position inside one top-level document block.
 ///
-/// The offset counts Unicode scalar values in [`crate::document::Block::plain_text`].
+/// The offset counts Unicode scalar values in the block's stable reading text.
 /// It identifies content rather than a wrapped layout line, so it remains
 /// meaningful when the viewport or typography changes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -1207,7 +1207,7 @@ fn content_anchor_for(
     let offset = starts
         .get(cursor.line)
         .copied()
-        .unwrap_or_else(|| block.plain_text().chars().count());
+        .unwrap_or_else(|| block.reading_text().chars().count());
     ContentAnchor::new(cursor.block, offset)
 }
 
@@ -1224,7 +1224,7 @@ fn cursor_for_content_anchor(
     if layout_block.lines.is_empty() {
         return Some(DocumentCursor::new(anchor.block, 0));
     }
-    let offset = anchor.offset.min(block.plain_text().chars().count());
+    let offset = anchor.offset.min(block.reading_text().chars().count());
     let starts = line_start_offsets(block, layout_block);
     let line = starts
         .iter()
@@ -1238,15 +1238,16 @@ fn cursor_for_content_anchor(
 /// Derive source-content offsets from the rendered fragments in one block.
 ///
 /// Layout fragments retain visible text but not source spans. Matching them
-/// against `Block::plain_text` is enough to ignore generated list markers,
-/// table decorations, and page-only whitespace while preserving the first
-/// visible content position of every line. Image alt text advances the source
-/// offset even though the rendered fragment has no text glyphs.
+/// against the block's stable reading text is enough to ignore generated list
+/// markers, table decorations, and page-only whitespace while preserving the
+/// first visible content position of every line. Loaded images advance over
+/// their visible fallback representation even though the rendered fragment has
+/// no text glyphs.
 fn line_start_offsets(
     block: &crate::document::Block,
     layout_block: &crate::layout::LayoutBlock,
 ) -> Vec<usize> {
-    let source = block.plain_text().chars().collect::<Vec<_>>();
+    let source = block.reading_text().chars().collect::<Vec<_>>();
     let mut offset = 0;
     layout_block
         .lines
@@ -1256,7 +1257,16 @@ fn line_start_offsets(
             let mut matched = false;
             for fragment in &line.fragments {
                 if let Some(image) = &fragment.image {
-                    if let Some(fragment_offset) = match_fragment(&source, offset, &image.alt) {
+                    let fallback = image_fallback(&image.alt);
+                    if let Some(fragment_offset) = match_fragment(&source, offset, &fallback) {
+                        if !matched {
+                            line_start = fragment_offset;
+                            matched = true;
+                        }
+                        offset = fragment_offset.saturating_add(fallback.chars().count());
+                    } else if let Some(fragment_offset) =
+                        match_fragment(&source, offset, &image.alt)
+                    {
                         if !matched {
                             line_start = fragment_offset;
                             matched = true;
@@ -1337,6 +1347,83 @@ fn anchor_cursor(
             document: PathBuf::from(location.document.as_ref()),
             anchor: anchor.to_owned(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::geometry::Viewport;
+    use crate::parse::MarkdownParser;
+    use crate::style::ReaderStyle;
+
+    #[test]
+    fn line_start_offsets_advance_past_unavailable_images() {
+        let document = ComrakParser::default()
+            .parse("Before the image. ![missing](missing.png) After the image.")
+            .expect("parse document");
+        let layout =
+            LayoutEngine::new(ReaderStyle::default()).layout(&document, Viewport::new(48, 200));
+        let starts = line_start_offsets(&document.blocks()[0], &layout.blocks()[0]);
+        let image_end = document.blocks()[0]
+            .reading_text()
+            .find(" After the image.")
+            .expect("image fallback in reading text");
+
+        assert!(
+            starts.iter().any(|start| *start >= image_end),
+            "line starts {starts:?} did not advance beyond the unavailable image"
+        );
+        assert_eq!(
+            document.blocks()[0].plain_text(),
+            "Before the image. missing After the image."
+        );
+    }
+
+    #[test]
+    fn line_start_offsets_include_nested_list_children() {
+        let document = ComrakParser::default()
+            .parse("- item one\n  - nested child content that wraps onto another line")
+            .expect("parse document");
+        let layout =
+            LayoutEngine::new(ReaderStyle::default()).layout(&document, Viewport::new(72, 200));
+        let starts = line_start_offsets(&document.blocks()[0], &layout.blocks()[0]);
+        let nested_start = "item one\n".chars().count();
+
+        assert!(
+            starts.iter().any(|start| *start >= nested_start),
+            "line starts {starts:?} did not enter the nested child"
+        );
+        assert!(document.blocks()[0]
+            .plain_text()
+            .contains("nested child content"));
+    }
+
+    #[test]
+    fn content_anchors_handle_empty_and_short_documents() {
+        let empty = Document::new();
+        let empty_layout =
+            LayoutEngine::new(ReaderStyle::default()).layout(&empty, Viewport::new(48, 24));
+        assert_eq!(
+            content_anchor_for(&empty, &empty_layout, DocumentCursor::new(0, 0)),
+            ContentAnchor::new(0, 0)
+        );
+        assert_eq!(
+            cursor_for_content_anchor(&empty, &empty_layout, ContentAnchor::new(0, 0)),
+            Some(DocumentCursor::new(0, 0))
+        );
+
+        let short = ComrakParser::default()
+            .parse("# Short")
+            .expect("parse short document");
+        let short_layout =
+            LayoutEngine::new(ReaderStyle::default()).layout(&short, Viewport::new(48, 24));
+        let anchor = content_anchor_for(&short, &short_layout, DocumentCursor::new(0, 0));
+        assert_eq!(anchor, ContentAnchor::new(0, 0));
+        assert_eq!(
+            cursor_for_content_anchor(&short, &short_layout, anchor),
+            Some(DocumentCursor::new(0, 0))
+        );
     }
 }
 

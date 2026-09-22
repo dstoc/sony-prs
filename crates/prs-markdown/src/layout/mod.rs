@@ -7,7 +7,7 @@
 //! normally [`crate::typography::FontdueTextEngine`], while the deterministic
 //! approximate measurer keeps the structural tests independent of font files.
 
-use crate::document::{Block, Inline, ListItem, Table, TaskState};
+use crate::document::{image_fallback, Block, Inline, ListItem, Table, TaskState};
 pub use crate::geometry::Viewport;
 use crate::geometry::{TASK_CHECKBOX_GAP, TASK_CHECKBOX_SIZE};
 use crate::highlighting::{CodeHighlighter, SyntectHighlighter};
@@ -2241,14 +2241,6 @@ fn empty_line(x: i32, y: i32, line_height: u32) -> LayoutLine {
         task_checkbox_x: None,
         code: false,
         wrapped: false,
-    }
-}
-
-fn image_fallback(alt: &str) -> String {
-    if alt.is_empty() {
-        "[image unavailable]".to_owned()
-    } else {
-        format!("[image: {alt}]")
     }
 }
 

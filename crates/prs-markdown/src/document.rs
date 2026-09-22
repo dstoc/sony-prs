@@ -237,10 +237,17 @@ impl Block {
             Self::List { items, .. } => items
                 .iter()
                 .map(|item| {
-                    item.content
+                    let mut parts = Vec::new();
+                    let content = item
+                        .content
                         .iter()
                         .map(Inline::plain_text)
-                        .collect::<String>()
+                        .collect::<String>();
+                    if !content.is_empty() {
+                        parts.push(content);
+                    }
+                    parts.extend(item.children.iter().map(Self::plain_text));
+                    parts.join("\n")
                 })
                 .collect::<Vec<_>>()
                 .join("\n"),
@@ -271,6 +278,65 @@ impl Block {
                 .join(" | "),
             Self::CodeBlock { code, .. } => code.clone(),
             Self::Image { alt, .. } => alt.clone(),
+            Self::Rule => String::new(),
+        }
+    }
+
+    /// Return the stable text representation used to restore a reading
+    /// position after layout changes.
+    ///
+    /// Unlike [`Self::plain_text`], unavailable images use the same visible
+    /// fallback that layout renders. This keeps the logical source sequence
+    /// aligned with both loaded-image and fallback-image display fragments.
+    pub(crate) fn reading_text(&self) -> String {
+        match self {
+            Self::Heading { content, .. } | Self::Paragraph(content) => {
+                content.iter().map(Inline::reading_text).collect()
+            }
+            Self::List { items, .. } => items
+                .iter()
+                .map(|item| {
+                    let mut parts = Vec::new();
+                    let content = item
+                        .content
+                        .iter()
+                        .map(Inline::reading_text)
+                        .collect::<String>();
+                    if !content.is_empty() {
+                        parts.push(content);
+                    }
+                    parts.extend(item.children.iter().map(Self::reading_text));
+                    parts.join("\n")
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+            Self::Quote(blocks) => blocks
+                .iter()
+                .map(Self::reading_text)
+                .collect::<Vec<_>>()
+                .join("\n"),
+            Self::Alert { title, blocks, .. } => std::iter::once(title.clone())
+                .chain(blocks.iter().map(Self::reading_text))
+                .collect::<Vec<_>>()
+                .join(": "),
+            Self::FootnoteDefinition { name, blocks } => format!(
+                "[^{}]: {}",
+                name,
+                blocks
+                    .iter()
+                    .map(Self::reading_text)
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ),
+            Self::Table(table) => table
+                .headers
+                .iter()
+                .chain(table.rows.iter().flatten())
+                .map(|cell| cell.iter().map(Inline::reading_text).collect::<String>())
+                .collect::<Vec<_>>()
+                .join(" | "),
+            Self::CodeBlock { code, .. } => code.clone(),
+            Self::Image { alt, .. } => image_fallback(alt),
             Self::Rule => String::new(),
         }
     }
@@ -372,6 +438,33 @@ impl Inline {
             Self::Image { alt, .. } => alt.clone(),
             Self::SoftBreak | Self::HardBreak => "\n".into(),
         }
+    }
+
+    pub(crate) fn reading_text(&self) -> String {
+        match self {
+            Self::Text(text) | Self::Code(text) => text.clone(),
+            Self::Emphasis(children) | Self::Strong(children) | Self::Strikethrough(children) => {
+                children.iter().map(Self::reading_text).collect()
+            }
+            Self::Link { label, .. } => label.iter().map(Self::reading_text).collect(),
+            Self::FootnoteReference { name, number } => {
+                if *number == 0 {
+                    format!("[^{name}]")
+                } else {
+                    format!("[{number}]")
+                }
+            }
+            Self::Image { alt, .. } => image_fallback(alt),
+            Self::SoftBreak | Self::HardBreak => "\n".into(),
+        }
+    }
+}
+
+pub(crate) fn image_fallback(alt: &str) -> String {
+    if alt.is_empty() {
+        "[image unavailable]".to_owned()
+    } else {
+        format!("[image: {alt}]")
     }
 }
 

@@ -3,8 +3,8 @@ use prs_markdown::parse::{ComrakParser, MarkdownParser, ParseError};
 use prs_markdown::reader::ReaderEvent;
 use prs_markdown::resources::{ResourceError, ResourceProvider, ResourceTarget};
 use prs_markdown::{
-    BrowserResourceProvider, DocumentId, DocumentLocation, FileSystemResourceProvider,
-    NavigationTarget, Reader, ReaderLimits, ReaderStyle, Viewport,
+    BrowserResourceProvider, ContentAnchor, DocumentId, DocumentLocation,
+    FileSystemResourceProvider, NavigationTarget, Reader, ReaderLimits, ReaderStyle, Viewport,
 };
 use std::collections::HashMap;
 use std::fs;
@@ -362,6 +362,42 @@ fn history_restores_content_anchors_after_reflow() {
     assert_eq!(reader.current_content_anchor(), Some(origin_anchor));
     assert!(reader.forward().expect("go forward"));
     assert_eq!(reader.current_content_anchor(), Some(finish_anchor));
+}
+
+#[test]
+fn reflow_handles_empty_and_short_documents() {
+    let root = TestRoot::new();
+    fs::write(root.path().join("index.md"), "# Entry\n").expect("write entry");
+    fs::write(root.path().join("empty.md"), "").expect("write empty document");
+    fs::write(root.path().join("short.md"), "# Short\n").expect("write short document");
+
+    let mut reader = reader(&root);
+    reader
+        .open_document("empty.md")
+        .expect("open empty document");
+    assert_eq!(
+        reader.current_content_anchor(),
+        Some(ContentAnchor::new(0, 0))
+    );
+    reader
+        .set_viewport(Viewport::new(44, 24))
+        .expect("reflow empty document");
+    reader
+        .set_style(reader.style())
+        .expect("restyle empty document");
+    assert!(!reader.next_page().expect("advance empty document"));
+
+    reader
+        .open_document("short.md")
+        .expect("open short document");
+    reader
+        .reflow(Viewport::new(44, 24), reader.style())
+        .expect("reflow short document");
+    assert_eq!(
+        reader.current_content_anchor(),
+        Some(ContentAnchor::new(0, 0))
+    );
+    assert!(!reader.next_page().expect("advance short document"));
 }
 
 #[test]
