@@ -1,12 +1,11 @@
-# Browser reader simulator proof of life
+# Browser reader simulator
 
-This directory establishes the minimal browser build for the PRS-T1 reader
-simulator. The Rust module is intentionally small. It depends on the shared
-`prs-markdown` core so the browser build checks the same parser, layout,
-pagination, navigation, image, hit-testing, and rendering library used by the
-native reader. Later simulator work can replace its exported function and
-static page without adding a JavaScript package manager or a frontend
-framework.
+This directory contains the browser build for the PRS-T1 reader simulator. The
+WASM module owns the reader, the shared renderer, and a tightly packed RGBA
+framebuffer. JavaScript copies each rendered frame into an HTML `<canvas>`.
+The browser uses the same parser, layout, pagination, navigation, image,
+hit-testing, and rendering library as the native reader. The page has no
+browser-specific reader layout implementation.
 
 The build uses these pinned versions:
 
@@ -53,9 +52,15 @@ Serve the assembled page from its output directory:
 python3 -m http.server 8000 --directory target/reader-web
 ```
 
-Open <http://127.0.0.1:8000/> in a browser. The page must replace the loading
-message with `PRS-T1 reader web WASM is alive.`. Use a static server because
-the browser loads the generated ES module and WASM file through HTTP.
+Open <http://127.0.0.1:8000/> in a browser. The page renders the default
+Markdown document through the shared Rust renderer. The canvas bitmap remains
+600 × 800 logical pixels; CSS scales the canvas to fit the available window.
+Use a static server because the browser loads the generated ES module and WASM
+file through HTTP.
+
+`ReaderSimulator::render_frame()` returns RGBA bytes in row-major order. The
+JavaScript bridge creates `ImageData` from those bytes and calls
+`CanvasRenderingContext2D.putImageData()` without changing the logical surface.
 
 ## Output layout
 

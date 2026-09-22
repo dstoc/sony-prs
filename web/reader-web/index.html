@@ -7,10 +7,13 @@
     <link rel="stylesheet" href="./style.css">
   </head>
   <body>
-    <main>
+    <main class="simulator">
       <p class="eyebrow">PRS-T1 reader simulator</p>
-      <h1>Browser proof of life</h1>
+      <h1>Shared reader rendering</h1>
       <p id="status" role="status">Loading Rust WASM…</p>
+      <div class="reader-frame">
+        <canvas id="reader-canvas" aria-label="Rendered PRS-T1 reader page"></canvas>
+      </div>
     </main>
     <script type="module" src="./main.js"></script>
   </body>

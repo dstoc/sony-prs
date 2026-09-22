@@ -2,7 +2,7 @@
 name = "prs-reader-web"
 version = "0.1.0"
 edition = "2021"
-description = "Minimal PRS-T1 browser reader simulator proof of life"
+description = "PRS-T1 browser reader simulator"
 license = "MIT OR Apache-2.0"
 publish = false
 
@@ -10,5 +10,7 @@ publish = false
 crate-type = ["cdylib"]
 
 [dependencies]
+embedded-graphics = { version = "0.8.2", default-features = false }
+notosans = "0.1.0"
 prs-markdown = { path = "../../crates/prs-markdown" }
 wasm-bindgen = "=0.2.128"
