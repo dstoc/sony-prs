@@ -55,6 +55,15 @@ grep -Fq 'uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
 grep -Fq 'name: prsync-versions' "$workflow"
 grep -Fq 'path: ci-artifacts/prsync-versions.txt' "$workflow"
 
+grep -Fq 'reader-web-wasm:' "$workflow"
+grep -Fq 'name: Browser reader WASM build' "$workflow"
+grep -Fq 'clean: true' "$workflow"
+grep -Fq 'fetch-depth: 1' "$workflow"
+grep -Fq 'cargo +"${{ steps.build-pins.outputs.rust_toolchain }}" test -p prs-markdown --lib' "$workflow"
+grep -Fq 'cargo +"${{ steps.build-pins.outputs.rust_toolchain }}" build -p prs-markdown --target "${{ steps.build-pins.outputs.target }}" --release' "$workflow"
+grep -Fq 'tools/reader-web-build.sh build' "$workflow"
+grep -Fq 'tools/test-reader-web.sh target/reader-web' "$workflow"
+
 for variable in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID; do
   grep -Fq "$variable: \"\"" "$workflow"
 done

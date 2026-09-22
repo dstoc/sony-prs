@@ -147,6 +147,9 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          clean: true
+          fetch-depth: 1
 
       - name: Read pinned toolchain versions
         id: build-pins
@@ -162,6 +165,12 @@ jobs:
             --no-self-update
           rustup run "${{ steps.build-pins.outputs.rust_toolchain }}" rustc --version
           rustup run "${{ steps.build-pins.outputs.rust_toolchain }}" cargo --version
+
+      - name: Run shared reader host tests
+        run: cargo +"${{ steps.build-pins.outputs.rust_toolchain }}" test -p prs-markdown --lib
+
+      - name: Build shared reader for WASM
+        run: cargo +"${{ steps.build-pins.outputs.rust_toolchain }}" build -p prs-markdown --target "${{ steps.build-pins.outputs.target }}" --release
 
       - name: Install pinned wasm-bindgen CLI
         run: |

@@ -79,5 +79,43 @@ test -s "$output_dir/demo/assets/detail.png"
 test -s "$output_dir/pkg/prs_reader_web.js"
 test -s "$output_dir/pkg/prs_reader_web_bg.wasm"
 grep -Fq 'BrowserReader' "$output_dir/pkg/prs_reader_web.js"
+grep -Fq 'load_directory' "$output_dir/pkg/prs_reader_web.js"
+grep -Fq 'prs_reader_web_bg.wasm' "$output_dir/pkg/prs_reader_web.js"
+
+expected_files=$(printf '%s\n' \
+  'index.html' \
+  'directory-library.js' \
+  'demo-library.js' \
+  'main.js' \
+  'input.mjs' \
+  'style.css' \
+  'demo/README.md' \
+  'demo/guide/chapter.md' \
+  'demo/guide/notes.md' \
+  'demo/assets/observatory.png' \
+  'demo/assets/detail.png' \
+  'pkg/prs_reader_web.js' \
+  'pkg/prs_reader_web_bg.wasm' | sort)
+actual_files=$(find "$output_dir" -type f -print | sed "s#^$output_dir/##" | sort)
+if [[ "$actual_files" != "$expected_files" ]]; then
+  printf '%s\n' 'assembled reader site has an unexpected file set' >&2
+  diff -u <(printf '%s\n' "$expected_files") <(printf '%s\n' "$actual_files") >&2 || true
+  exit 1
+fi
+
+for relative_path in \
+  index.html \
+  directory-library.js \
+  demo-library.js \
+  main.js \
+  input.mjs \
+  style.css \
+  demo/README.md \
+  demo/guide/chapter.md \
+  demo/guide/notes.md \
+  demo/assets/observatory.png \
+  demo/assets/detail.png; do
+  cmp -- "$repo_root/web/reader-web/$relative_path" "$output_dir/$relative_path"
+done
 
 printf '%s\n' 'reader web build contract passed'

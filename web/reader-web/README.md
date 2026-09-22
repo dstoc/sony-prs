@@ -29,6 +29,15 @@ The build uses these pinned versions:
 The browser page uses plain HTML, CSS, and ES modules. It does not use npm,
 Vite, Webpack, React, or another frontend build system.
 
+## Required CI check
+
+The required GitHub Actions check is `CI / Browser reader WASM build`. Configure
+that exact check name in branch protection for pull requests and pushes to
+`main`. The job starts from a clean checkout, runs the shared reader host and
+WASM checks, builds the browser adapter with the pinned toolchain, assembles
+the complete static site, and validates the generated files and deterministic
+browser-side contracts.
+
 The simulator uses the shared prs-markdown reader with a checked-in demo
 directory under `demo/`. **Load demo library** fetches those files into the
 same root-relative snapshot shape produced by **Open directory**, so the demo
