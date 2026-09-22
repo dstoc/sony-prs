@@ -8,6 +8,7 @@ wifi_source="$repo_root/crates/prs-t1-agent/src/wifi.rs"
 runtime_source="$repo_root/crates/prs-t1-agent/src/runtime.rs"
 display_source="$repo_root/crates/prs-t1-agent/src/display.rs"
 framebuffer_source="$repo_root/crates/prs-t1-agent/src/framebuffer.rs"
+orientation_source="$repo_root/crates/prs-t1-agent/src/orientation.rs"
 network_source="$repo_root/crates/prs-t1-agent/src/network.rs"
 network_readme="$repo_root/crates/prs-t1-agent/README.md"
 main_source="$repo_root/crates/prs-t1-agent/src/main.rs"
@@ -72,7 +73,7 @@ PY
 grep -Fq '  prs-t1-agent sync [HTTPS_ENDPOINT] [FRAMEBUFFER]' "$main_source"
 grep -Fq 'fixed 16 MiB encoded archive limit' "$agent_readme"
 
-python3 - "$wifi_source" "$runtime_source" "$display_source" "$framebuffer_source" <<'PY'
+python3 - "$wifi_source" "$runtime_source" "$display_source" "$framebuffer_source" "$orientation_source" <<'PY'
 from pathlib import Path
 import sys
 
@@ -80,6 +81,7 @@ source = Path(sys.argv[1]).read_text()
 runtime = Path(sys.argv[2]).read_text()
 display = Path(sys.argv[3]).read_text()
 framebuffer = Path(sys.argv[4]).read_text()
+orientation = Path(sys.argv[5]).read_text()
 shutdown = source[source.index("fn shutdown()"):source.index("fn stop_dhcp()")]
 stop_dhcp = source[source.index("fn stop_dhcp()"):source.index("fn wait_for_dhcp_service_stop()")]
 
@@ -124,7 +126,7 @@ assert standalone.count("drop(future)") == 2
 assert standalone.count("shutdown_after_sync_cancellation_async()") == 2
 
 runtime_run = runtime[runtime.index("pub fn run("):runtime.index("/// Start the native runtime")]
-assert runtime_run.index("NativeDisplay::open(path)") < runtime_run.index(
+assert runtime_run.index("NativeDisplay::open_with_orientation(path, requested_orientation)") < runtime_run.index(
     "let sleep_inactivity_timeout = sleep_inactivity_timeout()?;"
 )
 assert "requires the first\n    // writable mapping before this environment/configuration parse" in runtime_run
@@ -155,12 +157,13 @@ assert "details_action_tap_boundaries_are_disjoint" in runtime
 
 native_display = framebuffer[framebuffer.index("pub fn open("):framebuffer.index("    pub fn width(")]
 assert "const FBIOPUT_VSCREENINFO: c_ulong = 0x4601;" in framebuffer
-assert "const FB_ROTATE_CCW: u32 = 3;" in framebuffer
-assert "const NATIVE_DISPLAY_ROTATION: u32 = FB_ROTATE_CCW;" in framebuffer
+assert "ReaderOrientation::Portrait" in orientation
+assert "ReaderOrientation::Landscape" in orientation
+assert "framebuffer_rotation" in orientation
 assert native_display.index("MappedFramebuffer::new_with_protection") < native_display.index(
     "establish_native_orientation"
 )
-assert "establish_native_orientation(&file, &mut var, &mut fix, Some(mapping.length))?;" in native_display
+assert "establish_native_orientation(&file, &mut var, &mut fix, orientation, Some(mapping.length))?;" in native_display
 resume = framebuffer[framebuffer.index("fn try_resume_after_suspend"):framebuffer.index("fn display_update_request")]
 assert "establish_native_orientation(" in resume
 assert resume.index("establish_native_orientation(") < resume.index("if self.mapping.is_none()")
