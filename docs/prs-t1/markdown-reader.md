@@ -158,6 +158,11 @@ canonical position between blocks is `(next_block, 0)`, and the document end is
 `(block_count, 0)`. Page navigation can therefore use `page_for_cursor`,
 `next_page`, and `previous_page` without retaining rendered pixels.
 
+`Reader` also stores a `ContentAnchor` for each reading location. It identifies
+the top-level block and a character offset in that block's plain content. A
+viewport or style change rebuilds the layout and resolves that anchor again,
+so a wrapped line number does not become a false reading position.
+
 The paginator is a greedy line scanner with deterministic local lookahead; it
 does not optimise a document globally. A line whose bottom exactly reaches the
 usable page bottom fits. A page break is made before a line that would
@@ -281,10 +286,11 @@ match reader.activate_at(point)? {
 `open_document` starts a new session and clears history. `follow_document`,
 `follow_document_anchor`, `follow_reference`, and `navigate_to_anchor` resolve
 through the provider and add an internal navigation entry. `back()` restores
-the document, page, and canonical `DocumentCursor` saved when the link was
-followed; `forward()` restores the corresponding forward entry. The public
-`history()` slice exposes those cursor-aware `ReadingLocation` entries when an
-application needs to persist or inspect them.
+the document and content anchor saved when the link was followed; `forward()`
+restores the corresponding forward entry. The public `history()` slice exposes
+the cursor and `ContentAnchor` in each `ReadingLocation` when an application
+needs to persist or inspect them. Call `reflow(viewport, style)` when a display
+orientation, viewport, or font preference changes.
 
 Page indices returned by `Reader` are zero-based. `PageLayout::number` remains
 the one-based display number. `hit_test` and `activate_at` use page-space

@@ -105,7 +105,25 @@ impl From<ParseError> for ReaderError {
     }
 }
 
-/// A location retained in reader history, including its page/logical cursor.
+/// A stable position inside one top-level document block.
+///
+/// The offset counts Unicode scalar values in [`crate::document::Block::plain_text`].
+/// It identifies content rather than a wrapped layout line, so it remains
+/// meaningful when the viewport or typography changes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct ContentAnchor {
+    pub block: usize,
+    pub offset: usize,
+}
+
+impl ContentAnchor {
+    pub const fn new(block: usize, offset: usize) -> Self {
+        Self { block, offset }
+    }
+}
+
+/// A location retained in reader history, including its physical page cursor
+/// and stable content anchor.
 ///
 /// Keeping the cursor alongside the document location is what makes Back
 /// return to the place where a link was activated rather than to page zero.
@@ -114,6 +132,7 @@ pub struct ReadingLocation {
     pub location: DocumentLocation,
     pub page: usize,
     pub cursor: DocumentCursor,
+    pub content: ContentAnchor,
 }
 
 impl ReadingLocation {
@@ -123,6 +142,10 @@ impl ReadingLocation {
 
     pub fn anchor(&self) -> Option<&str> {
         self.location.anchor.as_deref()
+    }
+
+    pub fn content_anchor(&self) -> ContentAnchor {
+        self.content
     }
 }
 
@@ -254,14 +277,16 @@ impl OpenDocument {
     }
 
     fn page_index_for_cursor(&self, cursor: DocumentCursor) -> Option<usize> {
-        self.pagination
+        let page = self
+            .pagination
             .as_ref()
             .and_then(|pages| pages.page_index_for_cursor(cursor))
             .or_else(|| {
                 self.page_index
                     .as_ref()
                     .and_then(|pages| pages.page_index_for_cursor(cursor))
-            })
+            });
+        page.or_else(|| (self.page_count() == 1 && self.page_range(0).is_empty()).then_some(0))
     }
 
     fn page_index_after(&self, index: usize, next: bool) -> Option<usize> {
@@ -587,6 +612,13 @@ where
         self.current.as_ref().map(|current| current.cursor)
     }
 
+    /// Return the current content anchor used by layout-independent history.
+    pub fn current_content_anchor(&self) -> Option<ContentAnchor> {
+        self.current
+            .as_ref()
+            .map(|current| content_anchor_for(&current.document, &current.layout, current.cursor))
+    }
+
     pub fn history(&self) -> &[ReadingLocation] {
         &self.history
     }
@@ -597,6 +629,60 @@ where
 
     pub fn can_go_forward(&self) -> bool {
         self.history_index + 1 < self.history.len()
+    }
+
+    /// Rebuild the current document with a new viewport and style.
+    ///
+    /// The current content anchor and every history entry remain stable while
+    /// the layout and page directory are rebuilt. Cached inactive documents
+    /// are discarded because their layouts use the old settings; they are
+    /// rebuilt from their retained semantic documents when history reaches
+    /// them.
+    pub fn reflow(
+        &mut self,
+        viewport: Viewport,
+        style: ReaderStyle,
+    ) -> Result<ReaderEvent, ReaderError> {
+        let Some(current) = self.current.take() else {
+            return Err(ReaderError::NoDocumentOpen);
+        };
+        let content = content_anchor_for(&current.document, &current.layout, current.cursor);
+        let location = current.location.clone();
+        self.viewport = viewport;
+        self.style = style;
+        self.document_cache.entries.clear();
+
+        let rebuilt = self.build_open_document(&location, current.document.clone());
+        let mut rebuilt = match rebuilt {
+            Ok(rebuilt) => rebuilt,
+            Err(error) => {
+                self.current = Some(current);
+                return Err(error);
+            }
+        };
+        let cursor = cursor_for_content_anchor(&rebuilt.document, &rebuilt.layout, content)
+            .unwrap_or(rebuilt.cursor);
+        rebuilt.cursor = cursor;
+        rebuilt.page = rebuilt
+            .page_index_for_cursor(cursor)
+            .unwrap_or(rebuilt.page.min(rebuilt.page_count().saturating_sub(1)));
+        if let Err(error) = rebuilt.ensure_page(rebuilt.page, &self.style) {
+            self.current = Some(current);
+            return Err(error);
+        }
+        self.current = Some(rebuilt);
+        self.update_current_history();
+        Ok(self.page_changed_event())
+    }
+
+    /// Change only the viewport while preserving the current passage.
+    pub fn set_viewport(&mut self, viewport: Viewport) -> Result<ReaderEvent, ReaderError> {
+        self.reflow(viewport, self.style)
+    }
+
+    /// Change only the reader style while preserving the current passage.
+    pub fn set_style(&mut self, style: ReaderStyle) -> Result<ReaderEvent, ReaderError> {
+        self.reflow(self.viewport, style)
     }
 
     /// Open the provider's configured current document as a new session.
@@ -894,6 +980,15 @@ where
         let path = PathBuf::from(location.document.as_ref());
         let source = self.provider.read_markdown(&path)?;
         let document = self.parser.parse(&source)?;
+        self.build_open_document(location, document)
+    }
+
+    fn build_open_document(
+        &self,
+        location: &DocumentLocation,
+        document: Document,
+    ) -> Result<OpenDocument, ReaderError> {
+        let path = PathBuf::from(location.document.as_ref());
         let image_width = self.viewport.width.saturating_sub(
             self.style
                 .page_padding
@@ -1018,6 +1113,7 @@ where
             location: current.location.clone(),
             page: current.page,
             cursor: current.cursor,
+            content: content_anchor_for(&current.document, &current.layout, current.cursor),
         }
     }
 
@@ -1046,11 +1142,14 @@ where
         let target = self.history[target_index].clone();
         let loaded = self.load_location(target.location.clone())?;
         let mut restored = loaded;
+        let cursor =
+            cursor_for_content_anchor(&restored.document, &restored.layout, target.content)
+                .unwrap_or(target.cursor);
+        restored.cursor = cursor;
         restored.page = restored
-            .page_index_for_cursor(target.cursor)
+            .page_index_for_cursor(cursor)
             .unwrap_or(target.page.min(restored.page_count().saturating_sub(1)));
         restored.ensure_page(restored.page, &self.style)?;
-        restored.cursor = restored.page_range(restored.page).start;
         self.current = Some(restored);
         self.history_index = target_index;
         Ok(true)
@@ -1088,6 +1187,130 @@ where
 
 fn document_id(path: &Path) -> DocumentId {
     DocumentId::from(path.to_string_lossy().replace('\\', "/"))
+}
+
+fn content_anchor_for(
+    document: &Document,
+    layout: &DocumentLayout,
+    cursor: DocumentCursor,
+) -> ContentAnchor {
+    if cursor.block >= document.blocks().len() {
+        return ContentAnchor::new(document.blocks().len(), 0);
+    }
+    let Some(block) = document.blocks().get(cursor.block) else {
+        return ContentAnchor::new(document.blocks().len(), 0);
+    };
+    let Some(layout_block) = layout.blocks().get(cursor.block) else {
+        return ContentAnchor::new(cursor.block, 0);
+    };
+    let starts = line_start_offsets(block, layout_block);
+    let offset = starts
+        .get(cursor.line)
+        .copied()
+        .unwrap_or_else(|| block.plain_text().chars().count());
+    ContentAnchor::new(cursor.block, offset)
+}
+
+fn cursor_for_content_anchor(
+    document: &Document,
+    layout: &DocumentLayout,
+    anchor: ContentAnchor,
+) -> Option<DocumentCursor> {
+    if anchor.block >= document.blocks().len() {
+        return Some(DocumentCursor::new(document.blocks().len(), 0));
+    }
+    let block = document.blocks().get(anchor.block)?;
+    let layout_block = layout.blocks().get(anchor.block)?;
+    if layout_block.lines.is_empty() {
+        return Some(DocumentCursor::new(anchor.block, 0));
+    }
+    let offset = anchor.offset.min(block.plain_text().chars().count());
+    let starts = line_start_offsets(block, layout_block);
+    let line = starts
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(line, start)| (*start <= offset).then_some(line))
+        .unwrap_or(0);
+    Some(DocumentCursor::new(anchor.block, line))
+}
+
+/// Derive source-content offsets from the rendered fragments in one block.
+///
+/// Layout fragments retain visible text but not source spans. Matching them
+/// against `Block::plain_text` is enough to ignore generated list markers,
+/// table decorations, and page-only whitespace while preserving the first
+/// visible content position of every line. Image alt text advances the source
+/// offset even though the rendered fragment has no text glyphs.
+fn line_start_offsets(
+    block: &crate::document::Block,
+    layout_block: &crate::layout::LayoutBlock,
+) -> Vec<usize> {
+    let source = block.plain_text().chars().collect::<Vec<_>>();
+    let mut offset = 0;
+    layout_block
+        .lines
+        .iter()
+        .map(|line| {
+            let mut line_start = skip_source_whitespace(&source, offset);
+            let mut matched = false;
+            for fragment in &line.fragments {
+                if let Some(image) = &fragment.image {
+                    if let Some(fragment_offset) = match_fragment(&source, offset, &image.alt) {
+                        if !matched {
+                            line_start = fragment_offset;
+                            matched = true;
+                        }
+                        offset = fragment_offset.saturating_add(image.alt.chars().count());
+                    }
+                    continue;
+                }
+                if fragment.text.is_empty() {
+                    continue;
+                }
+                let Some(fragment_offset) = match_fragment(&source, offset, &fragment.text) else {
+                    continue;
+                };
+                if !matched {
+                    line_start = fragment_offset;
+                    matched = true;
+                }
+                offset = fragment_offset.saturating_add(fragment.text.chars().count());
+            }
+            line_start.min(source.len())
+        })
+        .collect()
+}
+
+fn skip_source_whitespace(source: &[char], offset: usize) -> usize {
+    let mut offset = offset.min(source.len());
+    while source
+        .get(offset)
+        .is_some_and(|character| character.is_whitespace())
+    {
+        offset += 1;
+    }
+    offset
+}
+
+fn match_fragment(source: &[char], offset: usize, fragment: &str) -> Option<usize> {
+    let fragment = fragment.chars().collect::<Vec<_>>();
+    if fragment.is_empty() {
+        return Some(offset.min(source.len()));
+    }
+    let exact = |start: usize| {
+        source
+            .get(start..start.saturating_add(fragment.len()))
+            .is_some_and(|candidate| candidate == fragment.as_slice())
+    };
+    if exact(offset) {
+        return Some(offset);
+    }
+    if fragment[0].is_whitespace() {
+        return None;
+    }
+    let skipped = skip_source_whitespace(source, offset);
+    exact(skipped).then_some(skipped)
 }
 
 fn anchor_cursor(

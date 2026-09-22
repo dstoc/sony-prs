@@ -105,6 +105,8 @@ The important operations are:
   `NoAction` as appropriate;
 - `follow_reference`, `navigate_to_anchor`, `back`, and `forward` implement
   root-relative document/anchor navigation and cursor-aware history;
+- `reflow`, `set_viewport`, and `set_style` rebuild pagination while keeping
+  the current passage and history content anchors stable;
 - `document`, `layout`, `pagination_index`, `history`, and `cache_stats` are
   available for inspection and instrumentation.
 

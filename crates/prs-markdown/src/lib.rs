@@ -58,7 +58,7 @@ pub use pagination::{
     LogicalRange, PageLayout, Pagination, PaginationIndex, Paginator,
 };
 pub use reader::{
-    Reader, ReaderAction, ReaderCacheStats, ReaderError, ReaderEvent, ReaderLimits,
+    ContentAnchor, Reader, ReaderAction, ReaderCacheStats, ReaderError, ReaderEvent, ReaderLimits,
     ReaderRenderError, ReaderSession, ReadingLocation,
 };
 pub use render::EmbeddedGraphicsRenderer;

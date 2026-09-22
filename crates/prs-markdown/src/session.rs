@@ -421,6 +421,30 @@ where
         self.dispatch(|reader| reader.previous_page_event())
     }
 
+    /// Rebuild pagination for a new viewport or reader style while retaining
+    /// the current logical passage and history anchors.
+    pub fn reflow(
+        &mut self,
+        viewport: crate::geometry::Viewport,
+        style: crate::style::ReaderStyle,
+    ) -> Result<ReaderEvent, ReaderControllerError> {
+        self.dispatch(|reader| reader.reflow(viewport, style))
+    }
+
+    pub fn set_viewport(
+        &mut self,
+        viewport: crate::geometry::Viewport,
+    ) -> Result<ReaderEvent, ReaderControllerError> {
+        self.dispatch(|reader| reader.set_viewport(viewport))
+    }
+
+    pub fn set_style(
+        &mut self,
+        style: crate::style::ReaderStyle,
+    ) -> Result<ReaderEvent, ReaderControllerError> {
+        self.dispatch(|reader| reader.set_style(style))
+    }
+
     pub fn back(&mut self) -> Result<ReaderEvent, ReaderControllerError> {
         self.dispatch(|reader| reader.back_event())
     }

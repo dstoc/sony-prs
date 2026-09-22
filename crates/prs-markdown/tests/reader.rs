@@ -291,6 +291,80 @@ fn opens_pages_follows_files_and_restores_the_link_origin() {
 }
 
 #[test]
+fn reflow_preserves_the_current_passage_across_viewport_and_font_changes() {
+    let root = TestRoot::new();
+    let source = (0..24)
+        .map(|index| {
+            format!(
+                "## Section {index}\n\nThe section contains stable words around the current reading position. This sentence is deliberately long so that pagination changes when the viewport and font size change.\n\n"
+            )
+        })
+        .collect::<String>();
+    fs::write(root.path().join("index.md"), source).expect("write document");
+
+    let mut reader = reader(&root);
+    reader.open().expect("open document");
+    for _ in 0..3 {
+        assert!(reader.next_page().expect("advance page"));
+    }
+    let original_anchor = reader
+        .current_content_anchor()
+        .expect("current content anchor");
+    let original_style = reader.style();
+
+    reader
+        .set_viewport(Viewport::new(48, 24))
+        .expect("narrow viewport");
+    assert_eq!(
+        reader.current_content_anchor(),
+        Some(original_anchor),
+        "viewport changes must keep the same passage"
+    );
+
+    let mut smaller_style = original_style;
+    smaller_style.body.font_size = 7;
+    smaller_style.body.line_height = 8;
+    smaller_style.heading.font_size = 8;
+    smaller_style.heading.line_height = 9;
+    reader.set_style(smaller_style).expect("smaller font");
+    assert_eq!(reader.current_content_anchor(), Some(original_anchor));
+
+    reader
+        .reflow(Viewport::new(80, 32), original_style)
+        .expect("restore original layout");
+    assert_eq!(reader.current_content_anchor(), Some(original_anchor));
+}
+
+#[test]
+fn history_restores_content_anchors_after_reflow() {
+    let root = TestRoot::new();
+    fs::write(
+        root.path().join("index.md"),
+        "# Start\n\nA long opening passage with enough words to span several pages in the compact test viewport.\n\n## Finish\n\nThe destination passage.\n",
+    )
+    .expect("write document");
+
+    let mut reader = reader(&root);
+    reader.open().expect("open document");
+    assert!(reader.next_page().expect("advance to origin"));
+    let origin_anchor = reader.current_content_anchor().expect("origin anchor");
+    reader
+        .navigate_to_anchor("finish")
+        .expect("navigate to finish");
+    let finish_anchor = reader.current_content_anchor().expect("finish anchor");
+
+    reader
+        .set_viewport(Viewport::new(44, 24))
+        .expect("reflow reader");
+    assert_eq!(reader.current_content_anchor(), Some(finish_anchor));
+
+    assert!(reader.back().expect("go back"));
+    assert_eq!(reader.current_content_anchor(), Some(origin_anchor));
+    assert!(reader.forward().expect("go forward"));
+    assert_eq!(reader.current_content_anchor(), Some(finish_anchor));
+}
+
+#[test]
 fn anchors_and_external_links_are_actions_without_side_effects() {
     let root = TestRoot::new();
     fs::write(
