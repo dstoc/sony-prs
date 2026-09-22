@@ -24,6 +24,7 @@ Usage: tools/prs-t1-agent-build.sh <command>
 Commands:
   print <pin>                  Print one production build pin.
   print-github-actions         Print pins as GitHub Actions step outputs.
+  print-manifest-hash          Print the tracked Cargo manifest hash.
   build                        Build the production PRS-T1 ARM executable.
   verify [artifact]             Validate and copy the production executable.
   build-and-verify              Build, validate, and copy the executable.
@@ -61,6 +62,17 @@ print_github_actions() {
   printf 'cargo_zigbuild_version=%s\n' "$CARGO_ZIGBUILD_VERSION"
   printf 'target=%s\n' "$TARGET"
   printf 'build_config_hash=%s\n' "$build_config_hash"
+}
+
+print_manifest_hash() {
+  (
+    cd -- "$repo_root"
+    git ls-files -z -- '*Cargo.toml' '*Cargo.lock' |
+      sort -z |
+      xargs -0 sha256sum |
+      sha256sum |
+      cut -d ' ' -f1
+  )
 }
 
 check_installed_toolchain() {
@@ -160,6 +172,9 @@ case "${1:-}" in
     ;;
   print-github-actions)
     print_github_actions
+    ;;
+  print-manifest-hash)
+    print_manifest_hash
     ;;
   build)
     build

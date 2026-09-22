@@ -77,6 +77,14 @@ jobs:
           fetch-depth: 0
           ref: ${{ steps.release-tag.outputs.tag }}
 
+      - name: Read released manifest hash
+        id: manifest-hash
+        if: ${{ steps.release-tag.outputs.tag != '' }}
+        env:
+          PRS_T1_AGENT_REPO_ROOT: ${{ github.workspace }}
+        shell: bash
+        run: printf 'manifest_hash=%s\n' "$($RUNNER_TEMP/prs-t1-agent-build.sh print-manifest-hash)" >> "$GITHUB_OUTPUT"
+
       - name: Install the pinned Rust toolchain and target
         if: ${{ steps.release-tag.outputs.tag != '' }}
         run: |
@@ -105,7 +113,7 @@ jobs:
             zig-${{ steps.build-pins.outputs.zig_version }}-
             cargo-zigbuild-${{ steps.build-pins.outputs.cargo_zigbuild_version }}-
             build-${{ steps.build-pins.outputs.build_config_hash }}-
-            manifests-${{ hashFiles('**/Cargo.toml', '**/Cargo.lock') }}
+            manifests-${{ steps.manifest-hash.outputs.manifest_hash }}
           cache-targets: true
           cache-all-crates: true
           cache-bin: true

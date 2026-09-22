@@ -40,7 +40,9 @@ jobs:
       - name: Read production build pins
         id: build-pins
         shell: bash
-        run: tools/prs-t1-agent-build.sh print-github-actions >> "$GITHUB_OUTPUT"
+        run: |
+          tools/prs-t1-agent-build.sh print-github-actions >> "$GITHUB_OUTPUT"
+          printf 'manifest_hash=%s\n' "$(tools/prs-t1-agent-build.sh print-manifest-hash)" >> "$GITHUB_OUTPUT"
 
       - name: Install the pinned Rust toolchain
         run: |
@@ -59,7 +61,7 @@ jobs:
           add-job-id-key: false
           key: >-
             host-rust-${{ steps.build-pins.outputs.rust_toolchain }}-
-            manifests-${{ hashFiles('**/Cargo.toml', '**/Cargo.lock') }}
+            manifests-${{ steps.build-pins.outputs.manifest_hash }}
           cache-targets: true
           cache-all-crates: true
           cache-bin: true
@@ -149,7 +151,9 @@ jobs:
       - name: Read production build pins
         id: build-pins
         shell: bash
-        run: tools/prs-t1-agent-build.sh print-github-actions >> "$GITHUB_OUTPUT"
+        run: |
+          tools/prs-t1-agent-build.sh print-github-actions >> "$GITHUB_OUTPUT"
+          printf 'manifest_hash=%s\n' "$(tools/prs-t1-agent-build.sh print-manifest-hash)" >> "$GITHUB_OUTPUT"
 
       - name: Install the pinned Rust toolchain and target
         run: |
@@ -176,7 +180,7 @@ jobs:
             zig-${{ steps.build-pins.outputs.zig_version }}-
             cargo-zigbuild-${{ steps.build-pins.outputs.cargo_zigbuild_version }}-
             build-${{ steps.build-pins.outputs.build_config_hash }}-
-            manifests-${{ hashFiles('**/Cargo.toml', '**/Cargo.lock') }}
+            manifests-${{ steps.build-pins.outputs.manifest_hash }}
           cache-targets: true
           cache-all-crates: true
           cache-bin: true

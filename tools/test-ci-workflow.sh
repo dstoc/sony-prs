@@ -43,7 +43,12 @@ grep -Fq 'add-job-id-key: false' "$workflow"
 grep -Fq 'cache-targets: true' "$workflow"
 grep -Fq 'cache-all-crates: true' "$workflow"
 grep -Fq 'cache-bin: true' "$workflow"
-grep -Fq "manifests-\${{ hashFiles('**/Cargo.toml', '**/Cargo.lock') }}" "$workflow"
+grep -Fq 'printf '\''manifest_hash=%s\n'\'' "$(tools/prs-t1-agent-build.sh print-manifest-hash)" >> "$GITHUB_OUTPUT"' "$workflow"
+grep -Fq "manifests-\${{ steps.build-pins.outputs.manifest_hash }}" "$workflow"
+if grep -Fq 'hashFiles(' "$workflow"; then
+  printf '%s\n' 'CI cache keys must not use hashFiles' >&2
+  exit 1
+fi
 grep -Fq 'build-${{ steps.build-pins.outputs.build_config_hash }}' "$workflow"
 grep -Fq 'if [[ ! -x "$cargo_zigbuild_bin" ]]' "$workflow"
 grep -Fq 'uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2' "$workflow"

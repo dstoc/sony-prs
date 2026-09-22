@@ -44,7 +44,16 @@ grep -Fq 'add-job-id-key: false' "$workflow"
 grep -Fq 'cache-targets: true' "$workflow"
 grep -Fq 'cache-all-crates: true' "$workflow"
 grep -Fq 'cache-bin: true' "$workflow"
-grep -Fq "manifests-\${{ hashFiles('**/Cargo.toml', '**/Cargo.lock') }}" "$workflow"
+grep -Fq 'name: Read released manifest hash' "$workflow"
+grep -Fq 'id: manifest-hash' "$workflow"
+grep -Fq 'PRS_T1_AGENT_REPO_ROOT:' "$workflow"
+grep -Fq 'github.workspace' "$workflow"
+grep -Fq 'print-manifest-hash' "$workflow"
+grep -Fq "manifests-\${{ steps.manifest-hash.outputs.manifest_hash }}" "$workflow"
+if grep -Fq 'hashFiles(' "$workflow"; then
+  printf '%s\n' 'release cache keys must not use hashFiles' >&2
+  exit 1
+fi
 grep -Fq 'build-${{ steps.build-pins.outputs.build_config_hash }}' "$workflow"
 grep -Fq 'if [[ ! -x "$cargo_zigbuild_bin" ]]' "$workflow"
 grep -Fq 'build_config_hash=' "$build_script"

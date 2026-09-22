@@ -44,7 +44,9 @@ jobs:
       - name: Read production build pins
         id: build-pins
         shell: bash
-        run: tools/prs-t1-agent-build.sh print-github-actions >> "$GITHUB_OUTPUT"
+        run: |
+          tools/prs-t1-agent-build.sh print-github-actions >> "$GITHUB_OUTPUT"
+          printf 'manifest_hash=%s\n' "$(tools/prs-t1-agent-build.sh print-manifest-hash)" >> "$GITHUB_OUTPUT"
 
       - name: Install the pinned Rust toolchain
         run: |
@@ -62,7 +64,7 @@ jobs:
           add-job-id-key: false
           key: >-
             cloudflare-rust-${{ steps.build-pins.outputs.rust_toolchain }}-
-            manifests-${{ hashFiles('**/Cargo.toml', '**/Cargo.lock') }}
+            manifests-${{ steps.build-pins.outputs.manifest_hash }}
           cache-targets: true
           cache-all-crates: true
           cache-bin: true
