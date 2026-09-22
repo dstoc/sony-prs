@@ -1,5 +1,3 @@
-const ENTRY_POINT = "README.md";
-
 function childPath(parent, name) {
   // File System Access handles cannot escape their selected parent, but keep
   // the logical namespace explicit before it crosses into Rust.
@@ -7,6 +5,34 @@ function childPath(parent, name) {
     throw new Error(`selected directory contains an invalid entry name: ${name}`);
   }
   return parent ? `${parent}/${name}` : name;
+}
+
+/**
+ * Select the root Markdown document that opens when a directory is loaded.
+ * The explicit preferences keep common libraries predictable; the code-unit
+ * comparison makes the fallback independent of picker enumeration order and
+ * locale.
+ */
+export function selectEntryPoint(files) {
+  const paths = files
+    .map(({ path }) => path)
+    .filter((path) => typeof path === "string"
+      && !path.includes("/")
+      && path.toLowerCase().endsWith(".md"));
+
+  if (paths.includes("README.md")) {
+    return "README.md";
+  }
+  if (paths.includes("index.md")) {
+    return "index.md";
+  }
+  if (paths.length > 0) {
+    return [...new Set(paths)].sort((left, right) => (
+      left < right ? -1 : left > right ? 1 : 0
+    ))[0];
+  }
+
+  throw new Error("No root Markdown file found in the selected directory.");
 }
 
 async function readDirectory(directory, parent, files) {
@@ -37,7 +63,9 @@ export async function chooseDirectory() {
   const directory = await window.showDirectoryPicker({ mode: "read" });
   const files = [];
   await readDirectory(directory, "", files);
-  return { name: directory.name, files };
+  return {
+    name: directory.name,
+    files,
+    entryPoint: selectEntryPoint(files),
+  };
 }
-
-export { ENTRY_POINT };

@@ -75,21 +75,14 @@ build() {
     --out-dir "$OUTPUT_DIR/pkg" \
     "$WASM_ARTIFACT"
 
-  cp -- web/reader-web/directory-library.js web/reader-web/demo-library.js \
+  cp -- web/reader-web/directory-library.js \
     web/reader-web/index.html web/reader-web/main.js \
     web/reader-web/input.mjs \
     web/reader-web/style.css "$OUTPUT_DIR/"
-  cp -R -- web/reader-web/demo "$OUTPUT_DIR/demo"
   test -s "$OUTPUT_DIR/index.html"
   test -s "$OUTPUT_DIR/directory-library.js"
-  test -s "$OUTPUT_DIR/demo-library.js"
   test -s "$OUTPUT_DIR/main.js"
   test -s "$OUTPUT_DIR/style.css"
-  test -s "$OUTPUT_DIR/demo/README.md"
-  test -s "$OUTPUT_DIR/demo/guide/chapter.md"
-  test -s "$OUTPUT_DIR/demo/guide/notes.md"
-  test -s "$OUTPUT_DIR/demo/assets/observatory.png"
-  test -s "$OUTPUT_DIR/demo/assets/detail.png"
   test -s "$OUTPUT_DIR/pkg/prs_reader_web.js"
   test -s "$OUTPUT_DIR/pkg/prs_reader_web_bg.wasm"
 }

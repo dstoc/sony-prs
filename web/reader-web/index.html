@@ -8,10 +8,9 @@
   </head>
   <body>
     <main class="simulator">
-      <p class="eyebrow">PRS-T1 reader simulator</p>
-      <h1>Browser reader simulator</h1>
-      <p id="status" role="status">Loading Rust WASM…</p>
-      <div class="reader-frame">
+      <h1>PRS-T1 reader</h1>
+      <p id="status" role="status">Open a directory to begin.</p>
+      <div class="reader-frame" hidden>
         <canvas
           id="reader-canvas"
           width="600"
@@ -20,34 +19,17 @@
         ></canvas>
       </div>
 
-      <nav class="reader-controls" aria-label="Reader controls">
+      <nav class="reader-controls" aria-label="Reader controls" hidden>
         <button type="button" data-command="previous" disabled>Previous</button>
         <button type="button" data-command="next" disabled>Next</button>
         <button type="button" data-command="home" disabled>Home</button>
         <button type="button" data-command="back" disabled>Back</button>
       </nav>
 
-      <p class="help">
-        Pointer taps use the same link and page-turn hit testing as the native
-        reader. Keyboard shortcuts: ← Previous, → Next, Home, Backspace, and
-        Alt+Left for Back.
-      </p>
-
-      <p>
-        Choose a local directory containing the reader entry point and its
-        Markdown documents and assets. Files stay in this page and are never
-        uploaded.
-      </p>
-      <label for="entry-point">Entry point</label>
-      <input id="entry-point" value="README.md" spellcheck="false">
-      <button id="choose-directory" type="button" disabled>Open directory</button>
-      <button id="load-demo" type="button" disabled>Load demo library</button>
-      <p class="help">
-        The demo is checked into the repository for deterministic local checks.
-        Opening a directory uses the read-only File System Access API, which is
-        currently available in Chromium-based browsers on secure origins or
-        localhost; other browsers can use the demo or a static browser build.
-      </p>
+      <div class="directory-picker">
+        <button id="choose-directory" type="button" disabled>Open directory</button>
+        <span class="privacy-note">Local files stay in your browser.</span>
+      </div>
     </main>
     <script type="module" src="./main.js"></script>
   </body>
