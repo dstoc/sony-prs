@@ -431,14 +431,13 @@ impl T1Reader {
     }
 
     /// Set the bounded Markdown font scale while preserving the current
-    /// passage, viewport, and navigation history.
+    /// passage, viewport, and navigation history. The layout remains
+    /// editable when the synchronized bundle is empty so the device-local
+    /// preference stays independent of synchronized content.
     pub fn set_font_scale_percent(
         &mut self,
         font_scale_percent: u16,
     ) -> Result<ReaderEvent, ReaderControllerError> {
-        if self.library_empty {
-            return Err(ReaderControllerError::Reader(ReaderError::NoDocumentOpen));
-        }
         let layout = self
             .controller
             .reader()
@@ -449,25 +448,16 @@ impl T1Reader {
 
     /// Decrease the Markdown font size through the shared reader controller.
     pub fn decrease_font_size(&mut self) -> Result<ReaderEvent, ReaderControllerError> {
-        if self.library_empty {
-            return Err(ReaderControllerError::Reader(ReaderError::NoDocumentOpen));
-        }
         self.controller.decrease_font_size()
     }
 
     /// Restore the Markdown font size to the existing default.
     pub fn reset_font_size(&mut self) -> Result<ReaderEvent, ReaderControllerError> {
-        if self.library_empty {
-            return Err(ReaderControllerError::Reader(ReaderError::NoDocumentOpen));
-        }
         self.controller.reset_font_size()
     }
 
     /// Increase the Markdown font size through the shared reader controller.
     pub fn increase_font_size(&mut self) -> Result<ReaderEvent, ReaderControllerError> {
-        if self.library_empty {
-            return Err(ReaderControllerError::Reader(ReaderError::NoDocumentOpen));
-        }
         self.controller.increase_font_size()
     }
 
@@ -1395,6 +1385,63 @@ mod tests {
             "retired generation stays until cleanup"
         );
         fs::remove_dir_all(root).expect("remove bundle fixture");
+    }
+
+    #[test]
+    fn font_size_preference_remains_editable_after_current_bundle_is_cleared() {
+        use crate::preferences::ReaderPreferences;
+
+        let library_root = sync_library_root();
+        publish_test_bundle(
+            &library_root,
+            ".generation-one",
+            "chapter.md",
+            "# Current bundle\n\nThe current document is no longer available after clearing.\n",
+        );
+        let font_root = fixture_root("# Test fonts");
+        let mut config = fixture_config(&font_root);
+        config.document_root = library_root.join("current");
+        config.document = PathBuf::from("chapter.md");
+        let mut reader =
+            T1Reader::open_with_library_root(config, Viewport::new(240, 120), &library_root)
+                .expect("open current bundle");
+
+        fs::remove_file(library_root.join("current")).expect("clear current bundle");
+        reader
+            .reload_current_bundle()
+            .expect("adopt cleared bundle");
+        assert!(reader.is_library_empty());
+
+        reader
+            .set_font_scale_percent(150)
+            .expect("change font size without a current bundle");
+        assert_eq!(reader.font_scale_percent(), 150);
+
+        let preferences_path = library_root.join("reader-preferences.json");
+        let preferences = ReaderPreferences {
+            font_scale_percent: reader.font_scale_percent(),
+            ..ReaderPreferences::default()
+        };
+        preferences
+            .save_to(&preferences_path)
+            .expect("save font size preference");
+        assert_eq!(ReaderPreferences::load_from(&preferences_path), preferences);
+
+        publish_test_bundle(
+            &library_root,
+            ".generation-two",
+            "replacement.md",
+            "# Replacement bundle",
+        );
+        reader
+            .reload_current_bundle()
+            .expect("reload replacement bundle");
+        assert!(!reader.is_library_empty());
+        assert_eq!(reader.font_scale_percent(), 150);
+        assert_eq!(ReaderPreferences::load_from(&preferences_path), preferences);
+
+        fs::remove_dir_all(library_root).expect("remove sync library fixture");
+        fs::remove_dir_all(font_root).expect("remove font fixture root");
     }
 
     #[test]
