@@ -90,7 +90,9 @@ host integrations should use the component constructor.
 
 `Reader::with_layout` accepts a shared `ReaderLayout`. It combines logical
 display dimensions, the reserved status-bar and progress-line areas, and a
-fixed-point font scale into one effective page viewport. Use
+fixed-point font scale into one effective page viewport. Reader settings clamp
+font scale to 75% through 150% in 25-point steps; the existing 100% scale
+remains the default. Use
 `set_reader_layout` or `reflow_layout` when presentation settings change; the
 reader rebuilds assets, links, hit regions, and pagination around the current
 content anchor. The existing viewport constructors remain available for
@@ -113,6 +115,9 @@ The important operations are:
   `NoAction` as appropriate;
 - `follow_reference`, `navigate_to_anchor`, `back`, and `forward` implement
   root-relative document/anchor navigation and cursor-aware history;
+- `decrease_font_size`, `reset_font_size`, and `increase_font_size` expose
+  bounded Markdown font controls for a Settings UI. Each changed size
+  repaginates around the current content anchor;
 - `reflow`, `reflow_layout`, `set_viewport`, `set_reader_layout`, and
   `set_style` rebuild pagination while keeping the current passage and
   history content anchors stable;

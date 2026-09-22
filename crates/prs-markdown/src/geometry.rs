@@ -29,6 +29,15 @@ pub const T1_LANDSCAPE_VIEWPORT: Viewport = Viewport::new(800, 600);
 /// The neutral font scale used by the compatibility reader constructors.
 pub const DEFAULT_FONT_SCALE_PERCENT: u16 = 100;
 
+/// The smallest font scale exposed by the reader settings controls.
+pub const MIN_FONT_SCALE_PERCENT: u16 = 75;
+
+/// The largest font scale exposed by the reader settings controls.
+pub const MAX_FONT_SCALE_PERCENT: u16 = 150;
+
+/// The fixed scale change applied by each A− or A+ operation.
+pub const FONT_SCALE_STEP_PERCENT: u16 = 25;
+
 /// The fixed page-space size of a rendered GFM task checkbox.
 pub const TASK_CHECKBOX_SIZE: u32 = 12;
 
@@ -158,8 +167,13 @@ impl ReaderLayout {
     }
 
     pub const fn with_font_scale_percent(mut self, font_scale_percent: u16) -> Self {
-        self.font_scale_percent = font_scale_percent;
+        self.font_scale_percent = clamp_font_scale_percent(font_scale_percent);
         self
+    }
+
+    /// Return a copy with a valid settings-controlled font scale.
+    pub const fn normalized(self) -> Self {
+        self.with_font_scale_percent(self.font_scale_percent)
     }
 
     /// Return the page-space viewport available to Markdown content.
@@ -213,7 +227,18 @@ impl ReaderLayout {
 
     /// Apply the layout's font scale to a caller-supplied reader style.
     pub fn effective_style(self, style: ReaderStyle) -> ReaderStyle {
-        style.scaled_font(self.font_scale_percent)
+        style.scaled_font(clamp_font_scale_percent(self.font_scale_percent))
+    }
+}
+
+/// Clamp a caller-supplied scale to the range supported by reader settings.
+pub const fn clamp_font_scale_percent(font_scale_percent: u16) -> u16 {
+    if font_scale_percent < MIN_FONT_SCALE_PERCENT {
+        MIN_FONT_SCALE_PERCENT
+    } else if font_scale_percent > MAX_FONT_SCALE_PERCENT {
+        MAX_FONT_SCALE_PERCENT
+    } else {
+        font_scale_percent
     }
 }
 
@@ -319,6 +344,18 @@ mod tests {
         assert_eq!(
             ReaderLayout::content(T1_VIEWPORT).progress_indicator_bounds(),
             None
+        );
+    }
+
+    #[test]
+    fn reader_layout_clamps_font_scale_to_settings_bounds() {
+        assert_eq!(clamp_font_scale_percent(0), MIN_FONT_SCALE_PERCENT);
+        assert_eq!(clamp_font_scale_percent(u16::MAX), MAX_FONT_SCALE_PERCENT);
+        assert_eq!(
+            ReaderLayout::new(T1_VIEWPORT)
+                .with_font_scale_percent(u16::MAX)
+                .font_scale_percent,
+            MAX_FONT_SCALE_PERCENT
         );
     }
 }

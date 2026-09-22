@@ -516,6 +516,26 @@ where
         self.dispatch(|reader| reader.set_style(style))
     }
 
+    /// Return the current bounded Markdown font scale for a Settings UI.
+    pub fn font_scale_percent(&self) -> u16 {
+        self.reader.font_scale_percent()
+    }
+
+    /// Decrease Markdown text and repaginate around the current passage.
+    pub fn decrease_font_size(&mut self) -> Result<ReaderEvent, ReaderControllerError> {
+        self.dispatch(|reader| reader.decrease_font_size())
+    }
+
+    /// Restore Markdown text to the existing default size and repaginate.
+    pub fn reset_font_size(&mut self) -> Result<ReaderEvent, ReaderControllerError> {
+        self.dispatch(|reader| reader.reset_font_size())
+    }
+
+    /// Increase Markdown text and repaginate around the current passage.
+    pub fn increase_font_size(&mut self) -> Result<ReaderEvent, ReaderControllerError> {
+        self.dispatch(|reader| reader.increase_font_size())
+    }
+
     pub fn back(&mut self) -> Result<ReaderEvent, ReaderControllerError> {
         self.dispatch(|reader| reader.back_event())
     }

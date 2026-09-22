@@ -358,6 +358,35 @@ impl T1Reader {
         self.controller.back()
     }
 
+    /// Return the current bounded Markdown font scale for reader settings.
+    pub fn font_scale_percent(&self) -> u16 {
+        self.controller.font_scale_percent()
+    }
+
+    /// Decrease the Markdown font size through the shared reader controller.
+    pub fn decrease_font_size(&mut self) -> Result<ReaderEvent, ReaderControllerError> {
+        if self.library_empty {
+            return Err(ReaderControllerError::Reader(ReaderError::NoDocumentOpen));
+        }
+        self.controller.decrease_font_size()
+    }
+
+    /// Restore the Markdown font size to the existing default.
+    pub fn reset_font_size(&mut self) -> Result<ReaderEvent, ReaderControllerError> {
+        if self.library_empty {
+            return Err(ReaderControllerError::Reader(ReaderError::NoDocumentOpen));
+        }
+        self.controller.reset_font_size()
+    }
+
+    /// Increase the Markdown font size through the shared reader controller.
+    pub fn increase_font_size(&mut self) -> Result<ReaderEvent, ReaderControllerError> {
+        if self.library_empty {
+            return Err(ReaderControllerError::Reader(ReaderError::NoDocumentOpen));
+        }
+        self.controller.increase_font_size()
+    }
+
     /// Dismiss the transient external-link overlay before the next input is
     /// handled. The caller uses the return value to request overlay damage.
     pub fn clear_external_link_overlay(&mut self) -> bool {

@@ -5,7 +5,9 @@ use prs_markdown::resources::{ResourceError, ResourceProvider, ResourceTarget};
 use prs_markdown::{
     BrowserResourceProvider, ContentAnchor, DocumentId, DocumentLocation,
     FileSystemResourceProvider, NavigationTarget, Reader, ReaderLayout, ReaderLimits, ReaderStyle,
-    ReadingProgress, Viewport, T1_LANDSCAPE_VIEWPORT, T1_VIEWPORT,
+    ReadingProgress, Viewport, DEFAULT_FONT_SCALE_PERCENT, MAX_FONT_SCALE_PERCENT,
+    MIN_FONT_SCALE_PERCENT,
+    T1_LANDSCAPE_VIEWPORT, T1_VIEWPORT,
 };
 use std::collections::HashMap;
 use std::fs;
@@ -460,6 +462,134 @@ fn reflow_handles_empty_and_short_documents() {
         Some(ContentAnchor::new(0, 0))
     );
     assert!(!reader.next_page().expect("advance short document"));
+}
+
+#[test]
+fn font_size_controls_are_bounded_and_preserve_history_anchors() {
+    let root = TestRoot::new();
+    let source = (0..24)
+        .map(|index| {
+            format!(
+                "## Section {index}\n\nThis passage keeps a stable reading position while the settings change the Markdown font size. It is long enough to wrap and repaginate in the compact test viewport.\n\n"
+            )
+        })
+        .collect::<String>();
+    fs::write(root.path().join("index.md"), source).expect("write document");
+
+    let mut reader = reader(&root);
+    reader.open().expect("open document");
+    for _ in 0..3 {
+        assert!(reader.next_page().expect("advance page"));
+    }
+    let origin_anchor = reader
+        .current_content_anchor()
+        .expect("origin content anchor");
+
+    assert_eq!(reader.font_scale_percent(), DEFAULT_FONT_SCALE_PERCENT);
+    assert_eq!(reader.style().body.font_size, 10);
+    assert_eq!(reader.style().heading.font_size, 10);
+
+    assert!(matches!(
+        reader.decrease_font_size().expect("decrease font size"),
+        ReaderEvent::PageChanged { .. }
+    ));
+    assert_eq!(reader.font_scale_percent(), MIN_FONT_SCALE_PERCENT);
+    assert_eq!(reader.current_content_anchor(), Some(origin_anchor));
+    assert_eq!(reader.style().body.font_size, 8);
+    assert_eq!(reader.style().heading.font_size, 8);
+    for _ in 0..4 {
+        assert_eq!(
+            reader.decrease_font_size().expect("hold minimum font size"),
+            ReaderEvent::NoAction
+        );
+    }
+    assert_eq!(reader.font_scale_percent(), MIN_FONT_SCALE_PERCENT);
+
+    reader.reset_font_size().expect("reset font size");
+    assert_eq!(reader.font_scale_percent(), DEFAULT_FONT_SCALE_PERCENT);
+    assert_eq!(reader.current_content_anchor(), Some(origin_anchor));
+    for _ in 0..4 {
+        reader.increase_font_size().expect("increase font size");
+    }
+    assert_eq!(reader.font_scale_percent(), MAX_FONT_SCALE_PERCENT);
+    assert_eq!(reader.current_content_anchor(), Some(origin_anchor));
+    assert_eq!(reader.style().body.font_size, 15);
+    assert_eq!(reader.style().heading.font_size, 15);
+    for _ in 0..4 {
+        assert_eq!(
+            reader.increase_font_size().expect("hold maximum font size"),
+            ReaderEvent::NoAction
+        );
+    }
+
+    reader
+        .navigate_to_anchor("section-12")
+        .expect("navigate to history destination");
+    let destination_anchor = reader
+        .current_content_anchor()
+        .expect("destination content anchor");
+    reader
+        .reset_font_size()
+        .expect("reset destination font size");
+    assert_eq!(reader.current_content_anchor(), Some(destination_anchor));
+    assert!(reader.back().expect("restore origin through history"));
+    assert_eq!(reader.current_content_anchor(), Some(origin_anchor));
+    assert!(reader
+        .forward()
+        .expect("restore destination through history"));
+    assert_eq!(reader.current_content_anchor(), Some(destination_anchor));
+}
+
+#[test]
+fn font_size_extremes_keep_linked_image_hit_regions_usable() {
+    let root = TestRoot::new();
+    fs::create_dir_all(root.path().join("assets")).expect("create asset directory");
+    fs::write(
+        root.path().join("assets/observatory.png"),
+        include_bytes!("fixtures/assets/observatory.png"),
+    )
+    .expect("write image fixture");
+    fs::write(
+        root.path().join("index.md"),
+        "# Linked image\n\n[![Observatory](assets/observatory.png)](#finish)\n\n## Finish\n\nThe destination passage.\n",
+    )
+    .expect("write document");
+
+    let mut reader = reader(&root);
+    reader.open().expect("open document");
+    for _ in 0..4 {
+        reader.increase_font_size().expect("increase font size");
+    }
+    assert!(reader.next_page().expect("advance to linked image"));
+    let max_page = reader.current_page().expect("maximum page");
+    let image_link = max_page
+        .hit_regions
+        .iter()
+        .find(|region| region.target == NavigationTarget::Anchor("finish".to_owned()))
+        .expect("linked image hit region at maximum size");
+    assert!(reader.viewport().contains(image_link.bounds.top_left));
+    assert!(!image_link.bounds.is_zero_sized());
+    assert!(reader
+        .layout()
+        .expect("maximum layout")
+        .blocks()
+        .iter()
+        .flat_map(|block| block.lines.iter())
+        .flat_map(|line| line.fragments.iter())
+        .any(|fragment| fragment.image.is_some()));
+
+    reader.reset_font_size().expect("reset font size");
+    reader
+        .decrease_font_size()
+        .expect("decrease to minimum font size");
+    let min_page = reader.current_page().expect("minimum page");
+    let image_link = min_page
+        .hit_regions
+        .iter()
+        .find(|region| region.target == NavigationTarget::Anchor("finish".to_owned()))
+        .expect("linked image hit region at minimum size");
+    assert!(reader.viewport().contains(image_link.bounds.top_left));
+    assert!(!image_link.bounds.is_zero_sized());
 }
 
 #[test]

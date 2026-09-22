@@ -11,7 +11,7 @@ use prs_markdown::style::{Insets, ReaderStyle, TextStyle};
 use prs_markdown::typography::{
     FontConfig, FontFace, FontdueTextEngine, TextEngine, TextRun, TextStyle as FontTextStyle,
 };
-use prs_markdown::T1_VIEWPORT;
+use prs_markdown::{ReaderLayout, MAX_FONT_SCALE_PERCENT, MIN_FONT_SCALE_PERCENT, T1_VIEWPORT};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -22,6 +22,7 @@ const BLOCK_LIST_CONTENT: &str = include_str!("fixtures/list-block-content.md");
 const TASK_CONTROLS: &str = include_str!("fixtures/task-controls.md");
 const ORDERED_LIST_START: &str = include_str!("fixtures/ordered-list-start.md");
 const LIST_SPACING: &str = include_str!("fixtures/list-spacing.md");
+const FONT_SIZE_EXTREMES: &str = include_str!("fixtures/font-size-extremes.md");
 const GOLDEN_REGULAR: &[u8] = notosans::REGULAR_TTF;
 const GOLDEN_BOLD: &[u8] = notosans::BOLD_TTF;
 const GOLDEN_ITALIC: &[u8] = notosans::ITALIC_TTF;
@@ -818,6 +819,36 @@ fn task_controls_match_the_narrow_viewport_golden() {
         "task controls narrow viewport",
         &image,
     );
+}
+
+#[test]
+fn font_size_extremes_match_host_png_goldens() {
+    let viewport = Viewport::new(360, 260);
+    let font_engine = golden_font_engine();
+    let mut renderer = prs_markdown::EmbeddedGraphicsRenderer::new(font_engine.clone());
+
+    for (name, scale) in [
+        ("font-size-min", MIN_FONT_SCALE_PERCENT),
+        ("font-size-max", MAX_FONT_SCALE_PERCENT),
+    ] {
+        let style = ReaderLayout::content(viewport)
+            .with_font_scale_percent(scale)
+            .effective_style(ReaderStyle::default());
+        let reader = HostReader::from_source_with_measurer(
+            FONT_SIZE_EXTREMES,
+            style,
+            viewport,
+            font_engine.clone(),
+        )
+        .expect("font-size fixture should parse");
+        let image = render_page(
+            reader
+                .page(0)
+                .expect("font-size fixture should have a first page"),
+            &mut renderer,
+        );
+        assert_png_golden(name, 1, &image);
+    }
 }
 
 fn assert_fixture_goldens(name: &str, source: &str) {

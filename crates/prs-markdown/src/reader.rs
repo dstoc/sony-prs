@@ -1,7 +1,10 @@
 //! High-level reader state, kept separate from physical input and display IO.
 
 use crate::document::{image_fallback, Block, Document, Inline, Table};
-use crate::geometry::{ReaderLayout, ReadingProgress, Viewport};
+use crate::geometry::{
+    clamp_font_scale_percent, ReaderLayout, ReadingProgress, Viewport, DEFAULT_FONT_SCALE_PERCENT,
+    FONT_SCALE_STEP_PERCENT, MAX_FONT_SCALE_PERCENT, MIN_FONT_SCALE_PERCENT,
+};
 use crate::image::ImageResources;
 use crate::layout::{
     ApproximateTextMeasurer, DocumentLayout, LayoutEngine, LayoutLine, TableLayout, TextMeasurer,
@@ -245,6 +248,7 @@ struct OpenDocument {
     images: ImageResources,
     page: usize,
     cursor: DocumentCursor,
+    content: ContentAnchor,
 }
 
 impl OpenDocument {
@@ -484,6 +488,7 @@ where
         base_style: ReaderStyle,
         limits: ReaderLimits,
     ) -> Self {
+        let reader_layout = reader_layout.normalized();
         let style = reader_layout.effective_style(base_style);
         Self {
             provider,
@@ -596,6 +601,11 @@ where
         self.reader_layout
     }
 
+    /// Return the current settings-controlled Markdown font scale.
+    pub fn font_scale_percent(&self) -> u16 {
+        self.reader_layout.font_scale_percent
+    }
+
     pub fn limits(&self) -> ReaderLimits {
         self.limits
     }
@@ -683,9 +693,7 @@ where
 
     /// Return the current content anchor used by layout-independent history.
     pub fn current_content_anchor(&self) -> Option<ContentAnchor> {
-        self.current
-            .as_ref()
-            .map(|current| content_anchor_for(&current.document, &current.layout, current.cursor))
+        self.current.as_ref().map(|current| current.content)
     }
 
     pub fn history(&self) -> &[ReadingLocation] {
@@ -725,10 +733,11 @@ where
         reader_layout: ReaderLayout,
         base_style: ReaderStyle,
     ) -> Result<ReaderEvent, ReaderError> {
+        let reader_layout = reader_layout.normalized();
         let Some(current) = self.current.take() else {
             return Err(ReaderError::NoDocumentOpen);
         };
-        let content = content_anchor_for(&current.document, &current.layout, current.cursor);
+        let content = current.content;
         let location = current.location.clone();
         let previous_layout = self.reader_layout;
         let previous_base_style = self.base_style;
@@ -752,6 +761,7 @@ where
         let cursor = cursor_for_content_anchor(&rebuilt.document, &rebuilt.layout, content)
             .unwrap_or(rebuilt.cursor);
         rebuilt.cursor = cursor;
+        rebuilt.content = content;
         rebuilt.page = rebuilt
             .page_index_for_cursor(cursor)
             .unwrap_or(rebuilt.page.min(rebuilt.page_count().saturating_sub(1)));
@@ -788,6 +798,46 @@ where
         self.reflow_layout(self.reader_layout, style)
     }
 
+    /// Decrease Markdown text to the next bounded settings size.
+    pub fn decrease_font_size(&mut self) -> Result<ReaderEvent, ReaderError> {
+        self.set_font_scale_percent(
+            self.font_scale_percent()
+                .saturating_sub(FONT_SCALE_STEP_PERCENT)
+                .max(MIN_FONT_SCALE_PERCENT),
+        )
+    }
+
+    /// Restore Markdown text to the existing default reader size.
+    pub fn reset_font_size(&mut self) -> Result<ReaderEvent, ReaderError> {
+        self.set_font_scale_percent(DEFAULT_FONT_SCALE_PERCENT)
+    }
+
+    /// Increase Markdown text to the next bounded settings size.
+    pub fn increase_font_size(&mut self) -> Result<ReaderEvent, ReaderError> {
+        self.set_font_scale_percent(
+            self.font_scale_percent()
+                .saturating_add(FONT_SCALE_STEP_PERCENT)
+                .min(MAX_FONT_SCALE_PERCENT),
+        )
+    }
+
+    fn set_font_scale_percent(
+        &mut self,
+        font_scale_percent: u16,
+    ) -> Result<ReaderEvent, ReaderError> {
+        if self.current.is_none() {
+            return Err(ReaderError::NoDocumentOpen);
+        }
+        let font_scale_percent = clamp_font_scale_percent(font_scale_percent);
+        if self.font_scale_percent() == font_scale_percent {
+            return Ok(ReaderEvent::NoAction);
+        }
+        let reader_layout = self
+            .reader_layout
+            .with_font_scale_percent(font_scale_percent);
+        self.reflow_layout(reader_layout, self.base_style)
+    }
+
     /// Open the provider's configured current document as a new session.
     pub fn open(&mut self) -> Result<ReaderEvent, ReaderError> {
         let path = self.provider.entry_point().to_owned();
@@ -822,6 +872,7 @@ where
         let current = self.current.as_mut().expect("current page exists");
         current.page = next;
         current.cursor = current.page_range(next).start;
+        current.content = content_anchor_for(&current.document, &current.layout, current.cursor);
         self.update_current_history();
         Ok(true)
     }
@@ -838,6 +889,7 @@ where
         let current = self.current.as_mut().expect("current page exists");
         current.page = previous;
         current.cursor = current.page_range(previous).start;
+        current.content = content_anchor_for(&current.document, &current.layout, current.cursor);
         self.update_current_history();
         Ok(true)
     }
@@ -1029,6 +1081,8 @@ where
                 current.page = current
                     .page_index_for_cursor(cursor)
                     .unwrap_or(current.page);
+                current.content =
+                    content_anchor_for(&current.document, &current.layout, current.cursor);
                 current.page
             };
             self.ensure_current_page(page)?;
@@ -1051,6 +1105,7 @@ where
 
         next.location = location;
         next.cursor = cursor;
+        next.content = content_anchor_for(&next.document, &next.layout, next.cursor);
         next.page = next.page_index_for_cursor(cursor).unwrap_or(next.page);
         next.ensure_page(next.page, &self.style)?;
         let history_entry = Self::snapshot_for(&next);
@@ -1162,7 +1217,9 @@ where
             images,
             page,
             cursor,
+            content: ContentAnchor::default(),
         };
+        loaded.content = content_anchor_for(&loaded.document, &loaded.layout, loaded.cursor);
         loaded.ensure_page(page, &self.style)?;
         Ok(loaded)
     }
@@ -1184,6 +1241,7 @@ where
         loaded.page = loaded
             .page_index_for_cursor(loaded.cursor)
             .unwrap_or(loaded.page);
+        loaded.content = content_anchor_for(&loaded.document, &loaded.layout, loaded.cursor);
         loaded.ensure_page(loaded.page, &self.style)?;
         Ok(())
     }
@@ -1217,7 +1275,7 @@ where
             location: current.location.clone(),
             page: current.page,
             cursor: current.cursor,
-            content: content_anchor_for(&current.document, &current.layout, current.cursor),
+            content: current.content,
         }
     }
 
@@ -1250,6 +1308,7 @@ where
             cursor_for_content_anchor(&restored.document, &restored.layout, target.content)
                 .unwrap_or(target.cursor);
         restored.cursor = cursor;
+        restored.content = target.content;
         restored.page = restored
             .page_index_for_cursor(cursor)
             .unwrap_or(target.page.min(restored.page_count().saturating_sub(1)));
