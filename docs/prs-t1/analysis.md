@@ -1375,14 +1375,16 @@ short/long power-button behavior remains unchanged: short press sleeps and a
 long press reboots.
 
 The touchpanel inventory reports a useful screen-sized multitouch coordinate
-pair (`ABS_MT_POSITION_X/Y`, observed as x=73/y=771 for a lower-left tap), so
-the shell uses the raw screen coordinates for hit testing. `BTN_TOUCH` release
-events delimit taps; movement continues to update the diagnostics without
-triggering navigation. The legacy `ABS_X/Y` compatibility path remains
-displayed for investigation and is normalized from the advertised 800x600
-physical axes to the active screen orientation before hit testing. Portrait
-swaps the axes for the existing fbdev rotation `3`; landscape keeps the axes
-in their native order at rotation `0`. The decoder also accepts
+pair (`ABS_MT_POSITION_X/Y`, observed as x=73/y=771 for a lower-left tap).
+`BTN_TOUCH` release events delimit taps; movement continues to update the
+diagnostics without triggering navigation. The multitouch stream reports the
+portrait-sized screen coordinate order, so portrait uses it directly and
+landscape swaps it into the active 800x600 surface. The legacy `ABS_X/Y`
+compatibility path remains displayed for investigation and is normalized from
+the advertised 800x600 physical axes to the active screen orientation before
+hit testing. Portrait swaps the axes for the existing fbdev rotation `3`;
+landscape keeps the axes in their native order at rotation `0`. The decoder
+also accepts
 `ABS_MT_TRACKING_ID=-1` as a release for drivers that do not emit
 `BTN_TOUCH=0`. A synthetic legacy-axis sequence successfully navigated into
 details and activated the lower `Back to reading` action.

@@ -410,8 +410,12 @@ impl T1Reader {
         &mut self,
         orientation: ReaderOrientation,
     ) -> Result<ReaderEvent, ReaderControllerError> {
-        self.controller
-            .set_reader_layout(reader_layout_for_orientation(orientation))
+        let current = self.controller.reader().reader_layout();
+        let layout = ReaderLayout::new(orientation.viewport())
+            .with_status_bar_height(current.status_bar_height)
+            .with_progress_line_height(current.progress_line.reserved_height)
+            .with_font_scale_percent(current.font_scale_percent);
+        self.controller.set_reader_layout(layout)
     }
 
     pub fn back(&mut self) -> Result<ReaderEvent, ReaderControllerError> {
@@ -955,6 +959,42 @@ mod tests {
         assert_eq!(reader.reader().current_content_anchor(), Some(anchor));
         assert_eq!(reader.reader().history().len(), history_len);
         fs::remove_dir_all(root).expect("remove reflow fixture root");
+    }
+
+    #[test]
+    fn orientation_reflow_preserves_fullscreen_rendering_and_active_layout_settings() {
+        let root = fixture_root("# Reader\n\nThe current passage remains visible.\n");
+        let mut reader = T1Reader::open_with_layout(
+            fixture_config(&root),
+            reader_layout_for_orientation(ReaderOrientation::Portrait),
+        )
+        .expect("open fullscreen reflow fixture");
+        reader
+            .set_fullscreen(true)
+            .expect("enable fullscreen reader");
+        reader
+            .increase_font_size()
+            .expect("increase reader font size");
+
+        reader
+            .set_orientation(ReaderOrientation::Landscape)
+            .expect("reflow fullscreen reader");
+
+        let layout = reader.reader().reader_layout();
+        assert!(reader.fullscreen());
+        assert_eq!(layout.content_top(), 0);
+        assert_eq!(layout.effective_viewport(), Viewport::new(800, 584));
+        assert_eq!(layout.progress_line.reserved_height, PAGE_BOTTOM_MARGIN);
+        assert_eq!(reader.font_scale_percent(), 125);
+
+        let frame = reader
+            .render_frame("status must stay hidden", None, 800, 600)
+            .expect("render fullscreen landscape reader");
+        assert_eq!(
+            rgb565_pixel(&frame, 800, 0, 0),
+            Rgb565::WHITE.into_storage()
+        );
+        fs::remove_dir_all(root).expect("remove fullscreen reflow fixture root");
     }
 
     #[test]

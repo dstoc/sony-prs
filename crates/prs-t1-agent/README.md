@@ -495,10 +495,12 @@ refresh. Touch release is accepted from the event shapes observed on
 the T1: `BTN_TOUCH=0`, `ABS_MT_TRACKING_ID=-1`, or
 `ABS_MT_TOUCH_MAJOR=0`, committed by `SYN_REPORT`. The legacy `ABS_X/Y` path
 maps the panel's advertised 800x600 axes to the active logical surface before
-hit testing. Portrait uses the existing fbdev rotation `3` and swaps the axes
-to 600x800. Landscape uses fbdev rotation `0` and keeps the 800x600 axes in
-their native order. The preference is an in-memory setting until persistence
-is added by a separate change.
+hit testing. The multitouch stream uses the portrait-sized screen coordinate
+order; portrait keeps it unchanged and landscape swaps it into the active
+surface. Portrait uses the existing fbdev rotation `3` and swaps the legacy
+axes to 600x800. Landscape uses fbdev rotation `0` and keeps the legacy
+800x600 axes in their native order. The preference is an in-memory setting
+until persistence is added by a separate change.
 
 The reader feedback strip between the status bar and document content is quiet
 in normal mode. It shows actionable errors until the next touch or physical

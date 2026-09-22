@@ -50,13 +50,23 @@ impl ReaderOrientation {
         matches!(self, Self::Landscape)
     }
 
-    /// Map the touch controller's native 800x600 axes into the active screen.
-    /// The legacy touch device reports the panel axes, so portrait swaps them
-    /// while landscape keeps them in their native order.
+    /// Map the legacy touch controller's native 800x600 axes into the active
+    /// screen. The legacy touch device reports the panel axes, so portrait
+    /// swaps them while landscape keeps them in their native order.
     pub const fn map_touch_point(self, raw_x: i32, raw_y: i32) -> Point {
         match self {
             Self::Portrait => Point::new(raw_y, raw_x),
             Self::Landscape => Point::new(raw_x, raw_y),
+        }
+    }
+
+    /// Map the multitouch stream's portrait-sized screen coordinates into the
+    /// active screen. The physical T1 reports this stream in the portrait
+    /// coordinate order even when the framebuffer is configured for landscape.
+    pub const fn map_multitouch_point(self, raw_x: i32, raw_y: i32) -> Point {
+        match self {
+            Self::Portrait => Point::new(raw_x, raw_y),
+            Self::Landscape => Point::new(raw_y, raw_x),
         }
     }
 }
@@ -90,6 +100,18 @@ mod tests {
         assert_eq!(
             ReaderOrientation::Landscape.map_touch_point(770, 300),
             Point::new(770, 300)
+        );
+    }
+
+    #[test]
+    fn maps_multitouch_screen_coordinates_into_landscape_axes() {
+        assert_eq!(
+            ReaderOrientation::Portrait.map_multitouch_point(73, 771),
+            Point::new(73, 771)
+        );
+        assert_eq!(
+            ReaderOrientation::Landscape.map_multitouch_point(73, 771),
+            Point::new(771, 73)
         );
     }
 }

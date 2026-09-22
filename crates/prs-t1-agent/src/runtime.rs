@@ -2036,12 +2036,22 @@ impl UiState {
             if event.event_type == EVENT_ABS {
                 match event.code {
                     ABS_MT_POSITION_X => {
-                        self.touch_x = event.value;
+                        self.touch_raw_x = event.value;
                         self.touch_seen = true;
+                        let point = self
+                            .orientation
+                            .map_multitouch_point(self.touch_raw_x, self.touch_raw_y);
+                        self.touch_x = point.x;
+                        self.touch_y = point.y;
                     }
                     ABS_MT_POSITION_Y => {
-                        self.touch_y = event.value;
+                        self.touch_raw_y = event.value;
                         self.touch_seen = true;
+                        let point = self
+                            .orientation
+                            .map_multitouch_point(self.touch_raw_x, self.touch_raw_y);
+                        self.touch_x = point.x;
+                        self.touch_y = point.y;
                     }
                     // The T1's legacy compatibility axes are physically
                     // oriented 800x600. Normalize them with the same
@@ -2886,6 +2896,39 @@ mod tests {
 
         assert_eq!(state.touch_x, 770);
         assert_eq!(state.touch_y, 300);
+    }
+
+    #[test]
+    fn multitouch_coordinates_reach_landscape_settings_targets() {
+        let mut state = UiState::with_orientation(ReaderOrientation::Landscape);
+        state.page = UiPage::Details;
+
+        // The physical multitouch stream reports the portrait-sized pair.
+        // The inverse axis order reaches the landscape Orientation row.
+        let mut position_y = event(ABS_MT_POSITION_Y, 100, 1_000_000);
+        position_y.event_type = EVENT_ABS;
+        let mut position_x = event(ABS_MT_POSITION_X, 174, 1_000_001);
+        position_x.event_type = EVENT_ABS;
+        let mut press = event(ABS_MT_TOUCH_MAJOR, 12, 1_000_002);
+        press.event_type = EVENT_ABS;
+        let mut release = event(ABS_MT_TOUCH_MAJOR, 0, 1_000_003);
+        release.event_type = EVENT_ABS;
+        let mut syn = event(SYN_REPORT, 0, 1_000_004);
+        syn.event_type = EVENT_SYN;
+
+        state.observe(InputSourceKind::Touch, position_y);
+        state.observe(InputSourceKind::Touch, position_x);
+        state.observe(InputSourceKind::Touch, press);
+        state.observe(InputSourceKind::Touch, release);
+        let (_, action) = state.observe(InputSourceKind::Touch, syn);
+
+        assert_eq!(action, super::PowerAction::None);
+        assert_eq!(state.touch_x, 100);
+        assert_eq!(state.touch_y, 174);
+        assert_eq!(
+            state.take_orientation_change(),
+            Some(ReaderOrientation::Portrait)
+        );
     }
 
     #[test]
