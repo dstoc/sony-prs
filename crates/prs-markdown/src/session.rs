@@ -5,7 +5,7 @@
 //! native and browser readers. The low-level reader remains responsible for
 //! parsing, pagination, navigation, and history.
 
-use crate::geometry::{ReaderLayout, Rect};
+use crate::geometry::{ReaderLayout, ReadingProgress, Rect};
 use crate::layout::TextMeasurer;
 use crate::parse::MarkdownParser;
 use crate::reader::{Reader, ReaderError, ReaderEvent, ReaderRenderError};
@@ -53,6 +53,37 @@ pub fn external_link_overlay_region(width: u32, height: u32) -> Rect {
         ),
         Size::new(overlay_width, overlay_height),
     )
+}
+
+/// Render the shared one-pixel reading progress line for a reader surface.
+pub fn render_reading_progress<T>(
+    target: &mut T,
+    layout: ReaderLayout,
+    progress: Option<ReadingProgress>,
+    enabled: bool,
+) -> Result<(), T::Error>
+where
+    T: DrawTarget,
+    Rgb888: Into<T::Color>,
+{
+    let Some(progress) = progress else {
+        return Ok(());
+    };
+    let Some(bounds) = layout.progress_indicator_bounds() else {
+        return Ok(());
+    };
+    if !enabled {
+        return Ok(());
+    }
+
+    let width = progress.filled_width(bounds.size.width);
+    if width == 0 {
+        return Ok(());
+    }
+    let mut converted = target.color_converted::<Rgb888>();
+    Rectangle::new(bounds.top_left, Size::new(width, bounds.size.height))
+        .into_styled(PrimitiveStyle::with_fill(Rgb888::BLACK))
+        .draw(&mut converted)
 }
 
 pub fn truncated_url_lines(url: &str, chars_per_line: usize, max_lines: usize) -> Vec<String> {
@@ -353,6 +384,23 @@ where
         T: DrawTarget,
         Rgb888: Into<T::Color>,
     {
+        self.render_current_page_with_overlay_and_progress(renderer, target, origin, true)
+    }
+
+    /// Render the current page, transient overlay, and optional reading
+    /// progress line in the shared display coordinates.
+    pub fn render_current_page_with_overlay_and_progress<E, T>(
+        &mut self,
+        renderer: &mut EmbeddedGraphicsRenderer<E>,
+        target: &mut T,
+        origin: Point,
+        progress_enabled: bool,
+    ) -> Result<(), ReaderRenderError<T::Error>>
+    where
+        E: TextEngine,
+        T: DrawTarget,
+        Rgb888: Into<T::Color>,
+    {
         let page = self
             .reader
             .current_page()
@@ -361,7 +409,14 @@ where
             .render_at(page, target, origin)
             .map_err(ReaderRenderError::Target)?;
         self.render_external_link_overlay(target)
-            .map_err(ReaderRenderError::Target)
+            .map_err(ReaderRenderError::Target)?;
+        render_reading_progress(
+            target,
+            self.reader.reader_layout(),
+            self.reader.reading_progress(),
+            progress_enabled,
+        )
+        .map_err(ReaderRenderError::Target)
     }
 
     pub fn open(&mut self) -> Result<ReaderEvent, ReaderControllerError> {
@@ -492,8 +547,9 @@ mod tests {
     use super::*;
     use crate::parse::ComrakParser;
     use crate::resources::BrowserResourceProvider;
-    use crate::{Reader, ReaderStyle, T1_VIEWPORT};
+    use crate::{Reader, ReaderStyle, ReadingProgress, T1_VIEWPORT};
     use embedded_graphics::geometry::Point;
+    use embedded_graphics::pixelcolor::{Rgb888, RgbColor};
 
     fn controller(
         source: &str,
@@ -577,5 +633,27 @@ mod tests {
         assert!(controller.external_link_overlay().is_some());
         assert!(controller.clear_external_link_overlay());
         assert!(!controller.clear_external_link_overlay());
+    }
+
+    #[test]
+    fn reading_progress_renders_in_the_reserved_bottom_row_and_can_be_disabled() {
+        let layout =
+            ReaderLayout::content(crate::Viewport::new(10, 10)).with_progress_line_height(1);
+        let progress = ReadingProgress::new(1, 3);
+        let mut display = embedded_graphics::mock_display::MockDisplay::<Rgb888>::new();
+        display.set_allow_overdraw(true);
+        display.clear(Rgb888::WHITE).unwrap();
+
+        render_reading_progress(&mut display, layout, Some(progress), true).unwrap();
+
+        for x in 0..6 {
+            assert_eq!(display.get_pixel(Point::new(x, 9)), Some(Rgb888::BLACK));
+        }
+        assert_eq!(display.get_pixel(Point::new(6, 9)), Some(Rgb888::WHITE));
+        assert_eq!(display.get_pixel(Point::new(0, 8)), Some(Rgb888::WHITE));
+
+        display.clear(Rgb888::WHITE).unwrap();
+        render_reading_progress(&mut display, layout, Some(progress), false).unwrap();
+        assert_eq!(display.get_pixel(Point::new(0, 9)), Some(Rgb888::WHITE));
     }
 }

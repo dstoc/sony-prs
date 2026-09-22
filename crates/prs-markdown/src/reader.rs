@@ -1,7 +1,7 @@
 //! High-level reader state, kept separate from physical input and display IO.
 
 use crate::document::{image_fallback, Block, Document, Inline, Table};
-use crate::geometry::{ReaderLayout, Viewport};
+use crate::geometry::{ReaderLayout, ReadingProgress, Viewport};
 use crate::image::ImageResources;
 use crate::layout::{
     ApproximateTextMeasurer, DocumentLayout, LayoutEngine, LayoutLine, TableLayout, TextMeasurer,
@@ -634,6 +634,13 @@ where
 
     pub fn page_count(&self) -> usize {
         self.current.as_ref().map_or(0, OpenDocument::page_count)
+    }
+
+    /// Return page-based progress for the currently open document.
+    pub fn reading_progress(&self) -> Option<ReadingProgress> {
+        self.current
+            .as_ref()
+            .map(|current| ReadingProgress::new(current.page, current.page_count()))
     }
 
     pub fn current_page(&self) -> Option<&PageLayout> {

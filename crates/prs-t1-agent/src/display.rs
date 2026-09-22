@@ -35,6 +35,8 @@ pub const DETAILS_LINE_STEP: usize = 21;
 pub const DETAILS_ACTION_MARGIN: usize = 24;
 pub const DETAILS_DEBUG_TOP: usize = 106;
 pub const DETAILS_DEBUG_HEIGHT: usize = 32;
+pub const DETAILS_PROGRESS_TOP: usize = DETAILS_DEBUG_TOP + DETAILS_DEBUG_HEIGHT;
+pub const DETAILS_PROGRESS_HEIGHT: usize = DETAILS_DEBUG_HEIGHT;
 pub const DETAILS_ACTION_HEADER_TOP: usize = 520;
 pub const DETAILS_ACTION_TOP: usize = 548;
 pub const DETAILS_ACTION_HEIGHT: usize = 36;
@@ -208,6 +210,11 @@ impl DetailsViewModel {
                 if let Some(enabled) = debug_toggle_state(line) {
                     DetailsRow::Toggle {
                         label: "Debug messages".into(),
+                        enabled,
+                    }
+                } else if let Some(enabled) = reading_progress_toggle_state(line) {
+                    DetailsRow::Toggle {
+                        label: "Reading progress".into(),
                         enabled,
                     }
                 } else if is_section_heading(line) {
@@ -1208,6 +1215,15 @@ fn debug_toggle_state(line: &str) -> Option<bool> {
         })
 }
 
+fn reading_progress_toggle_state(line: &str) -> Option<bool> {
+    line.strip_prefix("Reading progress ")
+        .and_then(|value| match value {
+            "ON" => Some(true),
+            "OFF" => Some(false),
+            _ => None,
+        })
+}
+
 fn draw_debug_toggle(canvas: &mut DisplayCanvas<'_>, y: usize, label: &str, enabled: bool) {
     draw_text(canvas, 24, y, label);
     let left = 430;
@@ -1417,6 +1433,10 @@ mod tests {
                 label: "Debug messages".into(),
                 enabled: debug_messages,
             },
+            DetailsRow::Toggle {
+                label: "Reading progress".into(),
+                enabled: true,
+            },
             DetailsRow::Section("Synchronization".into()),
             DetailsRow::Value("Sync active  Failure none".into()),
             DetailsRow::Section("Power".into()),
@@ -1508,6 +1528,27 @@ mod tests {
         let png =
             rgb565_to_png(&frame, SCREEN_WIDTH, SCREEN_HEIGHT).expect("encode debug settings PNG");
         assert_png_golden("details-settings-debug", &png);
+    }
+
+    #[test]
+    fn details_settings_lines_parse_the_reading_progress_toggle() {
+        let details = DetailsViewModel::from_lines(&[
+            "Details / Settings".into(),
+            "Settings".into(),
+            "Reading progress OFF".into(),
+        ]);
+
+        assert_eq!(
+            details.rows,
+            vec![
+                DetailsRow::Section("Settings".into()),
+                DetailsRow::Toggle {
+                    label: "Reading progress".into(),
+                    enabled: false,
+                },
+            ]
+        );
+        assert_eq!(details.to_lines()[2], "Reading progress OFF");
     }
 
     #[test]

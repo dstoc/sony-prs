@@ -74,6 +74,50 @@ impl ProgressLineArea {
     }
 }
 
+/// The page-based reading progress for the currently open document.
+///
+/// Page indexes are zero-based, but progress is measured through the visible
+/// page, so the first page has one page of progress and the last page reaches
+/// the full display width.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReadingProgress {
+    current_page: usize,
+    page_count: usize,
+}
+
+impl ReadingProgress {
+    pub const fn new(current_page: usize, page_count: usize) -> Self {
+        let page_count = if page_count == 0 { 1 } else { page_count };
+        Self {
+            current_page: if current_page >= page_count {
+                page_count - 1
+            } else {
+                current_page
+            },
+            page_count,
+        }
+    }
+
+    pub const fn current_page(self) -> usize {
+        self.current_page
+    }
+
+    pub const fn page_count(self) -> usize {
+        self.page_count
+    }
+
+    /// Return the filled width for a progress line of `display_width` pixels.
+    pub fn filled_width(self, display_width: u32) -> u32 {
+        let visible_pages = self.current_page.saturating_add(1) as u64;
+        let width = u64::from(display_width);
+        let page_count = self.page_count as u64;
+        width
+            .saturating_mul(visible_pages)
+            .checked_div(page_count)
+            .unwrap_or(0) as u32
+    }
+}
+
 /// Shared presentation inputs for native and browser reader surfaces.
 ///
 /// `display_viewport` is the logical surface supplied by the host. The
@@ -146,6 +190,21 @@ impl ReaderLayout {
                 self.progress_line.reserved_height,
             ),
         )
+    }
+
+    /// Return the one-pixel line at the bottom of the reserved progress area.
+    pub const fn progress_indicator_bounds(self) -> Option<Rect> {
+        if self.progress_line.reserved_height == 0 || self.display_viewport.width == 0 {
+            return None;
+        }
+        let reserved = self.progress_line_bounds();
+        Some(Rect::new(
+            Point::new(
+                reserved.top_left.x,
+                reserved.top_left.y + reserved.size.height as i32 - 1,
+            ),
+            embedded_graphics::geometry::Size::new(self.display_viewport.width, 1),
+        ))
     }
 
     pub const fn is_landscape(self) -> bool {
@@ -232,6 +291,34 @@ mod tests {
             layout.progress_line_bounds(),
             Rect::new(Point::new(0, 592), Size::new(800, 8))
         );
+        assert_eq!(
+            layout.progress_indicator_bounds(),
+            Some(Rect::new(Point::new(0, 599), Size::new(800, 1)))
+        );
         assert!(layout.is_landscape());
+    }
+
+    #[test]
+    fn reading_progress_scales_visible_pages_to_the_display_width() {
+        let progress = ReadingProgress::new(1, 3);
+
+        assert_eq!(progress.current_page(), 1);
+        assert_eq!(progress.page_count(), 3);
+        assert_eq!(progress.filled_width(600), 400);
+        assert_eq!(ReadingProgress::new(2, 3).filled_width(600), 600);
+    }
+
+    #[test]
+    fn progress_indicator_uses_the_last_reserved_row() {
+        let layout = ReaderLayout::new(T1_VIEWPORT).with_progress_line_height(16);
+
+        assert_eq!(
+            layout.progress_indicator_bounds(),
+            Some(Rect::new(Point::new(0, 799), Size::new(600, 1)))
+        );
+        assert_eq!(
+            ReaderLayout::content(T1_VIEWPORT).progress_indicator_bounds(),
+            None
+        );
     }
 }

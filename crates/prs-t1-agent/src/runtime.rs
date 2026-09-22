@@ -389,6 +389,7 @@ fn redraw(
 ) -> io::Result<()> {
     let view = screen_view_model(state, wake_lock_held);
     let lines = screen_lines_for_page(state, &view);
+    markdown_reader.set_progress_line_enabled(state.reading_progress);
     let reason = area.reason(state.page);
     let plan = refresh_policy.plan(reason);
     eprintln!(
@@ -808,6 +809,10 @@ fn screen_view_model(state: &UiState, wake_lock_held: bool) -> display::UiViewMo
         display::DetailsRow::Toggle {
             label: "Debug messages".into(),
             enabled: state.debug_messages,
+        },
+        display::DetailsRow::Toggle {
+            label: "Reading progress".into(),
+            enabled: state.reading_progress,
         },
         display::DetailsRow::Section("Synchronization".into()),
         display::DetailsRow::Value(format!(
@@ -1602,6 +1607,7 @@ struct UiState {
     mode: &'static str,
     feedback: Option<Feedback>,
     debug_messages: bool,
+    reading_progress: bool,
     reader_tap: Option<Point>,
     reader_operation: Option<ReaderOperation>,
     touch_seen: bool,
@@ -1643,6 +1649,7 @@ impl UiState {
             mode: "ACTIVE",
             feedback: None,
             debug_messages: false,
+            reading_progress: true,
             reader_tap: None,
             reader_operation: None,
             touch_seen: false,
@@ -2222,6 +2229,12 @@ impl UiState {
             self.debug_messages = !self.debug_messages;
             return (PowerAction::None, Some(DirtyArea::Interaction));
         }
+        let within_progress_row = y >= display::DETAILS_PROGRESS_TOP as i32
+            && y < (display::DETAILS_PROGRESS_TOP + display::DETAILS_PROGRESS_HEIGHT) as i32;
+        if within_progress_row && touch_action.is_none() && pressed_action.is_none() {
+            self.reading_progress = !self.reading_progress;
+            return (PowerAction::None, Some(DirtyArea::Interaction));
+        }
         let Some(touch_action) = touch_action else {
             return (PowerAction::None, None);
         };
@@ -2650,6 +2663,23 @@ mod tests {
         state.touch_down = true;
         state.observe(InputSourceKind::Touch, event(BTN_TOUCH, 0, 1_000_001));
         assert!(!state.debug_messages);
+    }
+
+    #[test]
+    fn reading_progress_toggle_is_on_by_default_and_tappable_in_details() {
+        let mut state = UiState::new();
+        assert!(state.reading_progress);
+        state.page = UiPage::Details;
+        state.touch_x = 100;
+        state.touch_y = (display::DETAILS_PROGRESS_TOP + 10) as i32;
+        state.touch_down = true;
+
+        state.observe(InputSourceKind::Touch, event(BTN_TOUCH, 0, 1_000_000));
+        assert!(!state.reading_progress);
+
+        state.touch_down = true;
+        state.observe(InputSourceKind::Touch, event(BTN_TOUCH, 0, 1_000_001));
+        assert!(state.reading_progress);
     }
 
     #[test]

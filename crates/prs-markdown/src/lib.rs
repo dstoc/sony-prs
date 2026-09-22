@@ -35,7 +35,7 @@ pub use document::{
     SourceSpan, Table, TableAlignment, TaskState,
 };
 pub use geometry::{
-    intersection, translate, ProgressLineArea, ReaderLayout, Rect, Viewport,
+    intersection, translate, ProgressLineArea, ReaderLayout, ReadingProgress, Rect, Viewport,
     DEFAULT_FONT_SCALE_PERCENT, T1_LANDSCAPE_VIEWPORT, T1_VIEWPORT, TASK_CHECKBOX_GAP,
     TASK_CHECKBOX_SIZE,
 };
@@ -68,10 +68,10 @@ pub use resources::{BrowserResourceProvider, ResourceProvider, ResourceTarget};
 #[cfg(not(target_arch = "wasm32"))]
 pub use resources::{FileSystemResourceProvider, FileSystemResources};
 pub use session::{
-    external_link_overlay_region, truncated_url_lines, ExternalLinkOverlay, QrError, QrMatrix,
-    ReaderController, ReaderControllerError, EXTERNAL_LINK_BOTTOM_MARGIN,
-    EXTERNAL_LINK_OVERLAY_HEIGHT, EXTERNAL_LINK_OVERLAY_MARGIN, EXTERNAL_LINK_OVERLAY_WIDTH,
-    EXTERNAL_LINK_QR_BOX_SIZE, EXTERNAL_LINK_QR_QUIET_ZONE,
+    external_link_overlay_region, render_reading_progress, truncated_url_lines,
+    ExternalLinkOverlay, QrError, QrMatrix, ReaderController, ReaderControllerError,
+    EXTERNAL_LINK_BOTTOM_MARGIN, EXTERNAL_LINK_OVERLAY_HEIGHT, EXTERNAL_LINK_OVERLAY_MARGIN,
+    EXTERNAL_LINK_OVERLAY_WIDTH, EXTERNAL_LINK_QR_BOX_SIZE, EXTERNAL_LINK_QR_QUIET_ZONE,
 };
 pub use style::{BorderStyle, Color, FillStyle, Insets, ReaderStyle, TextStyle};
 pub use typography::{

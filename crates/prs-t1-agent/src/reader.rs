@@ -177,6 +177,7 @@ pub struct T1Reader {
     entry_point: PathBuf,
     library_root: PathBuf,
     library_empty: bool,
+    progress_line_enabled: bool,
 }
 
 impl T1Reader {
@@ -241,6 +242,7 @@ impl T1Reader {
             entry_point: config.document,
             library_root: library_root.as_ref().to_owned(),
             library_empty: false,
+            progress_line_enabled: true,
         })
     }
 
@@ -264,8 +266,10 @@ impl T1Reader {
         let previous = (!self.library_empty)
             .then(|| self.controller.reader().current_location().cloned())
             .flatten();
+        let progress_line_enabled = self.progress_line_enabled;
         let mut replacement =
             Self::open_with_library_root_and_layout(config, layout, &self.library_root)?;
+        replacement.progress_line_enabled = progress_line_enabled;
         if let Some(location) = previous {
             if replacement
                 .controller
@@ -283,6 +287,10 @@ impl T1Reader {
 
     pub fn is_library_empty(&self) -> bool {
         self.library_empty
+    }
+
+    pub fn set_progress_line_enabled(&mut self, enabled: bool) {
+        self.progress_line_enabled = enabled;
     }
 
     /// Return to the entry point of the currently open bundle through reader
@@ -387,13 +395,14 @@ impl T1Reader {
         }
 
         self.controller
-            .render_current_page_with_overlay(
+            .render_current_page_with_overlay_and_progress(
                 &mut self.renderer,
                 &mut canvas,
                 Point::new(
                     0,
                     self.controller.reader().reader_layout().content_top() as i32,
                 ),
+                self.progress_line_enabled,
             )
             .map_err(|error| {
                 io::Error::new(
@@ -588,6 +597,11 @@ mod tests {
         root
     }
 
+    fn rgb565_pixel(frame: &[u8], width: usize, x: usize, y: usize) -> u16 {
+        let offset = (y * width + x) * 2;
+        u16::from_ne_bytes([frame[offset], frame[offset + 1]])
+    }
+
     fn assert_png_golden(name: &str, actual: &[u8]) {
         let golden = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/goldens")
@@ -717,6 +731,67 @@ mod tests {
             .any(|pixel| *pixel != Rgb565::WHITE.into_storage().to_ne_bytes()[0]));
         assert_eq!(reader.reader().page_count(), 1);
         assert_eq!(reader.current_page_tone(), PageTone::Monochrome);
+        fs::remove_dir_all(root).expect("remove reader fixture root");
+    }
+
+    #[test]
+    fn reading_progress_line_tracks_pages_and_toggle_without_repagination() {
+        let root = fixture_root(&"line\n".repeat(500));
+        let mut reader = T1Reader::open(fixture_config(&root), Viewport::new(240, 120))
+            .expect("open multi-page fixture");
+        let layout = reader.reader().reader_layout();
+        let line_y = layout
+            .progress_indicator_bounds()
+            .expect("T1 progress line")
+            .top_left
+            .y as usize;
+        let height = layout.display_viewport.height;
+        let first = reader
+            .render_frame("", None, 240, height)
+            .expect("render first page");
+        let first_progress = reader.reader().reading_progress().expect("first progress");
+        let expected_first_width = first_progress.filled_width(240) as usize;
+        assert_eq!(
+            (0..240)
+                .take_while(
+                    |x| rgb565_pixel(&first, 240, *x, line_y) == Rgb565::BLACK.into_storage()
+                )
+                .count(),
+            expected_first_width
+        );
+
+        loop {
+            if matches!(
+                reader.next_page().expect("advance page"),
+                ReaderEvent::NoAction
+            ) {
+                break;
+            }
+        }
+        let last = reader
+            .render_frame("", None, 240, height)
+            .expect("render last page");
+        assert_eq!(
+            reader
+                .reader()
+                .reading_progress()
+                .expect("last progress")
+                .filled_width(240),
+            240
+        );
+        assert!(
+            (0..240).all(|x| rgb565_pixel(&last, 240, x, line_y) == Rgb565::BLACK.into_storage())
+        );
+
+        let last_page = reader.reader().current_page_index();
+        reader.set_progress_line_enabled(false);
+        let hidden = reader
+            .render_frame("", None, 240, height)
+            .expect("render disabled progress");
+        assert_eq!(reader.reader().current_page_index(), last_page);
+        assert!(
+            (0..240).all(|x| rgb565_pixel(&hidden, 240, x, line_y) == Rgb565::WHITE.into_storage())
+        );
         fs::remove_dir_all(root).expect("remove reader fixture root");
     }
 

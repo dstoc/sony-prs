@@ -36,7 +36,10 @@ where
     P: ResourceProvider,
 {
     fn new(provider: P) -> Result<Self, String> {
-        Self::new_with_layout(provider, ReaderLayout::content(T1_VIEWPORT))
+        Self::new_with_layout(
+            provider,
+            ReaderLayout::content(T1_VIEWPORT).with_progress_line_height(1),
+        )
     }
 
     fn new_with_layout(provider: P, layout: ReaderLayout) -> Result<Self, String> {

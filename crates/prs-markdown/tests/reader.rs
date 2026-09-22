@@ -5,7 +5,7 @@ use prs_markdown::resources::{ResourceError, ResourceProvider, ResourceTarget};
 use prs_markdown::{
     BrowserResourceProvider, ContentAnchor, DocumentId, DocumentLocation,
     FileSystemResourceProvider, NavigationTarget, Reader, ReaderLayout, ReaderLimits, ReaderStyle,
-    Viewport, T1_LANDSCAPE_VIEWPORT, T1_VIEWPORT,
+    ReadingProgress, Viewport, T1_LANDSCAPE_VIEWPORT, T1_VIEWPORT,
 };
 use std::collections::HashMap;
 use std::fs;
@@ -195,6 +195,67 @@ fn browser_provider_loads_entry_point_and_follows_local_documents_and_assets() {
         include_bytes!("fixtures/assets/observatory.png").to_vec()
     );
     assert!(reader.follow_reference("../../../outside.md").is_err());
+}
+
+#[test]
+fn reading_progress_is_scoped_to_the_active_document_and_last_page_is_complete() {
+    let root = TestRoot::new();
+    fs::write(root.path().join("index.md"), "line\n".repeat(500)).expect("write long entry");
+    fs::write(root.path().join("short.md"), "# Short\n").expect("write short document");
+
+    let mut reader = reader(&root);
+    reader.open().expect("open long document");
+    assert!(reader.page_count() > 1);
+    assert_eq!(
+        reader.reading_progress(),
+        Some(ReadingProgress::new(0, reader.page_count()))
+    );
+
+    while reader.next_page().expect("advance long document") {}
+    assert_eq!(
+        reader.reading_progress(),
+        Some(ReadingProgress::new(
+            reader.current_page_index().expect("last page"),
+            reader.page_count()
+        ))
+    );
+    assert_eq!(
+        reader
+            .reading_progress()
+            .expect("last-page progress")
+            .filled_width(600),
+        600
+    );
+
+    reader
+        .open_document("short.md")
+        .expect("open short document");
+    assert_eq!(reader.reading_progress(), Some(ReadingProgress::new(0, 1)));
+}
+
+#[test]
+fn reading_progress_recomputes_after_reflow_at_the_preserved_anchor() {
+    let root = TestRoot::new();
+    let source = (0..160)
+        .map(|index| format!("## Section {index}\n\nStable text for reflow testing.\n\n"))
+        .collect::<String>();
+    fs::write(root.path().join("index.md"), source).expect("write reflow document");
+
+    let mut reader = reader(&root);
+    reader.open().expect("open document");
+    assert!(reader.next_page().expect("advance to a later page"));
+    let anchor = reader.current_content_anchor().expect("current anchor");
+    let before = reader.reading_progress().expect("initial progress");
+
+    reader
+        .set_viewport(Viewport::new(44, 24))
+        .expect("reflow document");
+
+    let after = reader.reading_progress().expect("reflow progress");
+    assert_eq!(reader.current_content_anchor(), Some(anchor));
+    assert_eq!(after.current_page(), reader.current_page_index().unwrap());
+    assert_eq!(after.page_count(), reader.page_count());
+    assert_ne!(after, before);
 }
 
 #[derive(Clone)]
