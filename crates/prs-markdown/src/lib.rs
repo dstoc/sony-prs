@@ -61,9 +61,9 @@ pub use reader::{
     ReaderRenderError, ReaderSession, ReadingLocation,
 };
 pub use render::EmbeddedGraphicsRenderer;
+pub use resources::{BrowserResourceProvider, ResourceProvider, ResourceTarget};
 #[cfg(not(target_arch = "wasm32"))]
 pub use resources::{FileSystemResourceProvider, FileSystemResources};
-pub use resources::{ResourceProvider, ResourceTarget};
 pub use style::{BorderStyle, Color, FillStyle, Insets, ReaderStyle, TextStyle};
 pub use typography::{
     FontConfig, FontError, FontFace, FontLoadConfig, FontdueTextEngine, GlyphBitmap, LineMetrics,

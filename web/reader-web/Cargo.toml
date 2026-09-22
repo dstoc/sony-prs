@@ -13,4 +13,5 @@ crate-type = ["cdylib"]
 embedded-graphics = { version = "0.8.2", default-features = false }
 notosans = "0.1.0"
 prs-markdown = { path = "../../crates/prs-markdown" }
+js-sys = "=0.3.105"
 wasm-bindgen = "=0.2.128"

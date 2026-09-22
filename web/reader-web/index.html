@@ -9,11 +9,22 @@
   <body>
     <main class="simulator">
       <p class="eyebrow">PRS-T1 reader simulator</p>
-      <h1>Shared reader rendering</h1>
+      <h1>Browser reader simulator</h1>
       <p id="status" role="status">Loading Rust WASM…</p>
       <div class="reader-frame">
         <canvas id="reader-canvas" aria-label="Rendered PRS-T1 reader page"></canvas>
       </div>
+      <p>
+        Choose a local directory containing the reader entry point and its
+        Markdown documents and assets. Files stay in this page and are never
+        uploaded.
+      </p>
+      <label for="entry-point">Entry point</label>
+      <input id="entry-point" value="README.md" spellcheck="false">
+      <button id="choose-directory" type="button" disabled>Choose directory</button>
+      <label for="reference">Resolve a local reference</label>
+      <input id="reference" value="docs/chapter.md" spellcheck="false">
+      <button id="resolve-reference" type="button" disabled>Resolve reference</button>
     </main>
     <script type="module" src="./main.js"></script>
   </body>

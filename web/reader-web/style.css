@@ -61,3 +61,36 @@ canvas {
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
+
+label {
+  display: block;
+  margin-top: 1.25rem;
+  font-weight: 700;
+}
+
+input,
+button {
+  box-sizing: border-box;
+  min-height: 2.5rem;
+  margin-top: 0.4rem;
+  padding: 0.45rem 0.65rem;
+  font: inherit;
+}
+
+input {
+  width: 100%;
+  border: 1px solid #aaa092;
+  background: #fff;
+}
+
+button {
+  border: 1px solid #594b3b;
+  background: #594b3b;
+  color: #fffdf8;
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}

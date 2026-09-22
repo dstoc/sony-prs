@@ -2,15 +2,233 @@ use embedded_graphics::draw_target::DrawTarget;
 use embedded_graphics::geometry::{OriginDimensions, Point, Size};
 use embedded_graphics::pixelcolor::{Rgb888, RgbColor};
 use embedded_graphics::prelude::Pixel;
+use js_sys::{Array, Object, Reflect, Uint8Array};
 use prs_markdown::parse::ComrakParser;
-use prs_markdown::reader::Reader;
 use prs_markdown::render::EmbeddedGraphicsRenderer;
-use prs_markdown::resources::{ResourceError, ResourceProvider, ResourceTarget};
+use prs_markdown::resources::ResourceError;
 use prs_markdown::typography::{FontConfig, FontdueTextEngine};
-use prs_markdown::{ReaderStyle, T1_VIEWPORT};
+use prs_markdown::{
+    BrowserResourceProvider, Reader, ReaderError, ReaderEvent, ReaderStyle, ResourceProvider,
+    ResourceTarget, Viewport, T1_VIEWPORT,
+};
 use std::convert::Infallible;
 use std::path::{Path, PathBuf};
 use wasm_bindgen::prelude::*;
+use wasm_bindgen::JsCast;
+
+/// A reader backed by a snapshot of the directory selected in the browser.
+///
+/// The File System Access API is asynchronous, so JavaScript creates the
+/// snapshot before calling [`load_directory`]. Once constructed, the shared
+/// reader uses the same synchronous `ResourceProvider` boundary as native
+/// readers.
+#[wasm_bindgen]
+pub struct BrowserReader {
+    reader: Reader<BrowserResourceProvider>,
+}
+
+/// Build and open a reader from the files returned by `directory-library.js`.
+///
+/// Each array item must be an object with a relative `path` string and a
+/// `Uint8Array` of `bytes`. The entry point defaults to `README.md` in the
+/// browser UI, but callers may supply another root-relative Markdown path.
+#[wasm_bindgen]
+pub fn load_directory(files: Array, entry_point: String) -> Result<BrowserReader, JsValue> {
+    let files = parse_files(files)?;
+    let provider = BrowserResourceProvider::new(Path::new(&entry_point), files)
+        .map_err(|error| structured_error("resource", error))?;
+    let mut reader = Reader::new(
+        provider,
+        prs_markdown::ReaderStyle::default(),
+        Viewport::new(600, 800),
+    );
+    reader
+        .open()
+        .map_err(|error| structured_reader_error("open", error))?;
+    Ok(BrowserReader { reader })
+}
+
+#[wasm_bindgen]
+impl BrowserReader {
+    pub fn entry_point(&self) -> String {
+        self.reader.provider().entry_point().display().to_string()
+    }
+
+    pub fn current_document(&self) -> String {
+        self.reader
+            .current_location()
+            .map(|location| location.document.as_ref().to_owned())
+            .unwrap_or_default()
+    }
+
+    pub fn page_count(&self) -> u32 {
+        self.reader.page_count().try_into().unwrap_or(u32::MAX)
+    }
+
+    /// Resolve a local document or asset through the selected directory.
+    ///
+    /// This is useful to the simulator shell until its display renderer is
+    /// wired to link hit regions. It also ensures browser navigation goes
+    /// through the shared Rust resource policy.
+    pub fn resolve_reference(&self, reference: &str) -> Result<JsValue, JsValue> {
+        let containing_document = self
+            .reader
+            .current_location()
+            .map(|location| PathBuf::from(location.document.as_ref()))
+            .ok_or_else(|| structured_error("reader", "no document is open"))?;
+        let target = self
+            .reader
+            .provider()
+            .resolve_reference_from(&containing_document, reference)
+            .map_err(|error| structured_error("resource", error))?;
+        Ok(target_value(&target))
+    }
+
+    /// Follow a document, anchor, asset, or external URL reference.
+    pub fn follow_reference(&mut self, reference: &str) -> Result<JsValue, JsValue> {
+        let event = self
+            .reader
+            .follow_reference(reference)
+            .map_err(|error| structured_reader_error("navigate", error))?;
+        Ok(event_value(&event))
+    }
+
+    /// Read a selected-directory asset through the same root-relative checks
+    /// used by Markdown image loading.
+    pub fn read_asset(&self, path: &str) -> Result<Uint8Array, JsValue> {
+        let bytes = self
+            .reader
+            .provider()
+            .read_binary(Path::new(path))
+            .map_err(|error| structured_error("resource", error))?;
+        Ok(Uint8Array::from(bytes.as_slice()))
+    }
+}
+
+fn parse_files(files: Array) -> Result<Vec<(PathBuf, Vec<u8>)>, JsValue> {
+    files
+        .iter()
+        .enumerate()
+        .map(|(index, value)| {
+            let path = Reflect::get(&value, &JsValue::from_str("path"))
+                .map_err(|_| structured_error("bridge", format!("file {index} has no path")))?
+                .as_string()
+                .ok_or_else(|| {
+                    structured_error("bridge", format!("file {index} path is not a string"))
+                })?;
+            let bytes = Reflect::get(&value, &JsValue::from_str("bytes"))
+                .map_err(|_| structured_error("bridge", format!("file {index} has no bytes")))?
+                .dyn_into::<Uint8Array>()
+                .map_err(|_| {
+                    structured_error("bridge", format!("file {index} bytes are not a Uint8Array"))
+                })?;
+            let mut copied = vec![0; bytes.length() as usize];
+            bytes.copy_to(&mut copied);
+            Ok((PathBuf::from(path), copied))
+        })
+        .collect()
+}
+
+fn structured_reader_error(kind: &str, error: ReaderError) -> JsValue {
+    structured_error(kind, error)
+}
+
+fn structured_error(kind: &str, error: impl std::fmt::Display) -> JsValue {
+    let object = Object::new();
+    let _ = Reflect::set(
+        &object,
+        &JsValue::from_str("code"),
+        &JsValue::from_str(&format!("reader_{kind}_error")),
+    );
+    let _ = Reflect::set(
+        &object,
+        &JsValue::from_str("message"),
+        &JsValue::from_str(&error.to_string()),
+    );
+    object.into()
+}
+
+fn target_value(target: &ResourceTarget) -> JsValue {
+    let object = Object::new();
+    match target {
+        ResourceTarget::Anchor(anchor) => set_target(&object, "anchor", None, Some(anchor)),
+        ResourceTarget::Document(path) => set_target(&object, "document", Some(path), None),
+        ResourceTarget::DocumentAnchor { document, anchor } => {
+            set_target(&object, "document_anchor", Some(document), Some(anchor))
+        }
+        ResourceTarget::Asset(path) => set_target(&object, "asset", Some(path), None),
+        ResourceTarget::External(url) => {
+            let _ = Reflect::set(
+                &object,
+                &JsValue::from_str("kind"),
+                &JsValue::from_str("external"),
+            );
+            let _ = Reflect::set(&object, &JsValue::from_str("url"), &JsValue::from_str(url));
+        }
+    }
+    object.into()
+}
+
+fn set_target(object: &Object, kind: &str, path: Option<&Path>, anchor: Option<&String>) {
+    let _ = Reflect::set(object, &JsValue::from_str("kind"), &JsValue::from_str(kind));
+    if let Some(path) = path {
+        let _ = Reflect::set(
+            object,
+            &JsValue::from_str("path"),
+            &JsValue::from_str(&path.display().to_string()),
+        );
+    }
+    if let Some(anchor) = anchor {
+        let _ = Reflect::set(
+            object,
+            &JsValue::from_str("anchor"),
+            &JsValue::from_str(anchor),
+        );
+    }
+}
+
+fn event_value(event: &ReaderEvent) -> JsValue {
+    let object = Object::new();
+    let (kind, path) = match event {
+        ReaderEvent::Opened { location, .. }
+        | ReaderEvent::Navigated { location, .. }
+        | ReaderEvent::Back { location, .. }
+        | ReaderEvent::Forward { location, .. } => {
+            ("document", Some(location.document.as_ref().to_owned()))
+        }
+        ReaderEvent::PageChanged { .. } => ("page_changed", None),
+        ReaderEvent::ExternalUrl(url) => {
+            let _ = Reflect::set(
+                &object,
+                &JsValue::from_str("kind"),
+                &JsValue::from_str("external"),
+            );
+            let _ = Reflect::set(&object, &JsValue::from_str("url"), &JsValue::from_str(url));
+            return object.into();
+        }
+        ReaderEvent::Asset(path) => ("asset", Some(path.to_string_lossy().into_owned())),
+        ReaderEvent::NoAction => ("no_action", None),
+    };
+    let _ = Reflect::set(
+        &object,
+        &JsValue::from_str("kind"),
+        &JsValue::from_str(kind),
+    );
+    if let Some(path) = path {
+        let _ = Reflect::set(
+            &object,
+            &JsValue::from_str("path"),
+            &JsValue::from_str(path.as_str()),
+        );
+    }
+    object.into()
+}
+
+/// Return a message from the Rust module after the browser loads it.
+#[wasm_bindgen]
+pub fn proof_of_life() -> String {
+    "PRS-T1 reader web WASM is alive.".to_owned()
+}
 
 const ENTRY_POINT: &str = "index.md";
 const GLYPH_CACHE_CAPACITY: usize = 256;

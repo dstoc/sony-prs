@@ -41,7 +41,9 @@ only fitted 8-bit grayscale rasters. The high-level `Reader` adds document
 loading, page movement, anchor/document navigation, cursor-aware Back/Forward
 history, and bounded page/document caches.
 
-The T1-specific adapter in `crates/prs-t1-agent/src/reader.rs` constructs this
+`BrowserResourceProvider` supplies the same root-relative policy for a
+browser-provided in-memory snapshot; the reader-web simulator fills it from a
+user-selected File System Access directory. The T1-specific adapter in `crates/prs-t1-agent/src/reader.rs` constructs this
 pipeline with `ComrakParser`, `FontdueTextEngine`, `ReaderStyle::default()`,
 and a filesystem provider. It maps whole-screen taps into page coordinates and
 lets the surrounding T1 runtime own status UI, input, framebuffer damage, and

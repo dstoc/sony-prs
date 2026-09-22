@@ -6,13 +6,13 @@
 //! below is useful on a host and on the T1, while another implementation can
 //! retrieve the same paths from a package, archive, or device service.
 
+use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
 #[cfg(not(target_arch = "wasm32"))]
 use std::fs;
 #[cfg(not(target_arch = "wasm32"))]
 use std::io::{self, Read};
-#[cfg(not(target_arch = "wasm32"))]
 use std::path::Component;
 use std::path::{Path, PathBuf};
 
@@ -194,6 +194,151 @@ impl fmt::Display for ResourceError {
 
 impl Error for ResourceError {}
 
+/// A root-relative, in-memory [`ResourceProvider`] for browser libraries.
+///
+/// The browser File System Access API is asynchronous, while the reader's
+/// resource boundary is deliberately synchronous. The browser adapter reads
+/// the selected directory into this provider before constructing a reader.
+/// Paths remain in the same logical namespace as the native filesystem
+/// provider, and every path is normalized before it can be stored or read.
+#[derive(Clone, Debug)]
+pub struct BrowserResourceProvider {
+    files: HashMap<PathBuf, Vec<u8>>,
+    document: PathBuf,
+}
+
+impl BrowserResourceProvider {
+    /// Create a provider from files whose paths are relative to the selected
+    /// directory.
+    pub fn new<I, P>(entry_point: P, files: I) -> Result<Self, ResourceError>
+    where
+        I: IntoIterator<Item = (PathBuf, Vec<u8>)>,
+        P: AsRef<Path>,
+    {
+        let document = normalize_relative(entry_point.as_ref())?;
+        if document.as_os_str().is_empty() {
+            return Err(ResourceError::new("browser entry point cannot be empty"));
+        }
+
+        let mut normalized_files = HashMap::new();
+        for (path, bytes) in files {
+            let path = normalize_relative(&path)?;
+            if path.as_os_str().is_empty() {
+                return Err(ResourceError::new("browser resource path cannot be empty"));
+            }
+            normalized_files.insert(path, bytes);
+        }
+
+        if !normalized_files.contains_key(&document) {
+            return Err(ResourceError::new(format!(
+                "browser entry point is missing: {}",
+                document.display()
+            )));
+        }
+
+        Ok(Self {
+            files: normalized_files,
+            document,
+        })
+    }
+
+    pub fn document_path(&self) -> &Path {
+        &self.document
+    }
+
+    pub fn read_text(&self, path: &Path) -> Result<String, ResourceError> {
+        let path = self.namespace_path(path)?;
+        let bytes = self.file(&path)?;
+        String::from_utf8(bytes.to_vec()).map_err(|error| {
+            ResourceError::new(format!(
+                "read text resource '{}': invalid UTF-8 ({error})",
+                path.display()
+            ))
+        })
+    }
+
+    pub fn read_binary(&self, path: &Path) -> Result<Vec<u8>, ResourceError> {
+        self.read_binary_limited(path, usize::MAX)
+    }
+
+    pub fn read_binary_limited(
+        &self,
+        path: &Path,
+        max_bytes: usize,
+    ) -> Result<Vec<u8>, ResourceError> {
+        let path = self.namespace_path(path)?;
+        let bytes = self.file(&path)?;
+        if bytes.len() > max_bytes {
+            return Err(ResourceError::new(format!(
+                "binary resource exceeds {} byte limit: {}",
+                max_bytes,
+                path.display()
+            )));
+        }
+        Ok(bytes.to_vec())
+    }
+
+    pub fn resolve_reference(&self, reference: &str) -> Result<ResourceTarget, ResourceError> {
+        self.resolve_reference_from(&self.document, reference)
+    }
+
+    pub fn resolve_reference_from(
+        &self,
+        containing_document: &Path,
+        reference: &str,
+    ) -> Result<ResourceTarget, ResourceError> {
+        if is_external_reference(reference) {
+            return Ok(ResourceTarget::External(reference.to_owned()));
+        }
+        let containing_document = self.namespace_path(containing_document)?;
+        resolve_reference_in_namespace(&containing_document, reference)
+    }
+
+    fn namespace_path(&self, path: &Path) -> Result<PathBuf, ResourceError> {
+        normalize_relative(path)
+    }
+
+    fn file(&self, path: &Path) -> Result<&[u8], ResourceError> {
+        self.files.get(path).map(Vec::as_slice).ok_or_else(|| {
+            ResourceError::new(format!("browser resource is missing: {}", path.display()))
+        })
+    }
+}
+
+impl ResourceProvider for BrowserResourceProvider {
+    fn document_path(&self) -> &Path {
+        self.document_path()
+    }
+
+    fn entry_point(&self) -> &Path {
+        self.document_path()
+    }
+
+    fn read_text(&self, path: &Path) -> Result<String, ResourceError> {
+        self.read_text(path)
+    }
+
+    fn read_binary(&self, path: &Path) -> Result<Vec<u8>, ResourceError> {
+        self.read_binary(path)
+    }
+
+    fn read_binary_limited(&self, path: &Path, max_bytes: usize) -> Result<Vec<u8>, ResourceError> {
+        self.read_binary_limited(path, max_bytes)
+    }
+
+    fn resolve_reference(&self, reference: &str) -> Result<ResourceTarget, ResourceError> {
+        self.resolve_reference(reference)
+    }
+
+    fn resolve_reference_from(
+        &self,
+        containing_document: &Path,
+        reference: &str,
+    ) -> Result<ResourceTarget, ResourceError> {
+        self.resolve_reference_from(containing_document, reference)
+    }
+}
+
 /// A filesystem-backed [`ResourceProvider`].
 ///
 /// `root` is canonicalized when the provider is created.  All normalized
@@ -297,48 +442,8 @@ impl FileSystemResourceProvider {
         if is_external_reference(reference) {
             return Ok(ResourceTarget::External(reference.to_owned()));
         }
-
-        let (path_reference, anchor) = reference
-            .split_once('#')
-            .map(|(path, fragment)| (path, Some(fragment.to_owned())))
-            .unwrap_or((reference, None));
-
-        if path_reference.is_empty() {
-            return match anchor {
-                Some(anchor) => Ok(ResourceTarget::Anchor(anchor)),
-                None => Ok(ResourceTarget::Document(namespace_path(
-                    &self.root,
-                    containing_document,
-                )?)),
-            };
-        }
-
         let containing_document = namespace_path(&self.root, containing_document)?;
-        if Path::new(path_reference).is_absolute() {
-            return Err(ResourceError::new(format!(
-                "absolute local reference is not allowed: {path_reference}"
-            )));
-        }
-
-        let parent = containing_document
-            .parent()
-            .unwrap_or_else(|| Path::new(""));
-        let document = normalize_relative(&parent.join(path_reference))?;
-        let target = if is_markdown_path(&document) {
-            match anchor {
-                Some(anchor) => ResourceTarget::DocumentAnchor { document, anchor },
-                None => ResourceTarget::Document(document),
-            }
-        } else {
-            if anchor.is_some() {
-                return Err(ResourceError::new(format!(
-                    "anchors are only supported on Markdown documents: {path_reference}"
-                )));
-            }
-            ResourceTarget::Asset(document)
-        };
-
-        Ok(target)
+        resolve_reference_in_namespace(&containing_document, reference)
     }
 
     pub fn resolve_from(
@@ -438,7 +543,6 @@ fn namespace_path(root: &Path, path: &Path) -> Result<PathBuf, ResourceError> {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn normalize_relative(path: &Path) -> Result<PathBuf, ResourceError> {
     let mut normalized = PathBuf::new();
     for component in path.components() {
@@ -464,7 +568,6 @@ fn normalize_relative(path: &Path) -> Result<PathBuf, ResourceError> {
     Ok(normalized)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn is_markdown_path(path: &Path) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
@@ -473,7 +576,6 @@ fn is_markdown_path(path: &Path) -> bool {
         })
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn is_external_reference(reference: &str) -> bool {
     if reference.starts_with("//") {
         return true;
@@ -491,6 +593,51 @@ fn is_external_reference(reference: &str) -> bool {
                 character.is_ascii_alphanumeric() || matches!(character, '+' | '-' | '.')
             }
         })
+}
+
+fn resolve_reference_in_namespace(
+    containing_document: &Path,
+    reference: &str,
+) -> Result<ResourceTarget, ResourceError> {
+    if is_external_reference(reference) {
+        return Ok(ResourceTarget::External(reference.to_owned()));
+    }
+
+    let (path_reference, anchor) = reference
+        .split_once('#')
+        .map(|(path, fragment)| (path, Some(fragment.to_owned())))
+        .unwrap_or((reference, None));
+
+    if path_reference.is_empty() {
+        return match anchor {
+            Some(anchor) => Ok(ResourceTarget::Anchor(anchor)),
+            None => Ok(ResourceTarget::Document(containing_document.to_owned())),
+        };
+    }
+
+    if Path::new(path_reference).is_absolute() {
+        return Err(ResourceError::new(format!(
+            "absolute local reference is not allowed: {path_reference}"
+        )));
+    }
+
+    let parent = containing_document
+        .parent()
+        .unwrap_or_else(|| Path::new(""));
+    let document = normalize_relative(&parent.join(path_reference))?;
+    if is_markdown_path(&document) {
+        return match anchor {
+            Some(anchor) => Ok(ResourceTarget::DocumentAnchor { document, anchor }),
+            None => Ok(ResourceTarget::Document(document)),
+        };
+    }
+
+    if anchor.is_some() {
+        return Err(ResourceError::new(format!(
+            "anchors are only supported on Markdown documents: {path_reference}"
+        )));
+    }
+    Ok(ResourceTarget::Asset(document))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -692,6 +839,63 @@ mod tests {
             FileSystemResourceProvider::new(root.path(), "index.md").expect("create provider");
         assert!(provider
             .read_binary(Path::new("linked/secret.png"))
+            .is_err());
+    }
+
+    #[test]
+    fn browser_provider_reads_nested_documents_and_assets() {
+        let provider = BrowserResourceProvider::new(
+            "README.md",
+            [
+                (
+                    PathBuf::from("README.md"),
+                    b"# Home\n\n[Chapter](docs/chapter.md)\n".to_vec(),
+                ),
+                (PathBuf::from("docs/chapter.md"), b"# Chapter\n".to_vec()),
+                (PathBuf::from("assets/cover.png"), vec![1, 2, 3]),
+            ],
+        )
+        .expect("create browser provider");
+
+        assert_eq!(provider.document_path(), Path::new("README.md"));
+        assert_eq!(
+            provider.read_text(Path::new("./README.md")),
+            Ok("# Home\n\n[Chapter](docs/chapter.md)\n".to_owned())
+        );
+        assert_eq!(
+            provider.read_binary(Path::new("assets/cover.png")),
+            Ok(vec![1, 2, 3])
+        );
+        assert_eq!(
+            provider.resolve_reference("docs/chapter.md"),
+            Ok(ResourceTarget::Document(PathBuf::from("docs/chapter.md")))
+        );
+        assert_eq!(
+            provider.resolve_reference("assets/cover.png"),
+            Ok(ResourceTarget::Asset(PathBuf::from("assets/cover.png")))
+        );
+    }
+
+    #[test]
+    fn browser_provider_rejects_missing_entry_and_path_escape() {
+        assert!(BrowserResourceProvider::new(
+            "README.md",
+            [(PathBuf::from("docs/README.md"), b"wrong root\n".to_vec())],
+        )
+        .is_err());
+
+        let provider = BrowserResourceProvider::new(
+            "docs/README.md",
+            [(PathBuf::from("docs/README.md"), b"# Docs\n".to_vec())],
+        )
+        .expect("create browser provider");
+        assert!(provider.read_text(Path::new("../../outside.md")).is_err());
+        assert!(provider.resolve_reference("../../../outside.md").is_err());
+        assert!(provider
+            .resolve_reference_from(Path::new("../outside.md"), "next.md")
+            .is_err());
+        assert!(provider
+            .read_binary_limited(Path::new("docs/README.md"), 2)
             .is_err());
     }
 }

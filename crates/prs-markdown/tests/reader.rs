@@ -3,8 +3,8 @@ use prs_markdown::parse::{ComrakParser, MarkdownParser, ParseError};
 use prs_markdown::reader::ReaderEvent;
 use prs_markdown::resources::{ResourceError, ResourceProvider, ResourceTarget};
 use prs_markdown::{
-    DocumentId, DocumentLocation, FileSystemResourceProvider, NavigationTarget, Reader,
-    ReaderLimits, ReaderStyle, Viewport,
+    BrowserResourceProvider, DocumentId, DocumentLocation, FileSystemResourceProvider,
+    NavigationTarget, Reader, ReaderLimits, ReaderStyle, Viewport,
 };
 use std::collections::HashMap;
 use std::fs;
@@ -152,6 +152,48 @@ fn reader_uses_a_non_filesystem_source_for_entry_documents_and_assets() {
         reader.provider().read_binary(Path::new("cover.png")),
         Ok(vec![1, 2, 3])
     );
+}
+
+#[test]
+fn browser_provider_loads_entry_point_and_follows_local_documents_and_assets() {
+    let provider = BrowserResourceProvider::new(
+        "README.md",
+        [
+            (
+                PathBuf::from("README.md"),
+                b"# Home\n\n[Chapter](docs/chapter.md)\n\n![Cover](assets/cover.png)\n".to_vec(),
+            ),
+            (PathBuf::from("docs/chapter.md"), b"# Chapter\n".to_vec()),
+            (
+                PathBuf::from("assets/cover.png"),
+                include_bytes!("fixtures/assets/observatory.png").to_vec(),
+            ),
+        ],
+    )
+    .expect("create browser provider");
+    let mut reader = Reader::new(provider, ReaderStyle::default(), Viewport::new(80, 32));
+
+    assert!(matches!(reader.open(), Ok(ReaderEvent::Opened { .. })));
+    assert_eq!(
+        reader.current_location().unwrap().document.as_ref(),
+        "README.md"
+    );
+    assert!(matches!(
+        reader.follow_reference("docs/chapter.md"),
+        Ok(ReaderEvent::Navigated { .. })
+    ));
+    assert_eq!(
+        reader.current_location().unwrap().document.as_ref(),
+        "docs/chapter.md"
+    );
+    assert_eq!(
+        reader
+            .provider()
+            .read_binary(Path::new("assets/cover.png"))
+            .unwrap(),
+        include_bytes!("fixtures/assets/observatory.png").to_vec()
+    );
+    assert!(reader.follow_reference("../../../outside.md").is_err());
 }
 
 #[derive(Clone)]

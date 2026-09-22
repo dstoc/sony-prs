@@ -5,7 +5,19 @@ WASM module owns the reader, the shared renderer, and a tightly packed RGBA
 framebuffer. JavaScript copies each rendered frame into an HTML `<canvas>`.
 The browser uses the same parser, layout, pagination, navigation, image,
 hit-testing, and rendering library as the native reader. The page has no
-browser-specific reader layout implementation.
+browser-specific reader layout implementation. It depends on the shared
+`prs-markdown` core and does not add a JavaScript package manager or a
+frontend framework.
+
+Choose directory opens the browser File System Access API in read-only mode.
+`directory-library.js` recursively reads that selected directory into a
+root-relative in-memory snapshot and passes the bytes to Rust. The
+`BrowserResourceProvider` implements the shared `ResourceProvider` boundary;
+local Markdown links and image assets resolve relative to the containing
+document, while absolute and escaping paths return structured reader errors.
+The default entry point is `README.md`, and the entry-point field accepts
+another Markdown path when a library uses a different root document. Files
+are not uploaded or persisted by the simulator.
 
 The build uses these pinned versions:
 
@@ -67,6 +79,7 @@ JavaScript bridge creates `ImageData` from those bytes and calls
 ```text
 target/reader-web/
 ├── index.html
+├── directory-library.js
 ├── main.js
 ├── style.css
 └── pkg/
