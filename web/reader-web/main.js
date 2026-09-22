@@ -1,11 +1,11 @@
 import init, {
-  ReaderSimulator,
   load_directory,
   logical_height,
   logical_width,
   proof_of_life,
 } from "./pkg/prs_reader_web.js";
 import { chooseDirectory, ENTRY_POINT } from "./directory-library.js";
+import { loadDemoDirectory } from "./demo-library.js";
 import {
   commandForKeyboardEvent,
   logicalPointFromPointer,
@@ -15,6 +15,7 @@ const status = document.querySelector("#status");
 const canvas = document.querySelector("#reader-canvas");
 const context = canvas.getContext("2d", { alpha: false });
 const chooseButton = document.querySelector("#choose-directory");
+const demoButton = document.querySelector("#load-demo");
 const entryPoint = document.querySelector("#entry-point");
 const commands = new Map(
   [...document.querySelectorAll("[data-command]")].map((button) => [
@@ -55,6 +56,8 @@ function errorMessage(error) {
 
 async function chooseLibrary() {
   chooseButton.disabled = true;
+  demoButton.disabled = true;
+  setControlsDisabled(true);
   status.textContent = "Reading the selected directory…";
   try {
     const selected = await chooseDirectory();
@@ -66,6 +69,26 @@ async function chooseLibrary() {
     status.textContent = "Reader error: " + errorMessage(error);
   } finally {
     chooseButton.disabled = false;
+    demoButton.disabled = false;
+    setControlsDisabled(!reader);
+  }
+}
+
+async function loadDemo() {
+  chooseButton.disabled = true;
+  demoButton.disabled = true;
+  setControlsDisabled(true);
+  status.textContent = "Loading the checked-in demo library…";
+  try {
+    const demo = await loadDemoDirectory();
+    reader = load_directory(demo.files, "README.md");
+    render("Loaded the demo library");
+  } catch (error) {
+    status.textContent = "Demo error: " + errorMessage(error);
+  } finally {
+    chooseButton.disabled = false;
+    demoButton.disabled = false;
+    setControlsDisabled(!reader);
   }
 }
 
@@ -77,15 +100,17 @@ function isEditableTarget(target) {
 }
 
 chooseButton.addEventListener("click", chooseLibrary);
+demoButton.addEventListener("click", loadDemo);
 
 try {
   await init();
   canvas.width = logical_width();
   canvas.height = logical_height();
-  reader = new ReaderSimulator();
-  render(proof_of_life() + " " + reader.feedback());
-  setControlsDisabled(false);
+  status.textContent = proof_of_life();
+  setControlsDisabled(true);
   chooseButton.disabled = false;
+  demoButton.disabled = false;
+  await loadDemo();
 
   canvas.addEventListener("pointerdown", (event) => {
     canvas.setPointerCapture?.(event.pointerId);

@@ -41,6 +41,13 @@
       <label for="entry-point">Entry point</label>
       <input id="entry-point" value="README.md" spellcheck="false">
       <button id="choose-directory" type="button" disabled>Open directory</button>
+      <button id="load-demo" type="button" disabled>Load demo library</button>
+      <p class="help">
+        The demo is checked into the repository for deterministic local checks.
+        Opening a directory uses the read-only File System Access API, which is
+        currently available in Chromium-based browsers on secure origins or
+        localhost; other browsers can use the demo or a static browser build.
+      </p>
     </main>
     <script type="module" src="./main.js"></script>
   </body>

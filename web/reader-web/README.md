@@ -29,11 +29,13 @@ The build uses these pinned versions:
 The browser page uses plain HTML, CSS, and ES modules. It does not use npm,
 Vite, Webpack, React, or another frontend build system.
 
-The simulator uses the shared prs-markdown reader with an in-memory demo
-document. Rust owns hit testing, page turns, link navigation, and reader
-history. main.js only maps browser Pointer Events to the logical 600 by 800
-surface, forwards control or keyboard commands to the WASM adapter, and copies
-the Rust-rendered framebuffer.
+The simulator uses the shared prs-markdown reader with a checked-in demo
+directory under `demo/`. **Load demo library** fetches those files into the
+same root-relative snapshot shape produced by **Open directory**, so the demo
+exercises the real browser resource provider. Rust owns hit testing, page
+turns, link navigation, and reader history. `main.js` only maps browser Pointer
+Events to the logical 600 by 800 surface, forwards control or keyboard
+commands to the WASM adapter, and copies the Rust-rendered framebuffer.
 
 ## Clean build
 
@@ -67,12 +69,28 @@ Serve the assembled page with the repository helper:
 
 tools/reader-web-serve.sh 8000
 
-Open <http://127.0.0.1:8000/> in a browser. Use the canvas, Previous, Next,
+Open <http://127.0.0.1:8000/> in a browser. The checked-in demo loads on
+startup; use **Load demo library** to reset it. Use the canvas, Previous, Next,
 Home, and Back controls. The keyboard shortcuts are Left Arrow, Right Arrow,
 Home, Backspace, and Alt+Left for Back. Select **Open directory** to load a
 root-relative Markdown library through the browser File System Access API. Use
-a static server because the browser loads the generated ES module and WASM file
-through HTTP.
+a static server because the browser loads the generated ES module, fixture,
+and WASM file through HTTP.
+
+The demo covers an entry-point README, two linked Markdown documents, a PNG
+asset, internal document and fragment links, and external URLs. A lightweight
+contract check runs the fixture snapshot loader and pointer mapping at 1×, ½×, and 1.5× CSS display scales; the shared Rust tests cover rendering, image
+loading, page turns, navigation history, Home, and external-link events. For
+manual browser acceptance, open the demo, resize the window, activate the
+chapter and notes links, use Back and Home, turn pages, and activate an
+external link. Then choose the fixture directory itself with **Open directory**
+to repeat the same flow through the File System Access API.
+
+The directory-picker workflow is read-only and keeps bytes in page memory. It
+requires a browser implementing `showDirectoryPicker()` (currently Chromium-
+based browsers on localhost or a secure origin); browsers without that API can
+still run the deterministic demo. The simulator does not upload or persist a
+selected directory.
 
 The canvas backing store stays at 600 by 800 while CSS may scale its display
 size. Pointer coordinates are mapped through getBoundingClientRect() before
@@ -85,6 +103,11 @@ events and copies the rendered framebuffer.
 target/reader-web/
 ├── index.html
 ├── directory-library.js
+├── demo-library.js
+├── demo/
+│   ├── README.md
+│   ├── guide/
+│   └── assets/
 ├── main.js
 ├── input.mjs
 ├── style.css

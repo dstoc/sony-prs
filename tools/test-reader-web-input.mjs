@@ -28,6 +28,19 @@ assert.deepEqual(
   ),
   { x: 1, y: 0.5 },
 );
+assert.deepEqual(
+  logicalPointFromPointer(
+    { clientX: 460, clientY: 620 },
+    {
+      getBoundingClientRect() {
+        return { left: 10, top: 20, width: 900, height: 1200 };
+      },
+    },
+    600,
+    800,
+  ),
+  { x: 300, y: 400 },
+);
 assert.equal(
   logicalPointFromPointer({ clientX: 310, clientY: 220 }, canvas, 600, 800),
   null,

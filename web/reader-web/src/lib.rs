@@ -7,13 +7,11 @@ use prs_markdown::navigation::{DocumentId, DocumentLocation, NavigationTarget};
 use prs_markdown::parse::ComrakParser;
 use prs_markdown::reader::{ReaderError, ReaderEvent};
 use prs_markdown::render::EmbeddedGraphicsRenderer;
-use prs_markdown::resources::ResourceError;
 use prs_markdown::typography::{FontConfig, FontdueTextEngine};
 use prs_markdown::{
     BrowserResourceProvider as DirectoryResourceProvider, Reader, ReaderStyle, ResourceProvider,
     ResourceTarget, T1_VIEWPORT,
 };
-use std::collections::BTreeMap;
 use std::convert::Infallible;
 use std::path::{Path, PathBuf};
 use wasm_bindgen::prelude::*;
@@ -409,7 +407,7 @@ pub fn proof_of_life() -> String {
     "PRS-T1 reader web WASM is alive.".to_owned()
 }
 
-const ENTRY_POINT: &str = "index.md";
+const ENTRY_POINT: &str = "README.md";
 const GLYPH_CACHE_CAPACITY: usize = 256;
 
 /// The browser uses the same logical surface as the PRS-T1 native reader.
@@ -423,212 +421,52 @@ pub fn logical_height() -> u32 {
     T1_VIEWPORT.height
 }
 
-/// A small in-memory provider keeps the browser simulator focused on the same
-/// reader and navigation code as the native application.
-#[derive(Clone, Debug)]
-struct DemoResourceProvider {
-    documents: BTreeMap<String, String>,
-    entry_point: PathBuf,
+/// Return the checked-in demo through the same provider used by a selected
+/// browser directory. Keeping this fixture in the Rust test path makes the
+/// host checks exercise real Markdown, image decoding, and link resolution.
+fn demo_provider() -> DirectoryResourceProvider {
+    DirectoryResourceProvider::new(
+        ENTRY_POINT,
+        [
+            (
+                PathBuf::from("README.md"),
+                include_bytes!("../demo/README.md").to_vec(),
+            ),
+            (
+                PathBuf::from("guide/chapter.md"),
+                include_bytes!("../demo/guide/chapter.md").to_vec(),
+            ),
+            (
+                PathBuf::from("guide/notes.md"),
+                include_bytes!("../demo/guide/notes.md").to_vec(),
+            ),
+            (
+                PathBuf::from("assets/observatory.png"),
+                include_bytes!("../demo/assets/observatory.png").to_vec(),
+            ),
+            (
+                PathBuf::from("assets/detail.png"),
+                include_bytes!("../demo/assets/detail.png").to_vec(),
+            ),
+        ],
+    )
+    .expect("checked-in browser demo fixture is valid")
 }
 
-impl DemoResourceProvider {
-    fn demo() -> Self {
-        let mut documents = BTreeMap::new();
-        documents.insert(
-            ENTRY_POINT.to_owned(),
-            r#"# PRS-T1 browser reader
-
-This page uses the shared Markdown reader. The browser supplies input events;
-Rust owns hit testing, page turns, and document navigation.
-
-Try the [linked chapter](chapter.md#interactive) or open an [external link](https://example.com/prs-t1).
-
-## Input
-
-Use the Previous and Next controls, the Home and Back controls, or the keyboard
-shortcuts. A blank tap on the right half advances one page. A blank tap on the
-left half goes back one page.
-
-The canvas is always a logical 600 by 800 reader surface. CSS can scale it
-without changing the coordinates used by the reader.
-
-## More reading
-
-This extra content gives the simulator several pages so the Previous and Next
-controls exercise real shared pagination rather than only reporting a boundary.
-
-The native reader and the browser reader use the same page-space coordinates.
-Only the platform event adapter changes between the two environments.
-
-Reader state remains in Rust while the browser redraws the returned framebuffer.
-The JavaScript layer does not inspect links or decide where a page turn goes.
-
-The logical surface stays stable when the surrounding page is narrow or wide.
-Try resizing the browser window and activating the same visible link again.
-
-This paragraph continues the demo document so the page boundary is easy to
-reach with a pointer, keyboard shortcut, or visible control button.
-
-The first page contains the link targets. Later pages contain ordinary text so
-blank-area taps can be used to verify the page-turn behavior.
-
-The reader does not use the browser location bar as a navigation state. The
-current document and page remain owned by the Rust reader session.
-
-The controls call the same page-event methods that a native input adapter uses.
-They do not maintain a second browser-side page counter.
-
-The Back action is history-aware. It restores the document and reading cursor
-that the shared reader saved when a link was activated.
-
-The Home action follows the entry location through the shared navigation path.
-It is not a special browser-only reset.
-
-Resize the page again after reading this section. The logical coordinates do
-not change when the canvas is rendered at a different CSS width.
-"#
-            .to_owned(),
-        );
-        documents.insert(
-            "chapter.md".to_owned(),
-            r#"# Linked chapter
-
-## Interactive
-
-This page was opened through a semantic Markdown link. Use Back to return to
-the exact page and reading position where the link was activated.
-
-The Home control returns to the entry document through the shared reader
-history. The browser does not reimplement these navigation rules.
-
-[Return to the entry page](index.md)
-"#
-            .to_owned(),
-        );
-        Self {
-            documents,
-            entry_point: PathBuf::from(ENTRY_POINT),
-        }
-    }
-
-    fn key(path: &Path) -> String {
-        path.to_string_lossy().replace('\\', "/")
-    }
-
-    fn normalize_path(path: &str) -> String {
-        let mut parts = Vec::new();
-        for part in path.split('/') {
-            match part {
-                "" | "." => {}
-                ".." => {
-                    parts.pop();
-                }
-                part => parts.push(part),
-            }
-        }
-        parts.join("/")
-    }
-
-    fn is_external(reference: &str) -> bool {
-        reference.starts_with("//")
-            || reference.find(':').is_some_and(|colon| {
-                colon > 0
-                    && reference[..colon]
-                        .chars()
-                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
-            })
-    }
-}
-
-impl ResourceProvider for DemoResourceProvider {
-    fn document_path(&self) -> &Path {
-        &self.entry_point
-    }
-
-    fn entry_point(&self) -> &Path {
-        &self.entry_point
-    }
-
-    fn read_text(&self, path: &Path) -> Result<String, ResourceError> {
-        let key = Self::key(path);
-        self.documents
-            .get(&key)
-            .cloned()
-            .ok_or_else(|| ResourceError::new(format!("browser demo document not found: {key}")))
-    }
-
-    fn read_binary(&self, path: &Path) -> Result<Vec<u8>, ResourceError> {
-        Err(ResourceError::new(format!(
-            "browser demo has no binary resource: {}",
-            path.display()
-        )))
-    }
-
-    fn resolve_reference(&self, reference: &str) -> Result<ResourceTarget, ResourceError> {
-        self.resolve_reference_from(&self.entry_point, reference)
-    }
-
-    fn resolve_reference_from(
-        &self,
-        containing_document: &Path,
-        reference: &str,
-    ) -> Result<ResourceTarget, ResourceError> {
-        if Self::is_external(reference) {
-            return Ok(ResourceTarget::External(reference.to_owned()));
-        }
-
-        let (path, anchor) = reference
-            .split_once('#')
-            .map_or((reference, None), |(path, anchor)| (path, Some(anchor)));
-        if path.is_empty() {
-            return anchor.map_or_else(
-                || Ok(ResourceTarget::Document(containing_document.to_owned())),
-                |anchor| Ok(ResourceTarget::Anchor(anchor.to_owned())),
-            );
-        }
-
-        let directory = containing_document
-            .parent()
-            .map(|parent| parent.to_string_lossy())
-            .filter(|parent| !parent.is_empty())
-            .map_or_else(String::new, |parent| parent.into_owned());
-        let joined = if directory.is_empty() {
-            path.to_owned()
-        } else {
-            format!("{directory}/{path}")
-        };
-        let resolved = PathBuf::from(Self::normalize_path(&joined));
-        let markdown = resolved.extension().is_some_and(|extension| {
-            extension.eq_ignore_ascii_case("md") || extension.eq_ignore_ascii_case("markdown")
-        });
-
-        if markdown {
-            Ok(match anchor {
-                Some(anchor) => ResourceTarget::DocumentAnchor {
-                    document: resolved,
-                    anchor: anchor.to_owned(),
-                },
-                None => ResourceTarget::Document(resolved),
-            })
-        } else {
-            Ok(ResourceTarget::Asset(resolved))
-        }
-    }
-}
-
-/// A browser-owned reader that delegates parsing, layout, navigation, hit
-/// testing, and rasterization to the shared prs-markdown implementation.
+/// A fixture-backed reader useful for host checks and browser smoke validation.
+/// The assembled page uses [`BrowserReader`] after either loading this same
+/// fixture or taking a user-selected directory snapshot.
 #[wasm_bindgen]
 pub struct ReaderSimulator {
-    surface: ReaderSurface<DemoResourceProvider>,
+    surface: ReaderSurface<DirectoryResourceProvider>,
 }
 
 #[wasm_bindgen]
 impl ReaderSimulator {
     #[wasm_bindgen(constructor)]
     pub fn new() -> Result<ReaderSimulator, JsValue> {
-        let surface = ReaderSurface::new(DemoResourceProvider::demo())
-            .map_err(|error| JsValue::from_str(&error))?;
+        let surface =
+            ReaderSurface::new(demo_provider()).map_err(|error| JsValue::from_str(&error))?;
         Ok(Self { surface })
     }
 
@@ -806,7 +644,7 @@ mod tests {
                 .reader
                 .current_location()
                 .map(|location| location.document.as_ref()),
-            Some("chapter.md")
+            Some("guide/chapter.md")
         );
         assert!(app.surface.reader.can_go_back());
 
@@ -841,5 +679,66 @@ mod tests {
         let frame = surface.render_frame().expect("render directory reader");
         assert_eq!(frame.len(), 600 * 800 * 4);
         assert!(frame.chunks_exact(4).any(|pixel| pixel != [u8::MAX; 4]));
+    }
+
+    #[test]
+    fn demo_fixture_covers_directory_rendering_links_images_and_history() {
+        let provider = demo_provider();
+        assert_eq!(provider.entry_point(), Path::new(ENTRY_POINT));
+        assert!(
+            provider
+                .read_binary(Path::new("assets/observatory.png"))
+                .expect("demo image is readable")
+                .len()
+                > 100
+        );
+        assert!(matches!(
+            provider
+                .resolve_reference_from(Path::new("guide/chapter.md"), "../assets/observatory.png")
+                .expect("relative image resolves"),
+            ResourceTarget::Asset(path) if path == Path::new("assets/observatory.png")
+        ));
+        assert!(provider.read_binary(Path::new("assets/detail.png")).is_ok());
+
+        let mut surface = ReaderSurface::new(provider).expect("open demo fixture");
+        assert_eq!(surface.current_document(), ENTRY_POINT);
+        assert!(surface.page_count() > 1);
+        assert!(surface.reader.cache_stats().image_retained_bytes > 0);
+
+        let frame = surface.render_frame().expect("render demo fixture");
+        assert_eq!(frame.len(), 600 * 800 * 4);
+
+        let chapter_link = surface
+            .reader
+            .current_page()
+            .expect("demo entry page")
+            .hit_regions
+            .first()
+            .expect("demo chapter link")
+            .bounds
+            .top_left;
+        assert!(matches!(
+            surface.pointer_up(
+                f64::from(chapter_link.x + 1),
+                f64::from(chapter_link.y + 1)
+            ),
+            message if message == "Followed the reader link."
+        ));
+        assert_eq!(surface.current_document(), "guide/chapter.md");
+
+        assert!(matches!(
+            surface
+                .reader
+                .follow_reference("https://example.com/prs-t1-demo"),
+            Ok(ReaderEvent::ExternalUrl(url)) if url == "https://example.com/prs-t1-demo"
+        ));
+        surface.home();
+        assert_eq!(surface.current_document(), ENTRY_POINT);
+        surface.next();
+        assert_eq!(surface.reader.current_page_index(), Some(1));
+        surface.previous();
+        assert_eq!(surface.reader.current_page_index(), Some(0));
+        surface.back();
+        assert_eq!(surface.current_document(), "guide/chapter.md");
     }
 }
