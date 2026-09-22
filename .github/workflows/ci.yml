@@ -141,6 +141,44 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  reader-web-wasm:
+    name: Browser reader WASM build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Read pinned toolchain versions
+        id: build-pins
+        shell: bash
+        run: |
+          tools/reader-web-build.sh print-github-actions >> "$GITHUB_OUTPUT"
+
+      - name: Install the pinned Rust toolchain and WASM target
+        run: |
+          rustup toolchain install "${{ steps.build-pins.outputs.rust_toolchain }}" \
+            --profile minimal \
+            --target "${{ steps.build-pins.outputs.target }}" \
+            --no-self-update
+          rustup run "${{ steps.build-pins.outputs.rust_toolchain }}" rustc --version
+          rustup run "${{ steps.build-pins.outputs.rust_toolchain }}" cargo --version
+
+      - name: Install pinned wasm-bindgen CLI
+        run: |
+          cargo +"${{ steps.build-pins.outputs.rust_toolchain }}" install \
+            wasm-bindgen-cli \
+            --version "${{ steps.build-pins.outputs.wasm_bindgen_version }}" \
+            --locked
+          wasm-bindgen --version
+
+      - name: Build and assemble the browser reader
+        run: |
+          RUSTUP_TOOLCHAIN="${{ steps.build-pins.outputs.rust_toolchain }}" \
+            tools/reader-web-build.sh build
+
+      - name: Check the assembled browser reader
+        run: tools/test-reader-web.sh target/reader-web
+
   prs-t1-cross-build:
     name: PRS-T1 ARMv7 build
     runs-on: ubuntu-24.04

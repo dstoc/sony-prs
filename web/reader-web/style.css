@@ -1,0 +1,30 @@
+:root {
+  color-scheme: light;
+  font: 16px/1.5 system-ui, sans-serif;
+}
+
+body {
+  box-sizing: border-box;
+  margin: 0;
+  min-height: 100vh;
+  padding: 2rem;
+  background: #f4f1ea;
+  color: #24221e;
+}
+
+main {
+  max-width: 42rem;
+  margin: 10vh auto;
+  padding: 2rem;
+  border: 1px solid #c9c1b4;
+  background: #fffdf8;
+}
+
+.eyebrow {
+  margin: 0;
+  color: #6e5b42;
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}

@@ -12,5 +12,6 @@ members = [
     "crates/prs-cloudflare",
     "crates/prs-sync-bundle",
     "crates/prs-send",
+    "web/reader-web",
 ]
 resolver = "2"

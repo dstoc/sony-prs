@@ -1363,6 +1363,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "prs-reader-web"
+version = "0.1.0"
+dependencies = [
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "prs-send"
 version = "0.1.0"
 dependencies = [

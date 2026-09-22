@@ -198,6 +198,7 @@ prs350-devctl shell /dev/ttyACM0 COMMAND
 - [Markdown reader architecture and support matrix](docs/prs-t1/markdown-reader.md)
 - [`prs-markdown` library and host harness](crates/prs-markdown/README.md)
 - [Development reader smoke-test document](docs/prs-t1/development.md)
+- [Browser reader simulator build](web/reader-web/README.md)
 - [T1 launcher guide](tools/prs-t1-launcher/README.md)
 - [PRS-350 documentation](docs/prs350/)
 - [PRSync architecture and sender CLI](docs/prsync.md)
