@@ -1413,8 +1413,20 @@ mod tests {
         assert!(reader.is_library_empty());
 
         reader
+            .increase_font_size()
+            .expect("increase font size without a current bundle");
+        assert_eq!(reader.font_scale_percent(), 125);
+        reader
+            .reset_font_size()
+            .expect("reset font size without a current bundle");
+        assert_eq!(reader.font_scale_percent(), 100);
+        reader
+            .decrease_font_size()
+            .expect("decrease font size without a current bundle");
+        assert_eq!(reader.font_scale_percent(), 75);
+        reader
             .set_font_scale_percent(150)
-            .expect("change font size without a current bundle");
+            .expect("set font size without a current bundle");
         assert_eq!(reader.font_scale_percent(), 150);
 
         let preferences_path = library_root.join("reader-preferences.json");
