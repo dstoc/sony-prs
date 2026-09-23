@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.8.0](https://github.com/dstoc/sony-prs/compare/prs-markdown-v0.7.0...prs-markdown-v0.8.0) (2026-09-23)
+
+
+### Features
+
+* **prs-markdown:** make reader core wasm-safe ([90493f4](https://github.com/dstoc/sony-prs/commit/90493f467bcd0ff5c01a94bda912da5640210368))
+* **reader-web:** add directory-backed browser library ([ee6317d](https://github.com/dstoc/sony-prs/commit/ee6317df4e5acd21b5918fd7a2486216bfd36926))
+* **reader:** add bounded font size controls ([99f61a7](https://github.com/dstoc/sony-prs/commit/99f61a7f8f8abd5aa322c0eaadc71f54551bd830))
+* **reader:** add per-document progress indicator ([778f9e0](https://github.com/dstoc/sony-prs/commit/778f9e0e141b6c97bb7670570b23c29702081a5b))
+* **reader:** add portrait and landscape orientation ([0f9ea8a](https://github.com/dstoc/sony-prs/commit/0f9ea8af88aad97a954ee6acb7f9730bd3e60423))
+* **reader:** preserve logical position across reflow ([b20ddb8](https://github.com/dstoc/sony-prs/commit/b20ddb8a9d671d54ee8f4a9c7e9b96c8e743f03c))
+* **reader:** share configurable presentation layout ([a9a68c7](https://github.com/dstoc/sony-prs/commit/a9a68c71443f924dc64be49c9b65a758cd967ee2))
+* **reader:** share external-link overlay session ([ceaf641](https://github.com/dstoc/sony-prs/commit/ceaf6413ee7a9127991c7eefa20147ae176d2e19))
+
+
+### Bug Fixes
+
+* **reader:** align reflow anchors with rendered content ([9af5d0f](https://github.com/dstoc/sony-prs/commit/9af5d0fe8ec89b21c8fd0a330daeaaac1ce3c938))
+* **reader:** align table reflow anchors ([e118cd9](https://github.com/dstoc/sony-prs/commit/e118cd96d4574f117dcac4b0d557c2e7b490a3bd))
+* **reader:** map grouped table anchors ([aa6a2f5](https://github.com/dstoc/sony-prs/commit/aa6a2f550590fd9071da5c7b2c5865abfdd79983))
+
 ## [0.7.0](https://github.com/dstoc/sony-prs/compare/prs-markdown-v0.6.1...prs-markdown-v0.7.0) (2026-09-18)
 
 
