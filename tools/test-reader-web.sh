@@ -7,6 +7,8 @@ output_dir=${1:-"$repo_root/target/reader-web"}
 grep -Fq 'wasm-bindgen = "=0.2.128"' "$repo_root/web/reader-web/Cargo.toml"
 grep -Fq 'js-sys = "=0.3.105"' "$repo_root/web/reader-web/Cargo.toml"
 grep -Fq 'type="module" src="./main.js"' "$repo_root/web/reader-web/index.html"
+grep -Fq 'id="reader-stage"' "$repo_root/web/reader-web/index.html"
+grep -Fq 'id="toggle-browser-fullscreen"' "$repo_root/web/reader-web/index.html"
 if grep -Eq 'help|entry-point|load-demo|Load demo|keyboard shortcuts|File System Access API' "$repo_root/web/reader-web/index.html"; then
   printf '%s\n' 'index.html must keep explanatory and demo controls out of the main shell' >&2
   exit 1
@@ -17,11 +19,13 @@ if grep -Fq 'ReaderSimulator' "$repo_root/web/reader-web/main.js"; then
 fi
 grep -Fq 'BrowserReader' "$repo_root/web/reader-web/src/lib.rs"
 grep -Fq 'pub fn render_frame(&mut self)' "$repo_root/web/reader-web/src/lib.rs"
-grep -Fq 'canvas.width = logical_width();' "$repo_root/web/reader-web/main.js"
-grep -Fq 'canvas.height = logical_height();' "$repo_root/web/reader-web/main.js"
+grep -Fq 'canvas.width !== width' "$repo_root/web/reader-web/main.js"
+grep -Fq 'canvas.height !== height' "$repo_root/web/reader-web/main.js"
 grep -Fq 'new ImageData' "$repo_root/web/reader-web/main.js"
 grep -Fq 'putImageData' "$repo_root/web/reader-web/main.js"
 grep -Fq 'aspect-ratio: 3 / 4' "$repo_root/web/reader-web/style.css"
+grep -Fq '.reader-stage:fullscreen' "$repo_root/web/reader-web/style.css"
+grep -Fq 'height: 100dvh;' "$repo_root/web/reader-web/style.css"
 grep -Fq 'max-height: 100%;' "$repo_root/web/reader-web/style.css"
 grep -Fq 'import init,' "$repo_root/web/reader-web/main.js"
 grep -Fq 'load_directory,' "$repo_root/web/reader-web/main.js"
@@ -34,6 +38,8 @@ grep -Fq 'reader = selectedReader;' "$repo_root/web/reader-web/main.js"
 grep -Fq 'reader = readerAfterDirectoryError(reader, error, directorySelected);' "$repo_root/web/reader-web/main.js"
 grep -Fq 'reader.current_document()' "$repo_root/web/reader-web/main.js"
 grep -Fq 'logicalPointFromPointer' "$repo_root/web/reader-web/main.js"
+grep -Fq 'createBrowserFullscreenController' "$repo_root/web/reader-web/main.js"
+grep -Fq 'from "./fullscreen.mjs"' "$repo_root/web/reader-web/main.js"
 grep -Fq 'pointer_up(point.x, point.y)' "$repo_root/web/reader-web/main.js"
 grep -Fq 'reader.pointer_up(point.x, point.y)' "$repo_root/web/reader-web/main.js"
 grep -Fq 'toggle_fullscreen' "$repo_root/web/reader-web/src/lib.rs"
@@ -60,11 +66,13 @@ fi
 
 node "$repo_root/tools/test-reader-web-input.mjs"
 node "$repo_root/tools/test-reader-web-directory.mjs"
+node "$repo_root/tools/test-reader-web-fullscreen.mjs"
 
 test -f "$output_dir/index.html"
 test -f "$output_dir/directory-library.js"
 test -f "$output_dir/main.js"
 test -f "$output_dir/input.mjs"
+test -f "$output_dir/fullscreen.mjs"
 test -f "$output_dir/style.css"
 test -s "$output_dir/pkg/prs_reader_web.js"
 test -s "$output_dir/pkg/prs_reader_web_bg.wasm"
@@ -77,6 +85,7 @@ expected_files=$(printf '%s\n' \
   'directory-library.js' \
   'main.js' \
   'input.mjs' \
+  'fullscreen.mjs' \
   'style.css' \
   'pkg/prs_reader_web.js' \
   'pkg/prs_reader_web_bg.wasm' | sort)
@@ -92,6 +101,7 @@ for relative_path in \
   directory-library.js \
   main.js \
   input.mjs \
+  fullscreen.mjs \
   style.css; do
   cmp -- "$repo_root/web/reader-web/$relative_path" "$output_dir/$relative_path"
 done

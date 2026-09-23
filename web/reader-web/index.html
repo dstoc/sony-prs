@@ -10,22 +10,32 @@
     <main class="simulator">
       <h1>PRS-T1 reader</h1>
       <p id="status" role="status">Open a directory to begin.</p>
-      <div class="reader-frame" hidden>
-        <canvas
-          id="reader-canvas"
-          width="600"
-          height="800"
-          aria-label="PRS-T1 logical 600 by 800 reader surface"
-        ></canvas>
-      </div>
+      <section id="reader-stage" class="reader-stage" aria-label="Reader" hidden>
+        <div class="reader-frame">
+          <canvas
+            id="reader-canvas"
+            width="600"
+            height="800"
+            aria-label="PRS-T1 logical 600 by 800 reader surface"
+          ></canvas>
+        </div>
 
-      <nav class="reader-controls" aria-label="Reader controls" hidden>
-        <button type="button" data-command="previous" disabled>Previous</button>
-        <button type="button" data-command="next" disabled>Next</button>
-        <button type="button" data-command="home" disabled>Home</button>
-        <button type="button" data-command="back" disabled>Back</button>
-        <button type="button" data-command="toggle_fullscreen" disabled>Fullscreen</button>
-      </nav>
+        <nav class="reader-controls" aria-label="Reader controls">
+          <button type="button" data-command="previous" disabled>Previous</button>
+          <button type="button" data-command="next" disabled>Next</button>
+          <button type="button" data-command="home" disabled>Home</button>
+          <button type="button" data-command="back" disabled>Back</button>
+          <button type="button" data-command="toggle_fullscreen" disabled>
+            Reader fullscreen
+          </button>
+          <button
+            id="toggle-browser-fullscreen"
+            type="button"
+            disabled
+            aria-pressed="false"
+          >Fullscreen</button>
+        </nav>
+      </section>
 
       <div class="directory-picker">
         <button id="choose-directory" type="button" disabled>Open directory</button>

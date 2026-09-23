@@ -78,18 +78,24 @@ Serve the assembled page with the repository helper:
 tools/reader-web-serve.sh 8000
 
 Open <http://127.0.0.1:8000/> in a browser and select **Open directory**. Use
-the canvas, Previous, Next, Home, Back, and Fullscreen controls. Fullscreen is
-session-scoped and reflows the shared reader while preserving the current
-passage and navigation history. The keyboard shortcuts are Left Arrow, Right
-Arrow, Home, Backspace, and Alt+Left for Back. Use a static server because the
-browser loads the generated ES module and WASM file through HTTP.
+the canvas, Previous, Next, Home, Back, Reader fullscreen, and Fullscreen
+controls. Reader fullscreen is session-scoped and reflows the shared reader
+while preserving the current passage and navigation history. Browser
+Fullscreen uses the Fullscreen API for the reader stage; its canvas keeps the
+logical aspect ratio and fits inside the available display area. Use Exit
+fullscreen, Escape, or the browser's fullscreen controls to return to the
+shell. The keyboard shortcuts are Left Arrow, Right Arrow, Home, Backspace, and
+Alt+Left for Back. Use a static server because the browser loads the generated
+ES module and WASM file through HTTP.
 
-A lightweight contract check covers deterministic entry-point selection and
-pointer mapping at 1×, ½×, and 1.5× CSS display scales; the shared Rust tests
-cover rendering, image loading, page turns, navigation history, Home, and
-external-link events. For manual browser acceptance, select a Markdown library
-with **Open directory**, resize the window, activate document and asset links,
-use Back and Home, and turn pages.
+A lightweight contract check covers deterministic entry-point selection,
+pointer mapping at 1×, ½×, and 1.5× CSS display scales, fullscreen transitions,
+portrait and landscape fit geometry, viewport changes, and unsupported or
+denied Fullscreen API requests. The shared Rust tests cover rendering, image
+loading, page turns, navigation history, Home, and external-link events. For
+manual browser acceptance, select a Markdown library with **Open directory**,
+enter Browser Fullscreen, resize or rotate the viewport, activate document and
+asset links, use Back and Home, turn pages, then exit with the button or Escape.
 
 The directory-picker workflow is read-only and keeps bytes in page memory. It
 requires a browser implementing `showDirectoryPicker()` (currently Chromium-
@@ -109,6 +115,7 @@ target/reader-web/
 ├── directory-library.js
 ├── main.js
 ├── input.mjs
+├── fullscreen.mjs
 ├── style.css
 └── pkg/
     ├── prs_reader_web.js

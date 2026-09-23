@@ -11,13 +11,20 @@ import {
   commandForKeyboardEvent,
   logicalPointFromPointer,
 } from "./input.mjs";
+import {
+  containedSize,
+  createBrowserFullscreenController,
+} from "./fullscreen.mjs";
 
 const status = document.querySelector("#status");
 const canvas = document.querySelector("#reader-canvas");
 const context = canvas.getContext("2d", { alpha: false });
 const readerFrame = document.querySelector(".reader-frame");
-const controlsNavigation = document.querySelector(".reader-controls");
+const readerStage = document.querySelector("#reader-stage");
 const chooseButton = document.querySelector("#choose-directory");
+const browserFullscreenButton = document.querySelector(
+  "#toggle-browser-fullscreen",
+);
 const commands = new Map(
   [...document.querySelectorAll("[data-command]")].map((button) => [
     button.dataset.command,
@@ -26,6 +33,37 @@ const commands = new Map(
 );
 const controlButtons = [...commands.values()];
 let reader;
+let fullscreenController;
+
+function syncCanvasPresentation(
+  fullscreen = document.fullscreenElement === readerStage,
+) {
+  const width = logical_width();
+  const height = logical_height();
+  if (canvas.width !== width) {
+    canvas.width = width;
+  }
+  if (canvas.height !== height) {
+    canvas.height = height;
+  }
+  readerFrame.style.aspectRatio = `${width} / ${height}`;
+
+  if (fullscreen) {
+    const size = containedSize(
+      readerFrame.clientWidth,
+      readerFrame.clientHeight,
+      width,
+      height,
+    );
+    if (size) {
+      canvas.style.width = `${size.width}px`;
+      canvas.style.height = `${size.height}px`;
+    }
+  } else {
+    canvas.style.removeProperty("width");
+    canvas.style.removeProperty("height");
+  }
+}
 
 function drawFrame(frame) {
   const pixels = new Uint8ClampedArray(frame);
@@ -33,6 +71,7 @@ function drawFrame(frame) {
 }
 
 function render() {
+  syncCanvasPresentation();
   drawFrame(reader.render_frame());
   status.textContent = reader.current_document()
     + " · page " + reader.current_page() + " of " + reader.page_count();
@@ -50,11 +89,11 @@ function setControlsDisabled(disabled) {
   for (const button of controlButtons) {
     button.disabled = disabled;
   }
+  browserFullscreenButton.disabled = disabled;
 }
 
 function setReaderLoaded(loaded) {
-  readerFrame.hidden = !loaded;
-  controlsNavigation.hidden = !loaded;
+  readerStage.hidden = !loaded;
 }
 
 function errorMessage(error) {
@@ -94,8 +133,28 @@ chooseButton.addEventListener("click", chooseLibrary);
 
 try {
   await init();
-  canvas.width = logical_width();
-  canvas.height = logical_height();
+  syncCanvasPresentation(false);
+  fullscreenController = createBrowserFullscreenController({
+    target: readerStage,
+    documentObject: document,
+    windowObject: window,
+    onFullscreenChange(fullscreen) {
+      browserFullscreenButton.textContent = fullscreen
+        ? "Exit fullscreen"
+        : "Fullscreen";
+      browserFullscreenButton.setAttribute("aria-pressed", String(fullscreen));
+      syncCanvasPresentation(fullscreen);
+    },
+    onViewportResize() {
+      syncCanvasPresentation();
+    },
+    setStatus(message) {
+      status.textContent = message;
+    },
+  });
+  browserFullscreenButton.addEventListener("click", () => {
+    void fullscreenController.toggle();
+  });
   status.textContent = "Open a directory to begin.";
   setReaderLoaded(false);
   setControlsDisabled(true);
@@ -138,4 +197,5 @@ try {
   setControlsDisabled(true);
   setReaderLoaded(false);
   chooseButton.disabled = true;
+  browserFullscreenButton.disabled = true;
 }
