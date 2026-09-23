@@ -1,3 +1,15 @@
+export function logicalSizeFromReader(reader) {
+  if (!reader) {
+    return null;
+  }
+  const width = reader.logical_width();
+  const height = reader.logical_height();
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+    return null;
+  }
+  return { width, height };
+}
+
 export function logicalPointFromPointer(
   event,
   canvas,
@@ -15,6 +27,14 @@ export function logicalPointFromPointer(
     return null;
   }
   return { x, y };
+}
+
+export function logicalPointFromReaderPointer(event, canvas, reader) {
+  const size = logicalSizeFromReader(reader);
+  if (!size) {
+    return null;
+  }
+  return logicalPointFromPointer(event, canvas, size.width, size.height);
 }
 
 export function commandForKeyboardEvent(event) {

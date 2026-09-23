@@ -1,19 +1,15 @@
-import init, {
-  load_directory,
-  logical_height,
-  logical_width,
-} from "./pkg/prs_reader_web.js";
+import init, { load_directory } from "./pkg/prs_reader_web.js";
 import {
   chooseDirectory,
   readerAfterDirectoryError,
 } from "./directory-library.js";
 import {
   commandForKeyboardEvent,
-  logicalPointFromPointer,
+  logicalPointFromReaderPointer,
 } from "./input.mjs";
 import {
-  containedSize,
   createBrowserFullscreenController,
+  syncCanvasPresentation as syncReaderCanvasPresentation,
 } from "./fullscreen.mjs";
 
 const status = document.querySelector("#status");
@@ -38,31 +34,7 @@ let fullscreenController;
 function syncCanvasPresentation(
   fullscreen = document.fullscreenElement === readerStage,
 ) {
-  const width = logical_width();
-  const height = logical_height();
-  if (canvas.width !== width) {
-    canvas.width = width;
-  }
-  if (canvas.height !== height) {
-    canvas.height = height;
-  }
-  readerFrame.style.aspectRatio = `${width} / ${height}`;
-
-  if (fullscreen) {
-    const size = containedSize(
-      readerFrame.clientWidth,
-      readerFrame.clientHeight,
-      width,
-      height,
-    );
-    if (size) {
-      canvas.style.width = `${size.width}px`;
-      canvas.style.height = `${size.height}px`;
-    }
-  } else {
-    canvas.style.removeProperty("width");
-    canvas.style.removeProperty("height");
-  }
+  syncReaderCanvasPresentation({ canvas, readerFrame, reader, fullscreen });
 }
 
 function drawFrame(frame) {
@@ -75,6 +47,10 @@ function render() {
   drawFrame(reader.render_frame());
   status.textContent = reader.current_document()
     + " · page " + reader.current_page() + " of " + reader.page_count();
+  const landscape = reader.logical_width() > reader.logical_height();
+  commands.get("toggle_orientation").textContent = landscape
+    ? "Switch to portrait"
+    : "Switch to landscape";
 }
 
 function apply(command) {
@@ -166,12 +142,7 @@ try {
 
   canvas.addEventListener("pointerup", (event) => {
     canvas.releasePointerCapture?.(event.pointerId);
-    const point = logicalPointFromPointer(
-      event,
-      canvas,
-      logical_width(),
-      logical_height(),
-    );
+    const point = logicalPointFromReaderPointer(event, canvas, reader);
     if (point) {
       reader.pointer_up(point.x, point.y);
       render();

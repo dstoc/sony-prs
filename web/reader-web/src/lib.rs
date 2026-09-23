@@ -11,7 +11,7 @@ use prs_markdown::typography::{FontConfig, FontdueTextEngine};
 use prs_markdown::{
     BrowserResourceProvider as DirectoryResourceProvider, Reader, ReaderController,
     ReaderControllerError, ReaderLayout, ReaderStyle, ResourceProvider, ResourceTarget,
-    T1_VIEWPORT,
+    T1_LANDSCAPE_VIEWPORT, T1_VIEWPORT,
 };
 use std::convert::Infallible;
 use std::path::{Path, PathBuf};
@@ -99,6 +99,51 @@ where
 
     fn fullscreen(&self) -> bool {
         self.fullscreen
+    }
+
+    fn logical_width(&self) -> u32 {
+        self.controller
+            .reader()
+            .reader_layout()
+            .display_viewport
+            .width
+    }
+
+    fn logical_height(&self) -> u32 {
+        self.controller
+            .reader()
+            .reader_layout()
+            .display_viewport
+            .height
+    }
+
+    fn set_landscape(&mut self, landscape: bool) -> String {
+        let current_layout = self.controller.reader().reader_layout();
+        let viewport = if landscape {
+            T1_LANDSCAPE_VIEWPORT
+        } else {
+            T1_VIEWPORT
+        };
+        if current_layout.display_viewport == viewport {
+            self.feedback = if landscape {
+                "Landscape reader unchanged.".to_owned()
+            } else {
+                "Portrait reader unchanged.".to_owned()
+            };
+            return self.feedback.clone();
+        }
+
+        let mut layout = current_layout;
+        layout.display_viewport = viewport;
+        let result = self.controller.set_reader_layout(layout);
+        if result.is_ok() {
+            self.framebuffer = RgbaFramebuffer::new(Size::new(viewport.width, viewport.height));
+        }
+        self.apply_result(result)
+    }
+
+    fn toggle_orientation(&mut self) -> String {
+        self.set_landscape(self.logical_width() < self.logical_height())
     }
 
     fn set_fullscreen(&mut self, fullscreen: bool) -> String {
@@ -275,6 +320,25 @@ impl BrowserReader {
 
     pub fn feedback(&self) -> String {
         self.surface.feedback()
+    }
+
+    /// Return the active reader surface width after orientation changes.
+    pub fn logical_width(&self) -> u32 {
+        self.surface.logical_width()
+    }
+
+    /// Return the active reader surface height after orientation changes.
+    pub fn logical_height(&self) -> u32 {
+        self.surface.logical_height()
+    }
+
+    /// Switch between the PRS-T1 portrait and landscape reader layouts.
+    pub fn set_landscape(&mut self, landscape: bool) -> String {
+        self.surface.set_landscape(landscape)
+    }
+
+    pub fn toggle_orientation(&mut self) -> String {
+        self.surface.toggle_orientation()
     }
 
     pub fn render_frame(&mut self) -> Result<Vec<u8>, JsValue> {
@@ -486,17 +550,6 @@ pub fn proof_of_life() -> String {
 const ENTRY_POINT: &str = "README.md";
 const GLYPH_CACHE_CAPACITY: usize = 256;
 
-/// The browser uses the same logical surface as the PRS-T1 native reader.
-#[wasm_bindgen]
-pub fn logical_width() -> u32 {
-    T1_VIEWPORT.width
-}
-
-#[wasm_bindgen]
-pub fn logical_height() -> u32 {
-    T1_VIEWPORT.height
-}
-
 /// Return the checked-in demo through the same provider used by a selected
 /// browser directory. Keeping this fixture in the Rust test path makes the
 /// host checks exercise real Markdown, image decoding, and link resolution.
@@ -560,6 +613,22 @@ impl ReaderSimulator {
 
     pub fn feedback(&self) -> String {
         self.surface.feedback()
+    }
+
+    pub fn logical_width(&self) -> u32 {
+        self.surface.logical_width()
+    }
+
+    pub fn logical_height(&self) -> u32 {
+        self.surface.logical_height()
+    }
+
+    pub fn set_landscape(&mut self, landscape: bool) -> String {
+        self.surface.set_landscape(landscape)
+    }
+
+    pub fn toggle_orientation(&mut self) -> String {
+        self.surface.toggle_orientation()
     }
 
     pub fn render_frame(&mut self) -> Result<Vec<u8>, JsValue> {
@@ -702,8 +771,7 @@ mod tests {
         let first_frame = first.render_frame().expect("render reader");
         let second_frame = second.render_frame().expect("render reader");
 
-        assert_eq!(logical_width(), 600);
-        assert_eq!(logical_height(), 800);
+        assert_eq!((first.logical_width(), first.logical_height()), (600, 800));
         assert_eq!(first_frame.len(), 600 * 800 * 4);
         assert_eq!(first_frame, second_frame);
         assert!(first_frame
@@ -810,6 +878,54 @@ mod tests {
                 .reader_layout()
                 .effective_viewport(),
             prs_markdown::Viewport::new(600, 799)
+        );
+    }
+
+    #[test]
+    fn orientation_toggle_updates_active_surface_and_pointer_layout() {
+        let mut app = ReaderSimulator::new().expect("demo reader opens");
+        assert_eq!((app.logical_width(), app.logical_height()), (600, 800));
+
+        app.toggle_orientation();
+
+        assert_eq!((app.logical_width(), app.logical_height()), (800, 600));
+        assert_eq!(
+            app.surface
+                .controller
+                .reader()
+                .reader_layout()
+                .display_viewport,
+            T1_LANDSCAPE_VIEWPORT
+        );
+        assert_eq!(
+            app.render_frame().expect("render landscape surface").len(),
+            800 * 600 * 4
+        );
+
+        let (link_point, target_document) = {
+            let link = app
+                .surface
+                .controller
+                .reader()
+                .current_page()
+                .expect("landscape entry page")
+                .hit_regions
+                .iter()
+                .find(|region| matches!(region.target, NavigationTarget::Document(_)))
+                .expect("landscape entry page document link");
+            let NavigationTarget::Document(document) = &link.target else {
+                unreachable!("selected a document link")
+            };
+            (link.bounds.top_left, document.as_ref().to_owned())
+        };
+        app.pointer_up(f64::from(link_point.x + 1), f64::from(link_point.y + 1));
+        assert_eq!(app.current_document(), target_document);
+
+        app.toggle_orientation();
+        assert_eq!((app.logical_width(), app.logical_height()), (600, 800));
+        assert_eq!(
+            app.render_frame().expect("render portrait surface").len(),
+            600 * 800 * 4
         );
     }
 

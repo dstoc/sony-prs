@@ -1,3 +1,5 @@
+import { logicalSizeFromReader } from "./input.mjs";
+
 export function containedSize(
   availableWidth,
   availableHeight,
@@ -25,6 +27,37 @@ export function containedSize(
     width: logicalWidth * scale,
     height: logicalHeight * scale,
   };
+}
+
+export function syncCanvasPresentation({ canvas, readerFrame, reader, fullscreen }) {
+  const size = logicalSizeFromReader(reader) ?? {
+    width: canvas.width,
+    height: canvas.height,
+  };
+  if (canvas.width !== size.width) {
+    canvas.width = size.width;
+  }
+  if (canvas.height !== size.height) {
+    canvas.height = size.height;
+  }
+  readerFrame.style.aspectRatio = `${size.width} / ${size.height}`;
+
+  if (fullscreen) {
+    const fitted = containedSize(
+      readerFrame.clientWidth,
+      readerFrame.clientHeight,
+      size.width,
+      size.height,
+    );
+    if (fitted) {
+      canvas.style.width = `${fitted.width}px`;
+      canvas.style.height = `${fitted.height}px`;
+    }
+  } else {
+    canvas.style.removeProperty("width");
+    canvas.style.removeProperty("height");
+  }
+  return size;
 }
 
 export function createBrowserFullscreenController({

@@ -41,9 +41,9 @@ browser-side contracts.
 
 The simulator uses the shared prs-markdown reader with the directory snapshot.
 Rust owns hit testing, page turns, link navigation, and reader history.
-`main.js` only maps browser Pointer Events to the logical 600 by 800 surface,
-forwards control or keyboard commands to the WASM adapter, and copies the
-Rust-rendered framebuffer.
+`main.js` maps browser Pointer Events to the active portrait (600 by 800) or
+landscape (800 by 600) surface, forwards control or keyboard commands to the
+WASM adapter, and copies the Rust-rendered framebuffer.
 
 ## Clean build
 
@@ -78,33 +78,36 @@ Serve the assembled page with the repository helper:
 tools/reader-web-serve.sh 8000
 
 Open <http://127.0.0.1:8000/> in a browser and select **Open directory**. Use
-the canvas, Previous, Next, Home, Back, Reader fullscreen, and Fullscreen
-controls. Reader fullscreen is session-scoped and reflows the shared reader
-while preserving the current passage and navigation history. Browser
-Fullscreen uses the Fullscreen API for the reader stage; its canvas keeps the
-logical aspect ratio and fits inside the available display area. Use Exit
-fullscreen, Escape, or the browser's fullscreen controls to return to the
-shell. The keyboard shortcuts are Left Arrow, Right Arrow, Home, Backspace, and
-Alt+Left for Back. Use a static server because the browser loads the generated
-ES module and WASM file through HTTP.
+the canvas, Previous, Next, Home, Back, Switch to landscape/portrait, Reader
+fullscreen, and Fullscreen controls. Reader fullscreen is session-scoped and
+reflows the shared reader while preserving the current passage and navigation
+history. Browser Fullscreen uses the Fullscreen API for the reader stage; its
+canvas keeps the active logical aspect ratio and fits inside the available
+display area. Use Exit fullscreen, Escape, or the browser's fullscreen controls
+to return to the shell. The keyboard shortcuts are Left Arrow, Right Arrow,
+Home, Backspace, and Alt+Left for Back. Use a static server because the browser
+loads the generated ES module and WASM file through HTTP.
 
 A lightweight contract check covers deterministic entry-point selection,
-pointer mapping at 1×, ½×, and 1.5× CSS display scales, fullscreen transitions,
-portrait and landscape fit geometry, viewport changes, and unsupported or
-denied Fullscreen API requests. The shared Rust tests cover rendering, image
-loading, page turns, navigation history, Home, and external-link events. For
-manual browser acceptance, select a Markdown library with **Open directory**,
-enter Browser Fullscreen, resize or rotate the viewport, activate document and
-asset links, use Back and Home, turn pages, then exit with the button or Escape.
+pointer mapping at 1×, ½×, and 1.5× CSS display scales, live portrait to
+landscape canvas sizing and pointer mapping, fullscreen transitions, viewport
+changes, and unsupported or denied Fullscreen API requests. The shared Rust
+tests cover rendering, image loading, orientation reflow, page turns,
+navigation history, Home, and external-link events. For manual browser
+acceptance, select a Markdown library with **Open directory**, switch between
+portrait and landscape, enter Browser Fullscreen, resize or rotate the viewport,
+activate document and asset links, use Back and Home, turn pages, then exit with
+the button or Escape.
 
 The directory-picker workflow is read-only and keeps bytes in page memory. It
 requires a browser implementing `showDirectoryPicker()` (currently Chromium-
 based browsers on localhost or a secure origin). The simulator does not upload
 or persist a selected directory.
 
-The canvas backing store stays at 600 by 800 while CSS may scale its display
-size. Pointer coordinates are mapped through getBoundingClientRect() before
-they enter Rust, so display scaling does not change hit testing. Rust owns the
+The canvas backing store matches the active 600 by 800 portrait or 800 by 600
+landscape surface while CSS scales its display size. Pointer coordinates use
+the same active dimensions and getBoundingClientRect() before they enter Rust,
+so orientation and display scaling both preserve hit testing. Rust owns the
 reader's links, page turns, and history; JavaScript only translates browser
 events and copies the rendered framebuffer.
 
