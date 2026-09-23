@@ -550,18 +550,10 @@ pub fn details_action_region_for_page(
     Some(modern_button_region(top, width, height, button_height))
 }
 
-/// Hit-test a modern Settings page against its rendered control rectangles.
-pub fn details_action_at_for_page(
-    page: DetailsPage,
-    x: i32,
-    y: i32,
-    width: usize,
-    height: usize,
-) -> Option<DetailsAction> {
-    if x < 0 || y < 0 {
-        return None;
-    }
-    let actions: &[DetailsAction] = match page {
+/// Return the actionable controls drawn on a Settings page. Touch hit testing
+/// and hardware-button navigation both use this set.
+pub fn details_actions_for_page(page: DetailsPage) -> &'static [DetailsAction] {
+    match page {
         DetailsPage::Legacy => &DetailsAction::ALL,
         DetailsPage::Menu => &[
             DetailsAction::OpenReading,
@@ -591,16 +583,58 @@ pub fn details_action_at_for_page(
             DetailsAction::CancelPowerAction,
             DetailsAction::ConfirmPower,
         ],
-    };
-    actions.iter().copied().find(|action| {
-        let Some(region) = details_action_region_for_page(page, *action, width, height) else {
-            return false;
-        };
-        x as usize >= region.left as usize
-            && (x as usize) < region.right() as usize
-            && y as usize >= region.top as usize
-            && (y as usize) < region.bottom() as usize
-    })
+    }
+}
+
+/// Return the bounded damage rectangle for a focused action, including the
+/// double-line focus frame drawn outside the control's normal boundary.
+pub fn details_action_focus_region_for_page(
+    page: DetailsPage,
+    action: DetailsAction,
+    width: usize,
+    height: usize,
+) -> Option<DisplayRegion> {
+    let control = details_action_region_for_page(page, action, width, height)?;
+    let padding = 5usize;
+    let left = (control.left as usize).saturating_sub(padding);
+    let top = (control.top as usize).saturating_sub(padding);
+    let right = control.right() as usize + padding;
+    let bottom = control.bottom() as usize + padding;
+    let left = left.min(width);
+    let top = top.min(height);
+    let right = right.min(width).max(left);
+    let bottom = bottom.min(height).max(top);
+    Some(DisplayRegion::new(
+        left as u32,
+        top as u32,
+        right.saturating_sub(left) as u32,
+        bottom.saturating_sub(top) as u32,
+    ))
+}
+
+/// Hit-test a modern Settings page against its rendered control rectangles.
+pub fn details_action_at_for_page(
+    page: DetailsPage,
+    x: i32,
+    y: i32,
+    width: usize,
+    height: usize,
+) -> Option<DetailsAction> {
+    if x < 0 || y < 0 {
+        return None;
+    }
+    details_actions_for_page(page)
+        .iter()
+        .copied()
+        .find(|action| {
+            let Some(region) = details_action_region_for_page(page, *action, width, height) else {
+                return false;
+            };
+            x as usize >= region.left as usize
+                && (x as usize) < region.right() as usize
+                && y as usize >= region.top as usize
+                && (y as usize) < region.bottom() as usize
+        })
 }
 
 /// Return the exact action rectangle used by both rendering and hit testing.
@@ -706,6 +740,7 @@ pub struct DetailsViewModel {
     pub title: String,
     pub rows: Vec<DetailsRow>,
     pub page: DetailsPage,
+    pub focused_action: Option<DetailsAction>,
 }
 
 impl DetailsViewModel {
@@ -714,6 +749,7 @@ impl DetailsViewModel {
             title: title.into(),
             rows,
             page: DetailsPage::Legacy,
+            focused_action: None,
         }
     }
 
@@ -722,7 +758,13 @@ impl DetailsViewModel {
             title: title.into(),
             rows,
             page,
+            focused_action: None,
         }
+    }
+
+    pub fn with_focused_action(mut self, focused_action: Option<DetailsAction>) -> Self {
+        self.focused_action = focused_action;
+        self
     }
 
     pub fn from_lines(lines: &[String]) -> Self {
@@ -749,6 +791,7 @@ impl DetailsViewModel {
             title,
             rows,
             page: DetailsPage::Legacy,
+            focused_action: None,
         }
     }
 
@@ -1623,6 +1666,32 @@ fn draw_modern_details_model(
         DetailsPage::PowerConfirmation => draw_power_confirmation(canvas, details, pressed_action),
         DetailsPage::Legacy => unreachable!(),
     }
+    if let Some(action) = details.focused_action {
+        draw_focus_indicator(canvas, details.page, action);
+    }
+}
+
+fn draw_focus_indicator(canvas: &mut DisplayCanvas<'_>, page: DetailsPage, action: DetailsAction) {
+    let Some(region) =
+        details_action_region_for_page(page, action, canvas.width(), canvas.height())
+    else {
+        return;
+    };
+    // Two outlines outside the control give focus a persistent shape that is
+    // distinct from the solid inverse fill used for a pressed touch action.
+    for padding in [2usize, 5] {
+        let left = (region.left as usize).saturating_sub(padding);
+        let top = (region.top as usize).saturating_sub(padding);
+        let right = ((region.right() as usize).saturating_add(padding)).min(canvas.width());
+        let bottom = ((region.bottom() as usize).saturating_add(padding)).min(canvas.height());
+        canvas.stroke_rect(
+            left,
+            top,
+            right.saturating_sub(left),
+            bottom.saturating_sub(top),
+            BLACK,
+        );
+    }
 }
 
 fn draw_settings_menu(canvas: &mut DisplayCanvas<'_>, pressed_action: Option<DetailsAction>) {
@@ -2486,38 +2555,10 @@ mod tests {
     }
 
     fn modern_page_actions(page: DetailsPage) -> &'static [DetailsAction] {
-        match page {
-            DetailsPage::Menu => &[
-                DetailsAction::OpenReading,
-                DetailsAction::OpenSynchronization,
-                DetailsAction::OpenDeviceDiagnostics,
-                DetailsAction::BackToReading,
-            ],
-            DetailsPage::Reading => &[
-                DetailsAction::Orientation,
-                DetailsAction::ShowStatusBar,
-                DetailsAction::FontDecrease,
-                DetailsAction::FontReset,
-                DetailsAction::FontIncrease,
-                DetailsAction::ReadingProgress,
-                DetailsAction::ReturnToEntryPoint,
-                DetailsAction::BackToSettings,
-            ],
-            DetailsPage::Synchronization => {
-                &[DetailsAction::SyncNow, DetailsAction::BackToSettings]
-            }
-            DetailsPage::DeviceDiagnostics => &[
-                DetailsAction::DebugMessages,
-                DetailsAction::DisplayTest,
-                DetailsAction::Reboot,
-                DetailsAction::PowerOff,
-                DetailsAction::BackToSettings,
-            ],
-            DetailsPage::PowerConfirmation => &[
-                DetailsAction::CancelPowerAction,
-                DetailsAction::ConfirmPower,
-            ],
-            DetailsPage::Legacy => &[],
+        if page == DetailsPage::Legacy {
+            &[]
+        } else {
+            super::details_actions_for_page(page)
         }
     }
 
@@ -3314,6 +3355,110 @@ mod tests {
                 rgb565_to_png(&landscape, 800, 600).expect("encode confirmation landscape PNG");
             assert_png_golden(&format!("{name}-landscape"), &landscape_png);
         }
+    }
+
+    #[test]
+    fn modern_settings_focus_states_match_portrait_and_landscape_goldens() {
+        for (page, action, name) in [
+            (
+                DetailsPage::Menu,
+                DetailsAction::OpenReading,
+                "settings-menu-focus-reading",
+            ),
+            (
+                DetailsPage::Reading,
+                DetailsAction::Orientation,
+                "settings-reading-focus-orientation",
+            ),
+            (
+                DetailsPage::Reading,
+                DetailsAction::ShowStatusBar,
+                "settings-reading-focus-status-bar",
+            ),
+            (
+                DetailsPage::Reading,
+                DetailsAction::FontReset,
+                "settings-reading-focus-font-reset",
+            ),
+            (
+                DetailsPage::Reading,
+                DetailsAction::ReadingProgress,
+                "settings-reading-focus-progress",
+            ),
+            (
+                DetailsPage::Synchronization,
+                DetailsAction::SyncNow,
+                "settings-synchronization-focus-sync-now",
+            ),
+            (
+                DetailsPage::DeviceDiagnostics,
+                DetailsAction::DebugMessages,
+                "settings-device-focus-debug",
+            ),
+            (
+                DetailsPage::DeviceDiagnostics,
+                DetailsAction::Reboot,
+                "settings-device-focus-reboot",
+            ),
+            (
+                DetailsPage::PowerConfirmation,
+                DetailsAction::CancelPowerAction,
+                "settings-confirm-focus-cancel",
+            ),
+            (
+                DetailsPage::PowerConfirmation,
+                DetailsAction::ConfirmPower,
+                "settings-confirm-focus-confirm",
+            ),
+        ] {
+            for (orientation, width, height) in [
+                ("Portrait", SCREEN_WIDTH, SCREEN_HEIGHT),
+                ("Landscape", 800, 600),
+            ] {
+                let mut view = modern_screenshot_view_with_orientation(page, orientation);
+                view.details.focused_action = Some(action);
+                let frame = render_details_settings_host_at(&view, width, height);
+                let png = rgb565_to_png(&frame, width, height)
+                    .expect("encode focused modern settings PNG");
+                let suffix = if orientation == "Portrait" {
+                    name.to_owned()
+                } else {
+                    format!("{name}-landscape")
+                };
+                assert_png_golden(&suffix, &png);
+            }
+        }
+    }
+
+    #[test]
+    fn focus_indicator_is_distinct_from_pressed_action_feedback() {
+        let action = DetailsAction::ReadingProgress;
+        let normal = modern_screenshot_view(DetailsPage::Reading);
+        let normal_frame = render_details_settings_host(&normal);
+        let pressed_frame = render_details_settings_host_pressed(&normal, action);
+        let mut focused = normal.clone();
+        focused.details.focused_action = Some(action);
+        let focused_frame = render_details_settings_host(&focused);
+        assert_ne!(normal_frame, focused_frame);
+        assert_ne!(pressed_frame, focused_frame);
+
+        let focus_region = super::details_action_focus_region_for_page(
+            DetailsPage::Reading,
+            action,
+            SCREEN_WIDTH,
+            SCREEN_HEIGHT,
+        )
+        .expect("focus frame region");
+        assert_eq!(focus_region.left, 19);
+        assert_eq!(
+            pixel(
+                &focused_frame,
+                SCREEN_WIDTH,
+                focus_region.left as usize,
+                focus_region.top as usize,
+            ),
+            BLACK
+        );
     }
 
     #[test]

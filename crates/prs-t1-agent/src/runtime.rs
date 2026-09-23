@@ -744,6 +744,10 @@ enum DirtyArea {
     Interaction,
     ExternalLinkOverlay,
     Action(display::DetailsAction),
+    Focus {
+        previous: Option<display::DetailsAction>,
+        current: Option<display::DetailsAction>,
+    },
     Touch,
     Key,
     Power,
@@ -786,6 +790,9 @@ impl DirtyArea {
             | (Self::Interaction, Self::ExternalLinkOverlay) => Self::Interaction,
             (Self::ExternalLinkOverlay, Self::ExternalLinkOverlay) => Self::ExternalLinkOverlay,
             (Self::Action(left), Self::Action(right)) if left == right => Self::Action(left),
+            (Self::Focus { previous, .. }, Self::Focus { current, .. }) => {
+                Self::Focus { previous, current }
+            }
             (Self::Key, Self::Power) | (Self::Power, Self::Key) => Self::Power,
             (left, right) if left == right => left,
             _ => Self::Full,
@@ -804,6 +811,7 @@ impl DirtyArea {
             | Self::Feedback
             | Self::ExternalLinkOverlay
             | Self::Action(_)
+            | Self::Focus { .. }
             | Self::Touch
             | Self::Key
             | Self::Power => RefreshReason::Transient,
@@ -884,6 +892,37 @@ impl DirtyArea {
                     height as usize,
                 )
                 .unwrap_or_else(|| DisplayRegion::full(width, height))
+            }
+            Self::Focus { previous, current } => {
+                let details_page = match page {
+                    UiPage::Details => display::DetailsPage::Menu,
+                    UiPage::Reading => display::DetailsPage::Reading,
+                    UiPage::Synchronization => display::DetailsPage::Synchronization,
+                    UiPage::DeviceDiagnostics => display::DetailsPage::DeviceDiagnostics,
+                    UiPage::PowerConfirmation => display::DetailsPage::PowerConfirmation,
+                    UiPage::Home | UiPage::DisplayTest => display::DetailsPage::Legacy,
+                };
+                let regions = [previous, current]
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|action| {
+                        display::details_action_focus_region_for_page(
+                            details_page,
+                            action,
+                            width as usize,
+                            height as usize,
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                if regions.is_empty() {
+                    DisplayRegion::full(width, height)
+                } else {
+                    let left = regions.iter().map(|region| region.left).min().unwrap();
+                    let top = regions.iter().map(|region| region.top).min().unwrap();
+                    let right = regions.iter().map(|region| region.right()).max().unwrap();
+                    let bottom = regions.iter().map(|region| region.bottom()).max().unwrap();
+                    DisplayRegion::new(left, top, right - left, bottom - top)
+                }
             }
         };
         region.bounded(width, height)
@@ -1109,7 +1148,8 @@ fn screen_view_model(state: &UiState, wake_lock_held: bool) -> display::UiViewMo
     };
     display::UiViewModel::new(
         status_bar,
-        display::DetailsViewModel::new_page(page, title, rows),
+        display::DetailsViewModel::new_page(page, title, rows)
+            .with_focused_action(state.focused_action),
     )
 }
 
@@ -1843,6 +1883,8 @@ struct UiState {
     page: UiPage,
     settings_menu: bool,
     ui_history: Vec<UiPage>,
+    focus_history: Vec<Option<display::DetailsAction>>,
+    focused_action: Option<display::DetailsAction>,
     mode: &'static str,
     feedback: Option<Feedback>,
     debug_messages: bool,
@@ -1904,6 +1946,8 @@ impl UiState {
             page: UiPage::Home,
             settings_menu: false,
             ui_history: Vec::new(),
+            focus_history: Vec::new(),
+            focused_action: None,
             mode: "ACTIVE",
             feedback: None,
             debug_messages: false,
@@ -2007,11 +2051,14 @@ impl UiState {
             return;
         }
         self.ui_history.push(self.page);
+        self.focus_history.push(self.focused_action);
         if self.ui_history.len() > UI_HISTORY_LIMIT {
             self.ui_history.remove(0);
+            self.focus_history.remove(0);
         }
         self.page = page;
         self.settings_menu = page == UiPage::Details;
+        self.focused_action = self.first_focusable_action();
         self.set_debug_feedback(message);
     }
 
@@ -2019,6 +2066,8 @@ impl UiState {
         self.page = UiPage::Home;
         self.settings_menu = false;
         self.ui_history.clear();
+        self.focus_history.clear();
+        self.focused_action = None;
         self.pending_power_action = None;
         self.set_debug_feedback(message);
     }
@@ -2026,6 +2075,8 @@ impl UiState {
     fn home_button(&mut self) -> Option<DirtyArea> {
         if self.page == UiPage::Home {
             self.ui_history.clear();
+            self.focus_history.clear();
+            self.focused_action = None;
             self.reader_operation = Some(ReaderOperation::ReturnToEntryPoint);
             self.set_debug_feedback("Reader entry point");
             None
@@ -2060,11 +2111,16 @@ impl UiState {
                     UiPage::DisplayTest => UiPage::Details,
                     UiPage::Home => unreachable!(),
                 });
+                let previous_focus = self.focus_history.pop().flatten();
                 self.page = previous;
                 self.settings_menu = self.page == UiPage::Details && !self.ui_history.is_empty();
                 if self.page == UiPage::Home {
                     self.ui_history.clear();
+                    self.focus_history.clear();
                 }
+                self.focused_action = previous_focus
+                    .filter(|action| self.focus_actions().contains(action))
+                    .or_else(|| self.first_focusable_action());
                 self.set_debug_feedback(match self.page {
                     UiPage::Home => "Returned to reading",
                     UiPage::Details => "Returned to Details / Settings",
@@ -2368,6 +2424,9 @@ impl UiState {
             }
             if source == InputSourceKind::Keys {
                 if matches!(event.code, KEY_LEFT | KEY_RIGHT) {
+                    if self.is_settings_page() && event.value == 1 {
+                        return finish(self.move_focus(event.code == KEY_RIGHT), PowerAction::None);
+                    }
                     if self.page == UiPage::Home && event.value == 1 {
                         let operation = if event.code == KEY_LEFT {
                             ReaderOperation::PreviousPage
@@ -2506,6 +2565,9 @@ impl UiState {
                 } else if !already_triggered && self.page == UiPage::Home {
                     self.open_ui_page(UiPage::Details, "Details open");
                     (Some(DirtyArea::Full), PowerAction::None)
+                } else if !already_triggered && self.is_settings_page() {
+                    let (action, dirty) = self.activate_focused_action();
+                    (dirty, action)
                 } else {
                     self.set_debug_feedback("Menu released");
                     (None, PowerAction::None)
@@ -2545,6 +2607,74 @@ impl UiState {
 
     fn return_to_settings(&mut self) -> (PowerAction, Option<DirtyArea>) {
         (PowerAction::None, self.back_button())
+    }
+
+    fn focus_actions(&self) -> Vec<display::DetailsAction> {
+        if !self.is_settings_page() {
+            return Vec::new();
+        }
+        let page = self.details_page();
+        let mut actions = display::details_actions_for_page(page)
+            .iter()
+            .copied()
+            .filter(|action| {
+                display::details_action_region_for_page(
+                    page,
+                    *action,
+                    self.screen_width(),
+                    self.screen_height(),
+                )
+                .is_some_and(|region| region.width > 0 && region.height > 0)
+            })
+            .collect::<Vec<_>>();
+        actions.sort_by_key(|action| {
+            display::details_action_region_for_page(
+                page,
+                *action,
+                self.screen_width(),
+                self.screen_height(),
+            )
+            .map(|region| (region.top, region.left))
+            .unwrap_or((u32::MAX, u32::MAX))
+        });
+        actions
+    }
+
+    fn first_focusable_action(&self) -> Option<display::DetailsAction> {
+        self.focus_actions().into_iter().next()
+    }
+
+    fn move_focus(&mut self, forward: bool) -> Option<DirtyArea> {
+        let actions = self.focus_actions();
+        if actions.is_empty() {
+            return None;
+        }
+        let previous = self.focused_action;
+        let next = match previous.and_then(|focused| actions.iter().position(|a| *a == focused)) {
+            Some(index) if forward => actions[(index + 1) % actions.len()],
+            Some(index) => actions[(index + actions.len() - 1) % actions.len()],
+            None if forward => actions[0],
+            None => *actions.last().expect("non-empty action list"),
+        };
+        if previous == Some(next) {
+            return None;
+        }
+        self.focused_action = Some(next);
+        Some(DirtyArea::Focus {
+            previous,
+            current: Some(next),
+        })
+    }
+
+    fn activate_focused_action(&mut self) -> (PowerAction, Option<DirtyArea>) {
+        let Some(action) = self.focused_action else {
+            return (PowerAction::None, None);
+        };
+        if !self.focus_actions().contains(&action) {
+            self.focused_action = self.first_focusable_action();
+            return (PowerAction::None, Some(DirtyArea::Full));
+        }
+        self.activate_modern_action(action)
     }
 
     fn activate_tap(&mut self) -> (PowerAction, Option<DirtyArea>) {
@@ -3112,6 +3242,242 @@ mod tests {
         state.touch_down = true;
         state.observe(InputSourceKind::Touch, event(BTN_TOUCH, 0, 1_000_000));
         assert_eq!(state.take_sync_trigger(), Some(SyncTrigger::Manual));
+    }
+
+    #[test]
+    fn hardware_focus_follows_visible_controls_and_wraps_in_both_orientations() {
+        for (orientation, width, height) in [
+            (ReaderOrientation::Portrait, 600u32, 800u32),
+            (ReaderOrientation::Landscape, 800u32, 600u32),
+        ] {
+            for (page, details_page) in [
+                (UiPage::Details, display::DetailsPage::Menu),
+                (UiPage::Reading, display::DetailsPage::Reading),
+                (
+                    UiPage::Synchronization,
+                    display::DetailsPage::Synchronization,
+                ),
+                (
+                    UiPage::DeviceDiagnostics,
+                    display::DetailsPage::DeviceDiagnostics,
+                ),
+                (
+                    UiPage::PowerConfirmation,
+                    display::DetailsPage::PowerConfirmation,
+                ),
+            ] {
+                let mut state = UiState::with_orientation(orientation);
+                state.page = page;
+                state.settings_menu = page == UiPage::Details;
+                state.focused_action = state.first_focusable_action();
+                let actions = state.focus_actions();
+                assert_eq!(
+                    actions.len(),
+                    display::details_actions_for_page(details_page).len()
+                );
+                assert!(!actions.is_empty());
+                assert_eq!(state.focused_action, Some(actions[0]));
+
+                for expected in actions.iter().skip(1) {
+                    let previous = state.focused_action;
+                    let (dirty, action) =
+                        state.observe(InputSourceKind::Keys, event(KEY_RIGHT, 1, 1_000_000));
+                    assert_eq!(action, PowerAction::None);
+                    assert_eq!(state.focused_action, Some(*expected));
+                    let dirty = dirty.expect("focus movement damages the old and new controls");
+                    assert_eq!(
+                        dirty,
+                        DirtyArea::Focus {
+                            previous,
+                            current: Some(*expected),
+                        }
+                    );
+                    let damage = dirty.region(width, height, page);
+                    for focused in [previous.unwrap(), *expected] {
+                        let focus_region = display::details_action_focus_region_for_page(
+                            details_page,
+                            focused,
+                            width as usize,
+                            height as usize,
+                        )
+                        .expect("focused control region");
+                        assert!(damage.left <= focus_region.left);
+                        assert!(damage.top <= focus_region.top);
+                        assert!(damage.right() >= focus_region.right());
+                        assert!(damage.bottom() >= focus_region.bottom());
+                    }
+                }
+
+                let last = *actions.last().expect("action list is non-empty");
+                state.observe(InputSourceKind::Keys, event(KEY_RIGHT, 1, 1_000_001));
+                assert_eq!(state.focused_action, Some(actions[0]));
+                state.observe(InputSourceKind::Keys, event(KEY_LEFT, 1, 1_000_002));
+                assert_eq!(state.focused_action, Some(last));
+                state.observe(InputSourceKind::Keys, event(KEY_RIGHT, 2, 1_000_003));
+                assert_eq!(state.focused_action, Some(last));
+            }
+        }
+    }
+
+    #[test]
+    fn menu_activates_once_and_keeps_focus_on_a_toggled_control() {
+        let mut state = UiState::new();
+        state.open_ui_page(UiPage::Details, "Settings open");
+        state.open_ui_page(UiPage::Reading, "Reading settings open");
+        state.focused_action = Some(display::DetailsAction::ReadingProgress);
+
+        assert!(state.reading_progress);
+        state.observe(InputSourceKind::Keys, event(KEY_MENU, 1, 1_000_000));
+        let (dirty, action) = state.observe(InputSourceKind::Keys, event(KEY_MENU, 0, 1_100_000));
+
+        assert_eq!(dirty, Some(DirtyArea::Full));
+        assert_eq!(action, PowerAction::None);
+        assert!(!state.reading_progress);
+        assert_eq!(
+            state.focused_action,
+            Some(display::DetailsAction::ReadingProgress)
+        );
+        assert_eq!(
+            super::screen_view_model(&state, true)
+                .details
+                .focused_action,
+            state.focused_action
+        );
+
+        let (_, action) = state.observe(InputSourceKind::Keys, event(KEY_MENU, 1, 1_200_000));
+        assert_eq!(action, PowerAction::None);
+        let (_, action) = state.observe(InputSourceKind::Keys, event(KEY_MENU, 0, 1_300_000));
+        assert_eq!(action, PowerAction::None);
+        assert!(state.reading_progress);
+        assert_eq!(
+            state.focused_action,
+            Some(display::DetailsAction::ReadingProgress)
+        );
+    }
+
+    #[test]
+    fn menu_dispatches_focused_orientation_status_and_font_actions() {
+        for (action, expected) in [
+            (
+                display::DetailsAction::FontDecrease,
+                ReaderOperation::DecreaseFontScale,
+            ),
+            (
+                display::DetailsAction::FontReset,
+                ReaderOperation::ResetFontScale,
+            ),
+            (
+                display::DetailsAction::FontIncrease,
+                ReaderOperation::IncreaseFontScale,
+            ),
+            (
+                display::DetailsAction::ShowStatusBar,
+                ReaderOperation::SetFullscreen(true),
+            ),
+        ] {
+            let mut state = UiState::new();
+            state.page = UiPage::Reading;
+            state.focused_action = Some(action);
+            state.observe(InputSourceKind::Keys, event(KEY_MENU, 1, 1_000_000));
+            let (_, power_action) =
+                state.observe(InputSourceKind::Keys, event(KEY_MENU, 0, 1_100_000));
+
+            assert_eq!(power_action, PowerAction::None);
+            assert_eq!(state.take_reader_operation(), Some(expected));
+            assert_eq!(state.focused_action, Some(action));
+        }
+
+        let mut state = UiState::new();
+        state.page = UiPage::Reading;
+        state.focused_action = Some(display::DetailsAction::Orientation);
+        state.observe(InputSourceKind::Keys, event(KEY_MENU, 1, 1_000_000));
+        let (dirty, power_action) =
+            state.observe(InputSourceKind::Keys, event(KEY_MENU, 0, 1_100_000));
+        assert_eq!(dirty, Some(DirtyArea::Full));
+        assert_eq!(power_action, PowerAction::None);
+        assert_eq!(
+            state.take_orientation_change(),
+            Some(ReaderOrientation::Landscape)
+        );
+        assert_eq!(
+            state.focused_action,
+            Some(display::DetailsAction::Orientation)
+        );
+
+        let mut state = UiState::new();
+        state.page = UiPage::Synchronization;
+        state.focused_action = Some(display::DetailsAction::SyncNow);
+        state.observe(InputSourceKind::Keys, event(KEY_MENU, 1, 1_000_000));
+        let (_, power_action) = state.observe(InputSourceKind::Keys, event(KEY_MENU, 0, 1_100_000));
+        assert_eq!(power_action, PowerAction::None);
+        assert_eq!(state.take_sync_trigger(), Some(SyncTrigger::Manual));
+
+        let mut state = UiState::new();
+        state.page = UiPage::DeviceDiagnostics;
+        state.focused_action = Some(display::DetailsAction::DebugMessages);
+        state.observe(InputSourceKind::Keys, event(KEY_MENU, 1, 1_000_000));
+        let (_, power_action) = state.observe(InputSourceKind::Keys, event(KEY_MENU, 0, 1_100_000));
+        assert_eq!(power_action, PowerAction::None);
+        assert!(state.debug_messages);
+        assert_eq!(
+            state.focused_action,
+            Some(display::DetailsAction::DebugMessages)
+        );
+    }
+
+    #[test]
+    fn menu_opens_submenus_and_back_restores_the_parent_focus() {
+        let mut state = UiState::new();
+        state.open_ui_page(UiPage::Details, "Settings open");
+        assert_eq!(
+            state.focused_action,
+            Some(display::DetailsAction::OpenReading)
+        );
+
+        state.observe(InputSourceKind::Keys, event(KEY_MENU, 1, 1_000_000));
+        let (dirty, action) = state.observe(InputSourceKind::Keys, event(KEY_MENU, 0, 1_100_000));
+        assert_eq!(dirty, Some(DirtyArea::Full));
+        assert_eq!(action, PowerAction::None);
+        assert_eq!(state.page, UiPage::Reading);
+        assert_eq!(
+            state.focused_action,
+            Some(display::DetailsAction::Orientation)
+        );
+
+        let (dirty, action) = state.observe(InputSourceKind::Keys, event(KEY_BACK, 1, 1_200_000));
+        assert_eq!(dirty, Some(DirtyArea::Full));
+        assert_eq!(action, PowerAction::None);
+        assert_eq!(state.page, UiPage::Details);
+        assert_eq!(
+            state.focused_action,
+            Some(display::DetailsAction::OpenReading)
+        );
+    }
+
+    #[test]
+    fn hardware_reboot_action_opens_confirmation_before_returning_power_action() {
+        let mut state = UiState::new();
+        state.open_ui_page(UiPage::Details, "Settings open");
+        state.open_ui_page(UiPage::DeviceDiagnostics, "Device settings open");
+        state.focused_action = Some(display::DetailsAction::Reboot);
+
+        state.observe(InputSourceKind::Keys, event(KEY_MENU, 1, 1_000_000));
+        let (dirty, action) = state.observe(InputSourceKind::Keys, event(KEY_MENU, 0, 1_100_000));
+        assert_eq!(dirty, Some(DirtyArea::Full));
+        assert_eq!(action, PowerAction::None);
+        assert_eq!(state.page, UiPage::PowerConfirmation);
+        assert_eq!(state.pending_power_action, Some(PowerAction::Reboot));
+        assert_eq!(
+            state.focused_action,
+            Some(display::DetailsAction::CancelPowerAction)
+        );
+
+        let (dirty, action) = state.observe(InputSourceKind::Keys, event(KEY_BACK, 1, 1_200_000));
+        assert_eq!(dirty, Some(DirtyArea::Full));
+        assert_eq!(action, PowerAction::None);
+        assert_eq!(state.page, UiPage::DeviceDiagnostics);
+        assert_eq!(state.pending_power_action, None);
+        assert_eq!(state.focused_action, Some(display::DetailsAction::Reboot));
     }
 
     #[test]
@@ -3752,19 +4118,30 @@ mod tests {
     }
 
     #[test]
-    fn page_buttons_and_reader_back_do_not_leave_details_page() {
+    fn page_buttons_navigate_settings_without_changing_reader_operation() {
         let mut state = UiState::new();
-        state.page = UiPage::Details;
+        state.open_ui_page(UiPage::Details, "Settings open");
 
         let (dirty, action) = state.observe(InputSourceKind::Keys, event(KEY_RIGHT, 1, 1_000_000));
-        assert_eq!(dirty, None);
+        assert_eq!(
+            dirty,
+            Some(DirtyArea::Focus {
+                previous: Some(display::DetailsAction::OpenReading),
+                current: Some(display::DetailsAction::OpenSynchronization),
+            })
+        );
         assert_eq!(action, super::PowerAction::None);
+        assert_eq!(
+            state.focused_action,
+            Some(display::DetailsAction::OpenSynchronization)
+        );
         assert_eq!(state.take_reader_operation(), None);
 
         state.observe(InputSourceKind::Keys, event(KEY_MENU, 1, 2_000_000));
         let (dirty, action) = state.observe(InputSourceKind::Keys, event(KEY_MENU, 0, 2_100_000));
-        assert_eq!(dirty, None);
+        assert_eq!(dirty, Some(DirtyArea::Full));
         assert_eq!(action, super::PowerAction::None);
+        assert_eq!(state.page, UiPage::Synchronization);
         assert_eq!(state.take_reader_operation(), None);
     }
 

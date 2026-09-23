@@ -484,8 +484,13 @@ does not launch a browser or make a network request for the external URL.
 
 On the reader, the hardware left and right keys (`KEY_LEFT` code 105 and
 `KEY_RIGHT` code 106) perform one previous/next reader-page operation per
-physical press. Repeat events are ignored, and these keys do nothing outside
-the reader. Home (`KEY_HOME` code 102) returns from Details / Settings or
+physical press. Repeat events are ignored. On Settings pages, those keys move
+focus backward and forward through enabled controls in top-to-bottom, then
+left-to-right order, and wrap at either end. A double outline marks the focused
+control in portrait and landscape. Menu activates the focused control. The
+focus returns to its parent control when Back leaves a nested page, and stays
+on toggles or font controls when their values change. These keys do nothing on
+other screens. Home (`KEY_HOME` code 102) returns from Details / Settings or
 Display Test to the current reading position; from the reader it navigates to
 the current bundle's entry point. Back (`KEY_BACK` code 158) walks the native
 view history before delegating to reader history. A short physical menu press
@@ -498,8 +503,9 @@ Tap the status bar to open **Details / Settings**. The section menu and every
 nested page keep the status bar visible. Physical **Back** returns from a
 nested page to the section menu, then returns to reading. **Home** returns to
 reading from any operational page. A short **Menu** press opens the section
-menu from reading; a short press elsewhere is a no-op. A long **Menu** press
-still requests a full GC16 redraw.
+menu from reading and activates the focused control on Settings pages. A short
+press on other screens is a no-op. A long **Menu** press still requests a full
+GC16 redraw.
 
 Every modern control inverts while its touch is held and restores on release
 using a bounded partial refresh. Touch release is accepted from the event
@@ -523,10 +529,11 @@ uses the status bar's operational state area as **Syncing**; successful and
 unchanged syncs return to the normal status bar without a feedback message.
 
 The physical menu button is event0 code 357 (`Unknown` in the old kernel). On
-the reader, a short press opens Details / Settings. Outside the reader, a
-short press is a no-op. A hold of at least one second requests a full GC16
-redraw with the EPDC's `UPDATE_MODE_FULL` flag. A short power press sleeps; a
-press of at least two seconds requests reboot.
+the reader, a short press opens Details / Settings. On Settings pages, a short
+press activates the focused control. On other screens, it is a no-op. A hold
+of at least one second requests a full GC16 redraw with the EPDC's
+`UPDATE_MODE_FULL` flag. A short power press sleeps; a press of at least two
+seconds requests reboot.
 
 ## Display and refresh model
 
