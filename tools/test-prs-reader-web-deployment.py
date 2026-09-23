@@ -23,41 +23,90 @@ FAKE_CURL = r'''#!/usr/bin/env python3
 import os
 from pathlib import Path
 import sys
+from urllib.parse import urlsplit
 
 args = sys.argv[1:]
+if "--location" in args or "-L" in args:
+    raise SystemExit("the verifier must validate each redirect before making another request")
 url = next(argument for argument in args if argument.startswith("https://"))
-if "--dump-header" in args:
-    header_path = Path(args[args.index("--dump-header") + 1])
-    header_values = [
-        args[index + 1].split(":", 1)[1].strip()
-        for index, value in enumerate(args[:-1])
-        if value == "--header" and args[index + 1].lower().startswith("origin:")
-    ]
-    origin = header_values[-1] if header_values else ""
-    if origin == "https://prs-reader-web.dstoc.workers.dev" and not os.environ.get(
-        "FAKE_REJECT_READER_WEB_ORIGIN"
-    ):
+parsed_url = urlsplit(url)
+
+
+def respond(status, content_type, headers=None):
+    if "--dump-header" in args:
+        header_path = Path(args[args.index("--dump-header") + 1])
         header_path.write_text(
-            "HTTP/2 204\r\n"
-            "Access-Control-Allow-Origin: https://prs-reader-web.dstoc.workers.dev\r\n"
-            "Access-Control-Allow-Methods: POST\r\n"
-            "Access-Control-Allow-Headers: Content-Type\r\n"
-            "\r\n",
+            f"HTTP/2 {status}\r\n"
+            + "".join(f"{header}\r\n" for header in (headers or []))
+            + f"Content-Type: {content_type}\r\n\r\n",
             encoding="utf-8",
         )
-        print("204", end="")
+    write_out = args[args.index("--write-out") + 1]
+    if write_out == "%{http_code}":
+        print(str(status), end="")
     else:
-        print("403", end="")
-    raise SystemExit(0)
-
-if url.endswith("/api/v1/authorization/reader"):
-    print("403", end="")
-    raise SystemExit(0)
-
-if os.environ.get("FAKE_MISSING_WASM") and url.endswith("prs_reader_web_bg.wasm"):
-    if "--fail-with-body" in args:
+        print(f"{status}\n{content_type}\n{url}", end="")
+    if status >= 400 and "--fail-with-body" in args:
         raise SystemExit(22)
-    print("404 text/html", end="")
+
+
+if parsed_url.hostname == "prs-reader.dstoc.workers.dev":
+    if "--request" in args and args[args.index("--request") + 1] == "OPTIONS":
+        header_values = [
+            args[index + 1].split(":", 1)[1].strip()
+            for index, value in enumerate(args[:-1])
+            if value == "--header" and args[index + 1].lower().startswith("origin:")
+        ]
+        origin = header_values[-1] if header_values else ""
+        if origin == "https://prs-reader-web.dstoc.workers.dev" and not os.environ.get(
+            "FAKE_REJECT_READER_WEB_ORIGIN"
+        ):
+            respond(
+                204,
+                "",
+                [
+                    "Access-Control-Allow-Origin: https://prs-reader-web.dstoc.workers.dev",
+                    "Access-Control-Allow-Methods: POST",
+                    "Access-Control-Allow-Headers: Content-Type",
+                ],
+            )
+        else:
+            respond(403, "text/plain")
+        raise SystemExit(0)
+
+    respond(403, "text/plain")
+    raise SystemExit(0)
+
+asset = parsed_url.path.lstrip("/")
+if asset == "index.html" and os.environ.get("FAKE_INDEX_REDIRECT"):
+    destinations = {
+        "expected": "https://prs-reader-web.dstoc.workers.dev/",
+        "relative_expected": "/",
+        "cross_origin": "https://example.invalid/login",
+        "access_login": "https://prs-reader-web.dstoc.workers.dev/cdn-cgi/access/login?token=do-not-leak",
+        "unexpected_path": "https://prs-reader-web.dstoc.workers.dev/main.js",
+    }
+    respond(
+        307,
+        "text/html; charset=utf-8",
+        [
+            f"Location: {destinations[os.environ['FAKE_INDEX_REDIRECT']]}",
+            "CF-Ray: fake-ray-176",
+            "Set-Cookie: secret=must-not-be-logged",
+        ],
+    )
+    raise SystemExit(0)
+
+if asset == "" and os.environ.get("FAKE_CANONICAL_FINAL_STATUS"):
+    respond(
+        int(os.environ["FAKE_CANONICAL_FINAL_STATUS"]),
+        os.environ.get("FAKE_CANONICAL_FINAL_CONTENT_TYPE", "text/html"),
+        ["CF-Ray: fake-final-ray-176"],
+    )
+    raise SystemExit(0)
+
+if os.environ.get("FAKE_MISSING_WASM") and asset.endswith("prs_reader_web_bg.wasm"):
+    respond(404, "text/html")
     raise SystemExit(0)
 
 asset_types = {
@@ -71,10 +120,14 @@ asset_types = {
     "pkg/prs_reader_web.js": "text/javascript; charset=utf-8",
     "pkg/prs_reader_web_bg.wasm": "application/wasm",
 }
-asset = url.split("/", 3)[-1]
+if asset == "":
+    asset = "index.html"
+if os.environ.get("FAKE_WRONG_WASM_MIME") and asset.endswith("prs_reader_web_bg.wasm"):
+    respond(200, "application/wasm-invalid")
+    raise SystemExit(0)
 for suffix, content_type in asset_types.items():
     if asset.endswith(suffix):
-        print("200 " + content_type, end="")
+        respond(200, content_type)
         raise SystemExit(0)
 raise SystemExit(1)
 '''
@@ -137,6 +190,26 @@ def assert_workflow_and_runbook() -> None:
     for expected in required_workflow_text:
         assert expected in workflow, f"missing deployment workflow contract: {expected}"
 
+    deploy_job = workflow.split("  deploy:\n", 1)[1]
+    job_environment = deploy_job.split("    steps:\n", 1)[0]
+    assert "secrets.CLOUDFLARE_" not in job_environment, (
+        "Cloudflare secrets must not be inherited by the post-deploy checks"
+    )
+    for step_name in (
+        "Deploy browser reader to the existing prs-reader-web Worker",
+        "Upload and promote production version, then verify schema readiness",
+    ):
+        step = workflow.split(f"      - name: {step_name}\n", 1)[1].split(
+            "      - name:", 1
+        )[0]
+        assert "secrets.CLOUDFLARE_ACCOUNT_ID" in step
+        assert "secrets.CLOUDFLARE_API_TOKEN" in step
+
+    smoke_step = workflow.split(
+        "      - name: Verify browser assets and exact-origin API CORS\n", 1
+    )[1]
+    assert "secrets.CLOUDFLARE_" not in smoke_step
+
     runbook = " ".join(RUNBOOK.read_text(encoding="utf-8").split())
     for expected in (
         "prs-reader-web",
@@ -145,6 +218,10 @@ def assert_workflow_and_runbook() -> None:
         "wrangler rollback",
         "interactive browser session",
         "`/a/*` approval routes remain",
+        "canonical 307",
+        "CF-Ray",
+        "bodies, cookies",
+        "smoke tests execute without them",
     ):
         assert expected in runbook, f"runbook is missing: {expected}"
 
@@ -168,6 +245,11 @@ def assert_deploy_and_verify_scripts() -> None:
         "application/wasm",
         "Access-Control-Allow-Origin",
         "https://example.invalid",
+        "--disable",
+        "--dump-header",
+        "%{url_effective}",
+        "following verified canonical redirect",
+        "relevant response headers",
     ):
         assert expected in verify, f"production smoke probe is missing: {expected}"
 
@@ -192,11 +274,45 @@ def assert_production_smoke_probe() -> None:
             check=False,
         )
         assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
-        assert "pkg/prs_reader_web_bg.wasm (application/wasm)" in result.stdout
+        assert "pkg/prs_reader_web_bg.wasm at https://prs-reader-web.dstoc.workers.dev/pkg/prs_reader_web_bg.wasm" in result.stdout
         assert "verified API reader authorization CORS" in result.stdout
 
-        environment["FAKE_REJECT_READER_WEB_ORIGIN"] = "1"
-        rejected = subprocess.run(
+        for destination in ("expected", "relative_expected"):
+            environment["FAKE_INDEX_REDIRECT"] = destination
+            canonical = subprocess.run(
+                [str(VERIFY_SCRIPT)],
+                cwd=REPO_ROOT,
+                env=environment,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            assert canonical.returncode == 0, f"{canonical.stdout}\n{canonical.stderr}"
+            assert "following verified canonical redirect" in canonical.stdout
+            assert "verified index.html at https://prs-reader-web.dstoc.workers.dev/" in canonical.stdout
+
+        for destination in ("cross_origin", "access_login", "unexpected_path"):
+            environment["FAKE_INDEX_REDIRECT"] = destination
+            rejected_redirect = subprocess.run(
+                [str(VERIFY_SCRIPT)],
+                cwd=REPO_ROOT,
+                env=environment,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            assert rejected_redirect.returncode != 0, f"smoke probe accepted redirect: {destination}"
+            assert "status: 307" in rejected_redirect.stderr
+            assert "location:" in rejected_redirect.stderr
+            assert "effective_url:" in rejected_redirect.stderr
+            assert "content_type:" in rejected_redirect.stderr
+            assert "CF-Ray: fake-ray-176" in rejected_redirect.stderr
+            assert "must-not-be-logged" not in rejected_redirect.stderr
+            assert "do-not-leak" not in rejected_redirect.stderr
+
+        environment["FAKE_INDEX_REDIRECT"] = "expected"
+        environment["FAKE_CANONICAL_FINAL_STATUS"] = "404"
+        bad_final_status = subprocess.run(
             [str(VERIFY_SCRIPT)],
             cwd=REPO_ROOT,
             env=environment,
@@ -204,7 +320,34 @@ def assert_production_smoke_probe() -> None:
             text=True,
             check=False,
         )
-        assert rejected.returncode != 0, "smoke probe accepted a failed preflight"
+        assert bad_final_status.returncode != 0, "smoke probe accepted a non-200 canonical response"
+        assert "status: 404" in bad_final_status.stderr
+
+        environment.pop("FAKE_CANONICAL_FINAL_STATUS")
+        environment.pop("FAKE_INDEX_REDIRECT")
+        environment["FAKE_WRONG_WASM_MIME"] = "1"
+        wrong_mime = subprocess.run(
+            [str(VERIFY_SCRIPT)],
+            cwd=REPO_ROOT,
+            env=environment,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert wrong_mime.returncode != 0, "smoke probe accepted an incorrect WASM MIME type"
+        assert "content_type: application/wasm-invalid" in wrong_mime.stderr
+
+        environment.pop("FAKE_WRONG_WASM_MIME")
+        environment["FAKE_REJECT_READER_WEB_ORIGIN"] = "1"
+        rejected_origin = subprocess.run(
+            [str(VERIFY_SCRIPT)],
+            cwd=REPO_ROOT,
+            env=environment,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert rejected_origin.returncode != 0, "smoke probe accepted a failed preflight"
 
         environment.pop("FAKE_REJECT_READER_WEB_ORIGIN")
         environment["FAKE_MISSING_WASM"] = "1"

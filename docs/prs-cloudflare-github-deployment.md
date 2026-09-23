@@ -22,6 +22,9 @@ must not declare the production environment or reference either secret. The
 workflow must not print the values or include them in artifacts, summaries, or
 comments.
 
+Expose the two secrets only to the Worker deploy steps. Do not set them on the
+whole job. The health and browser smoke tests execute without them.
+
 The local contract test is:
 
 ```sh
@@ -154,6 +157,19 @@ existing protected `production` environment and reuses
 `target/reader-web/` with `tools/test-reader-web.sh target/reader-web` before
 deploying it to the existing Worker. The workflow then checks the deployed
 HTML, JavaScript, CSS, generated WASM and production API preflight.
+
+The browser asset probe accepts one canonical 307: `/index.html` to `/` on
+`prs-reader-web.dstoc.workers.dev`. It requests `/` directly after that response
+and still requires a final HTTP 200 with the expected MIME type. It does not
+follow other redirects. This rejects Access login redirects, cross-origin
+destinations, redirects to other paths, and redirects from non-HTML assets.
+When an asset check fails, the probe prints the asset path, request URL, HTTP
+status, `Location`, effective URL, `Content-Type`, curl exit code, and selected
+response headers such as `CF-Ray` and `CF-Cache-Status`. It omits response
+bodies, cookies, and request headers. It removes Location query strings,
+fragments, and user information so the diagnostic output does not include
+credentials. The production smoke tests run without the Cloudflare deploy
+secrets.
 
 The API CORS binding is `PRS_READER_WEB_ORIGIN`. Production sets it to
 `https://prs-reader-web.dstoc.workers.dev` in
