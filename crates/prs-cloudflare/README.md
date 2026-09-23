@@ -368,10 +368,12 @@ The browser simulator uses a separate, exact-origin CORS allowlist from
 polling, plus reader manifest and bundle reads. Each route permits only its
 required method and headers. The Worker does not enable credentialed CORS, does
 not accept caller-supplied Cloudflare identity headers, and does not add CORS
-to `/a/*`, sender routes, or other endpoints. The checked-in value
-`http://127.0.0.1:8000` matches the loopback static reader helper. When hosting
-the static reader at another origin, configure that exact origin and redeploy;
-never reflect arbitrary `Origin` values or use `*`.
+to `/a/*`, sender routes, or other endpoints. The local Worker allows only
+`http://127.0.0.1:8000`. Production allows only
+`https://prs-reader-web.dstoc.workers.dev`, the separate static reader Worker.
+The production value is set in `[env.production.vars]` in
+`wrangler.toml`; redeploy the API Worker after changing it. Never reflect
+arbitrary `Origin` values or use `*`.
 
 ## Authorization boundary
 

@@ -127,6 +127,66 @@ readiness timeout, or health check fails the deployment job. A rerun promotes
 the ID from its new upload, even when an earlier upload used the same commit
 tag.
 
+## Browser reader static Worker
+
+The browser reader is a separate static-assets-only Worker named
+`prs-reader-web`. Its existing `workers.dev` address is
+`https://prs-reader-web.dstoc.workers.dev`. Keep this Worker separate from
+`prs-reader`; do not create another Worker or add the site assets to the API
+Worker. The static Worker configuration is
+`web/reader-web/wrangler.toml`. It points to `target/reader-web/`, the output
+from `tools/reader-web-build.sh build`, and has no Worker entry point, API
+binding, custom route, or Access policy. The reader uses the root page and has
+no client-side URL routes, so missing assets return 404. Wrangler assigns
+`Content-Type` from each asset's extension, including `application/wasm` for
+the generated WebAssembly file.
+
+The same successful-CI `workflow_run` checks out the exact tested `main` SHA.
+Its deployment gate decides separately whether to publish the API Worker and
+the browser reader. Browser changes include its checked-in assets and config,
+reachable local Cargo dependencies, browser build and test scripts, shared
+Cargo files, and deployment scripts and config. Reader README and demo fixture
+changes do not deploy the production site. Unrelated changes skip deployment.
+If the previous successful CI commit or its ancestry cannot be proven, the
+gate deploys both Workers conservatively. Browser deployment runs in the
+existing protected `production` environment and reuses
+`CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`. It builds and validates
+`target/reader-web/` with `tools/test-reader-web.sh target/reader-web` before
+deploying it to the existing Worker. The workflow then checks the deployed
+HTML, JavaScript, CSS, generated WASM and production API preflight.
+
+The API CORS binding is `PRS_READER_WEB_ORIGIN`. Production sets it to
+`https://prs-reader-web.dstoc.workers.dev` in
+`crates/prs-cloudflare/wrangler.toml` under `[env.production.vars]`. The API
+deployment reads that Wrangler variable and installs it in the API Worker's
+runtime configuration. A GitHub Actions variable alone does not change the
+Worker runtime value. The production API deployment gate watches this file,
+so a source change deploys the API Worker. CORS remains exact-origin and is
+limited to reader authorization, polling, manifest, and bundle routes.
+`/a/*` approval routes remain on `prs-reader` behind the existing Cloudflare
+Access policy and stay outside API CORS.
+
+The deployment token must be able to publish both existing Workers. Keep the
+current token in the protected `production` environment. Do not add a new
+secret or put a token value in Wrangler configuration. The existing
+`PRS_READER_URL` GitHub variable still identifies the API Worker for health
+checks; no `PRS_READER_WEB_ORIGIN` GitHub variable is required.
+
+To redeploy, rerun the successful `CI` workflow run for the intended `main`
+commit. The deployment workflow uses that run's exact SHA. To roll back the
+browser site, install the pinned Wrangler version and run
+`wrangler rollback --config web/reader-web/wrangler.toml <VERSION_ID>` from the
+repository root, or use the Worker's Deployments page in Cloudflare. To
+re-publish the current source, rerun the successful CI deployment run for its
+commit. A rollback restores the previous static asset version and does not
+change the API Worker or its bindings.
+
+The workflow verifies asset responses and the exact-origin authorization
+preflight. A complete authorization and sync still needs an interactive
+browser session: sign in through the existing Access approval page and approve
+a request for an authorized reader account. CI does not have that user session
+or the account data needed to complete this manual end-to-end step.
+
 ## Debug a production deployment
 
 The deployment workflow uses the GitHub Actions `runner.debug` context. A

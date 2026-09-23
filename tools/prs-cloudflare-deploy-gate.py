@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Decide whether a tested commit can affect the production Worker."""
+"""Decide whether a tested commit can affect either production Worker."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ import tomllib
 
 
 WORKER_MANIFEST = Path("crates/prs-cloudflare/Cargo.toml")
+READER_WEB_MANIFEST = Path("web/reader-web/Cargo.toml")
 STATIC_RELEVANT_FILES = {
     ".github/workflows/ci.yml",
     ".github/workflows/prs-cloudflare-deploy.yml",
@@ -24,6 +25,27 @@ STATIC_RELEVANT_PREFIXES = (
     "tools/prs-cloudflare-",
     "tools/test-prs-cloudflare-",
 )
+READER_WEB_RELEVANT_FILES = {
+    ".github/workflows/ci.yml",
+    ".github/workflows/prs-cloudflare-deploy.yml",
+    "Cargo.lock",
+    "Cargo.toml",
+    "tools/prs-cloudflare-deploy-gate.py",
+    "tools/reader-web-build.sh",
+    "tools/test-reader-web.sh",
+    "tools/prs-reader-web-deploy.sh",
+    "tools/prs-reader-web-verify-production.sh",
+    "web/reader-web/Cargo.toml",
+    "web/reader-web/wrangler.toml",
+    "web/reader-web/directory-library.js",
+    "web/reader-web/fullscreen.mjs",
+    "web/reader-web/index.html",
+    "web/reader-web/input.mjs",
+    "web/reader-web/main.js",
+    "web/reader-web/prsync-client.mjs",
+    "web/reader-web/style.css",
+}
+READER_WEB_RELEVANT_PREFIXES = ("web/reader-web/src/",)
 
 
 def run_git(repo_root: Path, *arguments: str, check: bool = True) -> str:
@@ -99,10 +121,10 @@ def path_dependency(manifest_path: Path, name: str, spec) -> Path | None:
     return (manifest_path.parent / dependency_path).resolve()
 
 
-def worker_dependency_roots(repo_root: Path) -> list[str]:
-    """Return every local package directory reachable from prs-cloudflare."""
+def dependency_roots(repo_root: Path, manifest: Path, package_name: str) -> list[str]:
+    """Return every local package directory reachable from a Cargo manifest."""
 
-    initial_manifest = (repo_root / WORKER_MANIFEST).resolve()
+    initial_manifest = (repo_root / manifest).resolve()
     queue = deque([initial_manifest])
     visited: set[Path] = set()
     roots: set[str] = set()
@@ -118,7 +140,7 @@ def worker_dependency_roots(repo_root: Path) -> list[str]:
             relative_root = package_root.relative_to(repo_root.resolve())
         except ValueError as error:
             raise RuntimeError(
-                f"local Worker dependency is outside the repository: {package_root}"
+                f"local {package_name} dependency is outside the repository: {package_root}"
             ) from error
         roots.add(relative_root.as_posix())
 
@@ -131,7 +153,7 @@ def worker_dependency_roots(repo_root: Path) -> list[str]:
                 dependency_manifest /= "Cargo.toml"
             if not dependency_manifest.is_file():
                 raise RuntimeError(
-                    f"local Worker dependency has no Cargo.toml: {dependency_manifest}"
+                    f"local {package_name} dependency has no Cargo.toml: {dependency_manifest}"
                 )
             queue.append(dependency_manifest)
 
@@ -160,11 +182,27 @@ def is_relevant(path: str, dependency_roots: list[str]) -> bool:
     return any(path == root or path.startswith(f"{root}/") for root in dependency_roots)
 
 
-def write_output(path: str | None, deploy: bool) -> None:
+def is_reader_web_relevant(path: str, dependency_roots: list[str]) -> bool:
+    if path in READER_WEB_RELEVANT_FILES or any(
+        path.startswith(prefix) for prefix in READER_WEB_RELEVANT_PREFIXES
+    ):
+        return True
+    return any(
+        root != READER_WEB_MANIFEST.parent.as_posix()
+        and (path == root or path.startswith(f"{root}/"))
+        for root in dependency_roots
+    )
+
+
+def write_output(path: str | None, deploy_api: bool, deploy_reader_web: bool) -> None:
     if path is None:
         return
     with open(path, "a", encoding="utf-8") as output:
-        output.write(f"deploy={'true' if deploy else 'false'}\n")
+        output.write(f"deploy_api={'true' if deploy_api else 'false'}\n")
+        output.write(
+            f"deploy_reader_web={'true' if deploy_reader_web else 'false'}\n"
+        )
+        output.write(f"deploy={'true' if deploy_api or deploy_reader_web else 'false'}\n")
 
 
 def write_summary(path: str | None, lines: list[str]) -> None:
@@ -196,7 +234,10 @@ def main() -> int:
     arguments = parser().parse_args()
     repo_root = arguments.repo_root.resolve()
     head_sha = resolve_commit(repo_root, arguments.head)
-    dependency_roots = worker_dependency_roots(repo_root)
+    api_dependency_roots = dependency_roots(repo_root, WORKER_MANIFEST, "Worker")
+    reader_web_dependency_roots = dependency_roots(
+        repo_root, READER_WEB_MANIFEST, "browser reader"
+    )
 
     reliable_base = arguments.base is not None
     base_sha = None
@@ -216,8 +257,15 @@ def main() -> int:
     else:
         reason = "no previous successful main CI commit was available"
 
-    relevant_paths = [path for path in paths if is_relevant(path, dependency_roots)]
-    deploy = not reliable_base or bool(relevant_paths)
+    api_relevant_paths = [
+        path for path in paths if is_relevant(path, api_dependency_roots)
+    ]
+    reader_web_relevant_paths = [
+        path for path in paths if is_reader_web_relevant(path, reader_web_dependency_roots)
+    ]
+    deploy_api = not reliable_base or bool(api_relevant_paths)
+    deploy_reader_web = not reliable_base or bool(reader_web_relevant_paths)
+    deploy = deploy_api or deploy_reader_web
 
     print(f"tested_sha={head_sha}")
     print(f"base_sha={base_sha or 'unknown'}")
@@ -227,38 +275,36 @@ def main() -> int:
             print(f"  {path}")
     else:
         print("  (unavailable)" if not reliable_base else "  (none)")
-    if relevant_paths:
-        print("deploy_relevant_paths:")
-        for path in relevant_paths:
+    if api_relevant_paths:
+        print("api_deploy_relevant_paths:")
+        for path in api_relevant_paths:
+            print(f"  {path}")
+    if reader_web_relevant_paths:
+        print("reader_web_deploy_relevant_paths:")
+        for path in reader_web_relevant_paths:
             print(f"  {path}")
     if reason:
         print(f"decision_reason={reason}")
+    print(f"deploy_api={'true' if deploy_api else 'false'}")
+    print(f"deploy_reader_web={'true' if deploy_reader_web else 'false'}")
     print(f"deploy={'true' if deploy else 'false'}")
 
-    if deploy:
-        if reliable_base:
-            summary_message = (
-                f"Cloudflare deploy-relevant changes found for `{head_sha}`; "
-                "the protected production deployment will run."
-            )
-        else:
-            summary_message = (
-                f"Could not prove a safe base for `{head_sha}`; "
-                "the protected production deployment will run conservatively."
-            )
-    else:
+    if not reliable_base:
         summary_message = (
-            f"No Cloudflare deploy-relevant changes for `{head_sha}`; "
-            "production deployment skipped."
+            f"Could not prove a safe base for `{head_sha}`; both protected "
+            "production deployment paths will run conservatively."
         )
-    write_output(arguments.github_output, deploy)
+    else:
+        summary_message = f"API Worker deploy: `{str(deploy_api).lower()}`; browser reader deploy: `{str(deploy_reader_web).lower()}`."
+    write_output(arguments.github_output, deploy_api, deploy_reader_web)
     write_summary(
         arguments.summary,
         [
             "## Cloudflare deployment gate",
             f"- Tested SHA: `{head_sha}`",
             f"- Base SHA: `{base_sha or 'unknown'}`",
-            f"- Decision: `deploy={'true' if deploy else 'false'}`",
+            f"- API Worker: `deploy={'true' if deploy_api else 'false'}`",
+            f"- Browser reader: `deploy={'true' if deploy_reader_web else 'false'}`",
             f"- {summary_message}",
             "- Changed paths:",
             *(f"  - `{path}`" for path in paths),

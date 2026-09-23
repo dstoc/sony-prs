@@ -58,8 +58,8 @@ if production_vars.get("PRS_APPROVAL_BASE_URL") != "https://prs-reader.dstoc.wor
     raise SystemExit(
         "production approval URLs must use https://prs-reader.dstoc.workers.dev"
     )
-if production_vars.get("PRS_READER_WEB_ORIGIN") != "http://127.0.0.1:8000":
-    raise SystemExit("browser API CORS must allow only the documented loopback origin")
+if production_vars.get("PRS_READER_WEB_ORIGIN") != "https://prs-reader-web.dstoc.workers.dev":
+    raise SystemExit("production browser API CORS must allow only prs-reader-web")
 local_vars = config["env"].get("local", {}).get("vars", {})
 if local_vars.get("PRS_READER_WEB_ORIGIN") != "http://127.0.0.1:8000":
     raise SystemExit("local browser API CORS must allow only the documented loopback origin")

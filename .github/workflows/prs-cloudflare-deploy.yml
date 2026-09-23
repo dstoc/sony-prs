@@ -23,7 +23,7 @@ env:
 
 jobs:
   change-gate:
-    name: Check for Cloudflare deploy-relevant changes
+    name: Check for production deployment changes
     if: >-
       ${{ github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'push' &&
@@ -31,7 +31,8 @@ jobs:
       github.event.workflow_run.head_repository.full_name == github.repository }}
     runs-on: ubuntu-24.04
     outputs:
-      deploy: ${{ steps.change-detection.outputs.deploy }}
+      deploy_api: ${{ steps.change-detection.outputs.deploy_api }}
+      deploy_reader_web: ${{ steps.change-detection.outputs.deploy_reader_web }}
     steps:
       - name: Check out the tested main commit and history
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -90,11 +91,12 @@ jobs:
           python3 tools/prs-cloudflare-deploy-gate.py "${gate_args[@]}"
 
   deploy:
-    name: Build and deploy production Worker
+    name: Build and deploy production Workers
     needs: change-gate
     if: >-
       ${{ needs.change-gate.result == 'success' &&
-      needs.change-gate.outputs.deploy == 'true' &&
+      (needs.change-gate.outputs.deploy_api == 'true' ||
+      needs.change-gate.outputs.deploy_reader_web == 'true') &&
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'push' &&
       github.event.workflow_run.head_branch == 'main' &&
@@ -113,6 +115,7 @@ jobs:
           ref: ${{ github.event.workflow_run.head_sha }}
 
       - name: Read production build pins
+        if: needs.change-gate.outputs.deploy_api == 'true'
         id: build-pins
         shell: bash
         run: |
@@ -120,6 +123,7 @@ jobs:
           printf 'manifest_hash=%s\n' "$(tools/prs-t1-agent-build.sh print-manifest-hash)" >> "$GITHUB_OUTPUT"
 
       - name: Install the pinned Rust toolchain
+        if: needs.change-gate.outputs.deploy_api == 'true'
         run: |
           rustup toolchain install "${{ steps.build-pins.outputs.rust_toolchain }}" \
             --profile minimal \
@@ -129,6 +133,7 @@ jobs:
           rustup run "${{ steps.build-pins.outputs.rust_toolchain }}" cargo --version
 
       - name: Cache Worker Rust dependencies
+        if: needs.change-gate.outputs.deploy_api == 'true'
         uses: Swatinem/rust-cache@63fed3e2fecf6f7b51dc6f043341b79ef82a9ae7 # v2.9.2
         with:
           shared-key: prs-cloudflare-production
@@ -141,26 +146,84 @@ jobs:
           cache-bin: true
 
       - name: Install pinned worker-build
+        if: needs.change-gate.outputs.deploy_api == 'true'
         run: cargo +"${{ steps.build-pins.outputs.rust_toolchain }}" install worker-build --version "$WORKER_BUILD_VERSION" --locked
 
       - name: Install pinned Wrangler
         run: npm install --global "wrangler@$WRANGLER_VERSION"
 
       - name: Build the production Worker
+        if: needs.change-gate.outputs.deploy_api == 'true'
         working-directory: crates/prs-cloudflare
         run: worker-build --release
+
+      - name: Read browser reader build pins
+        if: needs.change-gate.outputs.deploy_reader_web == 'true'
+        id: reader-web-build-pins
+        run: tools/reader-web-build.sh print-github-actions >> "$GITHUB_OUTPUT"
+
+      - name: Install the pinned browser reader Rust toolchain
+        if: needs.change-gate.outputs.deploy_reader_web == 'true'
+        run: |
+          rustup toolchain install "${{ steps.reader-web-build-pins.outputs.rust_toolchain }}" \
+            --profile minimal \
+            --target "${{ steps.reader-web-build-pins.outputs.target }}" \
+            --no-self-update
+          rustup run "${{ steps.reader-web-build-pins.outputs.rust_toolchain }}" rustc --version
+          rustup run "${{ steps.reader-web-build-pins.outputs.rust_toolchain }}" cargo --version
+
+      - name: Cache browser reader Rust dependencies
+        if: needs.change-gate.outputs.deploy_reader_web == 'true'
+        uses: Swatinem/rust-cache@63fed3e2fecf6f7b51dc6f043341b79ef82a9ae7 # v2.9.2
+        with:
+          shared-key: prs-reader-web-production
+          add-job-id-key: false
+          cache-targets: true
+          cache-all-crates: true
+          cache-bin: true
+
+      - name: Install pinned wasm-bindgen CLI
+        if: needs.change-gate.outputs.deploy_reader_web == 'true'
+        run: |
+          cargo +"${{ steps.reader-web-build-pins.outputs.rust_toolchain }}" install \
+            wasm-bindgen-cli \
+            --version "${{ steps.reader-web-build-pins.outputs.wasm_bindgen_version }}" \
+            --locked
+          wasm-bindgen --version
+
+      - name: Build and validate the browser reader static assets
+        if: needs.change-gate.outputs.deploy_reader_web == 'true'
+        env:
+          RUSTUP_TOOLCHAIN: ${{ steps.reader-web-build-pins.outputs.rust_toolchain }}
+        run: |
+          tools/reader-web-build.sh build
+          tools/test-reader-web.sh target/reader-web
 
       - name: Enable sanitized Wrangler debug logging
         if: ${{ runner.debug == '1' }}
         shell: bash
         run: echo 'WRANGLER_LOG=debug' >> "$GITHUB_ENV"
 
+      - name: Deploy browser reader to the existing prs-reader-web Worker
+        if: needs.change-gate.outputs.deploy_reader_web == 'true'
+        env:
+          WRANGLER_LOG_SANITIZE: "true"
+        run: tools/prs-reader-web-deploy.sh --production
+
       - name: Upload and promote production version, then verify schema readiness
+        if: needs.change-gate.outputs.deploy_api == 'true'
         env:
           WRANGLER_LOG_SANITIZE: "true"
         run: tools/prs-cloudflare-deploy.sh --production
 
       - name: Verify deployed Worker health
+        if: needs.change-gate.outputs.deploy_api == 'true'
         run: |
           curl --fail-with-body --silent --show-error --max-time 10 \
             "${PRS_READER_URL%/}/health"
+
+      - name: Verify browser assets and exact-origin API CORS
+        if: >-
+          ${{ needs.change-gate.outputs.deploy_api == 'true' ||
+          needs.change-gate.outputs.deploy_reader_web == 'true' }}
+        run: tools/prs-reader-web-verify-production.sh

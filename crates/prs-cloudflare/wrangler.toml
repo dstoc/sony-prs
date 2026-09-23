@@ -49,7 +49,7 @@ binding = "CF_VERSION_METADATA"
 [env.production.vars]
 PRS_ENVIRONMENT = "production"
 PRS_APPROVAL_BASE_URL = "https://prs-reader.dstoc.workers.dev"
-PRS_READER_WEB_ORIGIN = "http://127.0.0.1:8000"
+PRS_READER_WEB_ORIGIN = "https://prs-reader-web.dstoc.workers.dev"
 
 [[env.production.d1_databases]]
 binding = "DB"

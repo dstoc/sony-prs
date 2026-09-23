@@ -105,6 +105,9 @@ jobs:
       - name: Test Cloudflare deployment change gate
         run: python3 tools/test-prs-cloudflare-deploy-gate.py
 
+      - name: Test browser reader production deployment
+        run: python3 tools/test-prs-reader-web-deployment.py
+
       - name: Test Cloudflare D1 migrations
         run: python3 tools/test-prs-cloudflare-migrations.py
 

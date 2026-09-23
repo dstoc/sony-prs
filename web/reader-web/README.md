@@ -52,14 +52,25 @@ the methods and request headers those calls need. It does not allow credential
 cookies or caller-supplied Cloudflare identity headers. `/a/*` is not covered
 by API CORS and remains protected by Cloudflare Access.
 
-The checked-in production origin is `http://127.0.0.1:8000`, for the loopback
-static server below. Keep the browser bound to that exact host and port. If the
-static reader is hosted elsewhere, set `PRS_READER_WEB_ORIGIN` to that exact
-origin and deploy the Worker configuration; do not use `*` or a reflected
-request origin. The browser API base defaults to
+The local Worker allows only `http://127.0.0.1:8000`, for the loopback server
+below. Production allows only `https://prs-reader-web.dstoc.workers.dev`, the
+separate static reader Worker. The production value is set in
+`[env.production.vars]` in the API Worker's Wrangler configuration. Deploy that
+configuration after changing the origin; do not use `*` or a reflected request
+origin. The browser API base defaults to
 `https://prs-reader.dstoc.workers.dev`; a host can override it with a
 `<meta name="prsync-api-base" content="https://…">` value when it has a
 different same-origin API deployment.
+
+## Production static site
+
+The production site is deployed to the existing `prs-reader-web` Worker from
+`target/reader-web/`. The deployment workflow builds and validates the output,
+deploys it with the pinned Wrangler version, then checks the HTML, JavaScript,
+CSS, WASM MIME type, and reader API CORS preflight. See the [protected GitHub
+deployment runbook](../../docs/prs-cloudflare-github-deployment.md) for the
+deployment gate, production environment, rollback, and manual authorization
+check.
 
 The build uses these pinned versions:
 

@@ -257,7 +257,9 @@ def assert_production_topology() -> None:
     assert production_vars["PRS_APPROVAL_BASE_URL"] == (
         "https://prs-reader.dstoc.workers.dev"
     )
-    assert production_vars["PRS_READER_WEB_ORIGIN"] == "http://127.0.0.1:8000"
+    assert production_vars["PRS_READER_WEB_ORIGIN"] == (
+        "https://prs-reader-web.dstoc.workers.dev"
+    )
     assert "reader.example.com" not in production_vars["PRS_APPROVAL_BASE_URL"]
     assert config["version_metadata"]["binding"] == "CF_VERSION_METADATA"
     for routing_key in ("route", "routes", "custom_domains"):
@@ -549,7 +551,8 @@ def assert_deployment_workflow_contract() -> None:
         "change-gate:",
         "python3 tools/prs-cloudflare-deploy-gate.py",
         "needs: change-gate",
-        "needs.change-gate.outputs.deploy == 'true'",
+        "needs.change-gate.outputs.deploy_api == 'true'",
+        "needs.change-gate.outputs.deploy_reader_web == 'true'",
         "gh api --paginate",
         "actions/workflows/ci.yml/runs?branch=main&status=completed",
         "environment:",
@@ -570,8 +573,8 @@ def assert_deployment_workflow_contract() -> None:
     assert workflow.count("ref: ${{ github.event.workflow_run.head_sha }}") == 2
 
     gate = DEPLOYMENT_GATE.read_text(encoding="utf-8")
-    assert "No Cloudflare deploy-relevant changes" in gate
-    assert "deploy={'true' if deploy else 'false'}" in gate
+    assert "deploy_api={'true' if deploy_api else 'false'}" in gate
+    assert "deploy_reader_web={'true' if deploy_reader_web else 'false'}" in gate
 
     assert "pull_request" not in workflow
     assert "wrangler d1" not in workflow
