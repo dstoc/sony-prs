@@ -343,10 +343,6 @@ impl<'de> Deserialize<'de> for BearerToken {
 pub struct ManifestFile {
     pub path: BundlePath,
     pub size: u64,
-    /// Lowercase SHA-256 of the file contents. Optional for compatibility
-    /// with older native bundles; browser sync requires this field.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sha256: Option<String>,
 }
 
 /// The generated manifest at the root of a PRSync bundle.
@@ -688,7 +684,6 @@ mod tests {
             files: vec![ManifestFile {
                 path: path("index.md"),
                 size: 42,
-                sha256: None,
             }],
         };
 
@@ -703,6 +698,18 @@ mod tests {
             .unwrap(),
             manifest
         );
+    }
+
+    #[test]
+    fn manifest_ignores_optional_legacy_sha256_metadata() {
+        let manifest: Manifest = serde_json::from_str(
+            r#"{"protocol_version":{"major":1,"minor":0},"bundle_format_version":1,"entry_point":"index.md","files":[{"path":"index.md","size":42,"sha256":"not-validated-legacy-metadata"}]}"#,
+        )
+        .unwrap();
+
+        assert_eq!(manifest.files[0].size, 42);
+        let serialized = serde_json::to_string(&manifest).unwrap();
+        assert!(!serialized.contains("sha256"));
     }
 
     #[test]

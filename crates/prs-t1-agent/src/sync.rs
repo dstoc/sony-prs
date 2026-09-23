@@ -1448,7 +1448,6 @@ mod tests {
             files: vec![prs_sync_protocol::ManifestFile {
                 path: prs_sync_protocol::BundlePath::new("index.md").unwrap(),
                 size: MAX_BUNDLE_SIZE + 1,
-                sha256: None,
             }],
         };
         let error = validate_manifest(&manifest).unwrap_err();

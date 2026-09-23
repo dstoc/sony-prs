@@ -39,7 +39,7 @@ or rejected session requires a new **Authorize & sync** click. An unchanged
 revision leaves the active reader alone. An empty inbox successfully clears the
 active reader. A new bundle replaces the active reader only after the shared
 Rust bundle validator has checked archive structure, the manifest, all file
-sizes, all SHA-256 values, and the entry document; a failed download or
+sizes, and the entry document; a failed download or
 validation keeps the active reader. The active-library label identifies the
 local directory or cloud inbox currently being shown.
 

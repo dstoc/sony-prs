@@ -14,9 +14,10 @@ const manifest = {
   files: [{
     path: "README.md",
     size: 5,
-    sha256: "a".repeat(64),
   }],
 };
+const optionalLegacyHashManifest = structuredClone(manifest);
+optionalLegacyHashManifest.files[0].sha256 = "ignored legacy hash";
 
 function jsonResponse(payload, status = 200) {
   return new Response(JSON.stringify(payload), {
@@ -87,7 +88,7 @@ let bundleRequests = 0;
 let manifests = [currentManifest(), jsonResponse({
   protocol_version: protocol,
   state: { kind: "not_modified", revision: 3, etag: "etag-3" },
-}), currentManifest(4), jsonResponse({
+}), currentManifest(4, optionalLegacyHashManifest), jsonResponse({
   protocol_version: protocol,
   state: { kind: "empty", revision: 5 },
 }), jsonResponse({
@@ -176,6 +177,7 @@ client.resetSnapshot();
 assert.equal(calls.some(({ options }) => options.body?.includes(secret)), true);
 const afterLocalLibrary = await client.syncOnce(async (value) => activated.push(value));
 assert.deepEqual(afterLocalLibrary, { kind: "replaced", revision: 4 });
+assert.equal(activated.at(-1).manifest.files[0].sha256, "ignored legacy hash");
 assert.equal(bundleRequests, 2);
 const cleared = await client.syncOnce(async (value) => activated.push(value));
 assert.deepEqual(cleared, { kind: "cleared", revision: 5 });
@@ -257,29 +259,36 @@ await assert.rejects(
   /missing or expired/u,
 );
 
-const badHash = structuredClone(manifest);
-badHash.files[0].sha256 = "invalid";
-const boundedCalls = [];
-const boundedClient = createPrsyncClient({
-  fetchImpl: async (url) => {
-    const path = new URL(url).pathname;
-    boundedCalls.push(path);
-    if (path.endsWith("/authorization/reader")) return authorizationStart();
-    if (path.endsWith("/authorization/poll")) return approved();
-    if (path.endsWith("/reader/manifest")) return currentManifest(4, badHash);
-    if (path.endsWith("/reader/bundle")) return bundleResponse();
-    throw new Error(`unexpected request ${path}`);
-  },
-  nowSeconds: () => now,
-});
-await boundedClient.authorize();
-let activatedOnInvalidManifest = false;
-await assert.rejects(
-  boundedClient.syncOnce(async () => { activatedOnInvalidManifest = true; }),
-  /valid file size or SHA-256/u,
-);
-assert.equal(activatedOnInvalidManifest, false);
-assert.equal(boundedCalls.some((path) => path.endsWith("/reader/bundle")), false);
+for (const malformedFile of [
+  ({ path: "README.md" }),
+  ({ path: "README.md", size: "5" }),
+  ({ path: "README.md", size: -1 }),
+  ({ path: "README.md", size: Number.MAX_SAFE_INTEGER + 1 }),
+]) {
+  const malformedManifest = structuredClone(manifest);
+  malformedManifest.files[0] = malformedFile;
+  const boundedCalls = [];
+  const boundedClient = createPrsyncClient({
+    fetchImpl: async (url) => {
+      const path = new URL(url).pathname;
+      boundedCalls.push(path);
+      if (path.endsWith("/authorization/reader")) return authorizationStart();
+      if (path.endsWith("/authorization/poll")) return approved();
+      if (path.endsWith("/reader/manifest")) return currentManifest(4, malformedManifest);
+      if (path.endsWith("/reader/bundle")) return bundleResponse();
+      throw new Error(`unexpected request ${path}`);
+    },
+    nowSeconds: () => now,
+  });
+  await boundedClient.authorize();
+  let activatedOnInvalidManifest = false;
+  await assert.rejects(
+    boundedClient.syncOnce(async () => { activatedOnInvalidManifest = true; }),
+    /missing or has an invalid file size/u,
+  );
+  assert.equal(activatedOnInvalidManifest, false);
+  assert.equal(boundedCalls.some((path) => path.endsWith("/reader/bundle")), false);
+}
 
 const oversizedClient = createPrsyncClient({
   fetchImpl: async (url) => {

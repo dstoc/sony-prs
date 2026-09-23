@@ -315,8 +315,7 @@ The bundle manifest identifies:
 - bundle format version;
 - Markdown entry point;
 - contained files;
-- sizes; and
-- optional per-file lowercase SHA-256 digests (required by browser sync).
+- file sizes.
 
 Relative links within the bundle should continue to work using normal filesystem semantics.
 
@@ -345,11 +344,10 @@ Extraction should be bounded and preferably streaming.
 
 The PRS-T1 must not need to hold an entire bundle in RAM before extracting it.
 
-Production HTTPS provides transport integrity. New bundles include per-file
-SHA-256 digests, and the shared validator checks any digest that is present.
-Browser sync requires a digest for every file and fails closed on legacy
-manifests without hashes. Existing native readers continue to accept legacy
-bundles that omit the optional hash field.
+Production HTTPS provides transport integrity. Readers validate each file's
+declared size against its archive entry and enforce the archive and extraction
+limits. Older manifests may contain per-file `sha256` metadata. Readers ignore
+that legacy field, and new manifests omit it.
 
 ## Inbox model
 

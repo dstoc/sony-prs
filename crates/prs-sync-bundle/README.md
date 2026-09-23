@@ -10,19 +10,17 @@ The public API provides:
   explicit list of regular files;
 - common-parent stripping that preserves the remaining bundle-relative paths;
 - UStar-compatible bundle paths;
-- per-file manifest sizes and SHA-256 digests plus the shared 16 MiB encoded
-  archive limit;
+- per-file manifest sizes plus the shared 16 MiB encoded archive limit;
 - streaming validation without retaining the archive in memory;
 - staged extraction that publishes files only after the complete archive is
   valid;
-- `extract_to_memory` for browser builds, which requires and checks a digest
-  for every file before returning any content.
+- `extract_to_memory` for browser builds, which returns content only after the
+  complete archive passes validation.
 
 Validation rejects unsafe relative paths, duplicate paths, unsupported
-manifest versions, manifest size and hash mismatches, oversized archives, and
-every tar entry type except regular files. Legacy manifests may omit hashes for
-native compatibility; browser extraction requires them. The crate does not
-discover linked files.
+manifest versions, manifest size mismatches, oversized archives, and every tar
+entry type except regular files. Older manifests may contain `sha256` metadata,
+which readers ignore. The crate does not discover linked files.
 
 Run the focused checks from the repository root:
 

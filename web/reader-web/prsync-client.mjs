@@ -295,9 +295,11 @@ function validateManifestBounds(manifest) {
   }
   let total = 0;
   for (const file of manifest.files) {
-    if (typeof file?.path !== "string" || !Number.isSafeInteger(file.size) || file.size < 0
-      || typeof file.sha256 !== "string" || !/^[0-9a-f]{64}$/u.test(file.sha256)) {
-      throw new PrsyncError("PRSync manifest is missing a valid file size or SHA-256.");
+    if (typeof file?.path !== "string") {
+      throw new PrsyncError("PRSync manifest contains an invalid file path.");
+    }
+    if (!Number.isSafeInteger(file.size) || file.size < 0) {
+      throw new PrsyncError("PRSync manifest is missing or has an invalid file size.");
     }
     total += file.size;
     if (total > MAX_BUNDLE_BYTES) {

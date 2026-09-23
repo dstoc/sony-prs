@@ -295,9 +295,9 @@ pub fn load_directory(files: Array, entry_point: String) -> Result<BrowserReader
     Ok(BrowserReader { surface })
 }
 
-/// Validate a downloaded PRSync tar archive with the shared bundle validator,
-/// require hashes for every file, and build a candidate reader in memory.
-/// JavaScript activates the returned reader only after this completes.
+/// Validate a downloaded PRSync tar archive with the shared bundle validator
+/// and build a candidate reader in memory. JavaScript activates the returned
+/// reader only after this completes.
 #[wasm_bindgen]
 pub fn load_sync_bundle(
     bundle: Vec<u8>,
@@ -1044,9 +1044,7 @@ mod tests {
         let mut builder = prs_sync_bundle::BundleBuilder::new(root.join("README.md"));
         builder.add_file(root.join("assets/observatory.png"));
         let mut archive = Vec::new();
-        let manifest = builder
-            .write(&mut archive)
-            .expect("build hashed test bundle");
+        let manifest = builder.write(&mut archive).expect("build test bundle");
         let reader = load_sync_bundle(
             archive,
             serde_json::to_string(&manifest).expect("serialize expected API manifest"),
