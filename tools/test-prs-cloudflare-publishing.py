@@ -251,6 +251,7 @@ def assert_production_topology() -> None:
     production = config["env"]["production"]
     assert production["name"] == "prs-reader"
     assert production["workers_dev"] is True
+    assert production["version_metadata"]["binding"] == "CF_VERSION_METADATA"
     production_vars = production["vars"]
     assert production_vars["PRS_ENVIRONMENT"] == "production"
     assert production_vars["PRS_APPROVAL_BASE_URL"] == (
