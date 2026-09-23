@@ -343,6 +343,10 @@ impl<'de> Deserialize<'de> for BearerToken {
 pub struct ManifestFile {
     pub path: BundlePath,
     pub size: u64,
+    /// Lowercase SHA-256 of the file contents. Optional for compatibility
+    /// with older native bundles; browser sync requires this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
 }
 
 /// The generated manifest at the root of a PRSync bundle.
@@ -684,6 +688,7 @@ mod tests {
             files: vec![ManifestFile {
                 path: path("index.md"),
                 size: 42,
+                sha256: None,
             }],
         };
 

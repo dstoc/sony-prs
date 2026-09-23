@@ -9,7 +9,20 @@
   <body>
     <main class="simulator">
       <h1>PRS-T1 reader</h1>
-      <p id="status" role="status">Open a directory to begin.</p>
+      <p id="status" role="status">Open a directory or start cloud sync.</p>
+      <p id="active-library">Active library: none</p>
+      <section class="sync-panel" aria-label="Cloud library sync">
+        <div class="sync-actions">
+          <button id="authorize-sync" type="button" disabled>Authorize &amp; sync</button>
+          <button id="sync-now" type="button" disabled>Sync now</button>
+        </div>
+        <a id="approval-link" href="#" target="_blank" rel="noopener noreferrer" hidden>
+          Open reader approval page
+        </a>
+        <p id="sync-status" role="status" aria-live="polite">
+          Cloud sync runs only after you start it.
+        </p>
+      </section>
       <section id="reader-stage" class="reader-stage" aria-label="Reader" hidden>
         <div class="reader-frame">
           <canvas

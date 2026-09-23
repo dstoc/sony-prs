@@ -1384,6 +1384,9 @@ dependencies = [
  "js-sys",
  "notosans",
  "prs-markdown",
+ "prs-sync-bundle",
+ "prs-sync-protocol",
+ "serde_json",
  "wasm-bindgen",
 ]
 
@@ -1404,6 +1407,7 @@ version = "0.1.0"
 dependencies = [
  "prs-sync-protocol",
  "serde_json",
+ "sha2",
  "tar",
  "tempfile",
 ]

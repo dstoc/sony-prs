@@ -9,6 +9,10 @@ grep -Fq 'js-sys = "=0.3.105"' "$repo_root/web/reader-web/Cargo.toml"
 grep -Fq 'type="module" src="./main.js"' "$repo_root/web/reader-web/index.html"
 grep -Fq 'id="reader-stage"' "$repo_root/web/reader-web/index.html"
 grep -Fq 'id="toggle-browser-fullscreen"' "$repo_root/web/reader-web/index.html"
+grep -Fq 'id="authorize-sync"' "$repo_root/web/reader-web/index.html"
+grep -Fq 'id="sync-now"' "$repo_root/web/reader-web/index.html"
+grep -Fq 'id="approval-link"' "$repo_root/web/reader-web/index.html"
+grep -Fq 'target="_blank" rel="noopener noreferrer"' "$repo_root/web/reader-web/index.html"
 if grep -Eq 'help|entry-point|load-demo|Load demo|keyboard shortcuts|File System Access API' "$repo_root/web/reader-web/index.html"; then
   printf '%s\n' 'index.html must keep explanatory and demo controls out of the main shell' >&2
   exit 1
@@ -28,7 +32,8 @@ grep -Fq '.reader-stage:fullscreen' "$repo_root/web/reader-web/style.css"
 grep -Fq 'height: 100dvh;' "$repo_root/web/reader-web/style.css"
 grep -Fq 'max-height: 100%;' "$repo_root/web/reader-web/style.css"
 grep -Fq 'import init,' "$repo_root/web/reader-web/main.js"
-grep -Fq 'import init, { load_directory }' "$repo_root/web/reader-web/main.js"
+grep -Fq 'load_directory, load_sync_bundle' "$repo_root/web/reader-web/main.js"
+grep -Fq 'from "./prsync-client.mjs"' "$repo_root/web/reader-web/main.js"
 grep -Fq 'from "./pkg/prs_reader_web.js"' "$repo_root/web/reader-web/main.js"
 grep -Fq 'showDirectoryPicker' "$repo_root/web/reader-web/directory-library.js"
 grep -Fq 'selectEntryPoint(files)' "$repo_root/web/reader-web/directory-library.js"
@@ -45,6 +50,23 @@ grep -Fq 'createBrowserFullscreenController' "$repo_root/web/reader-web/main.js"
 grep -Fq 'from "./fullscreen.mjs"' "$repo_root/web/reader-web/main.js"
 grep -Fq 'pointer_up(point.x, point.y)' "$repo_root/web/reader-web/main.js"
 grep -Fq 'reader.pointer_up(point.x, point.y)' "$repo_root/web/reader-web/main.js"
+grep -Fq 'await syncClient.authorize()' "$repo_root/web/reader-web/main.js"
+grep -Fq 'syncClient.syncOnce(activateSyncedLibrary)' "$repo_root/web/reader-web/main.js"
+grep -Fq 'pub fn load_sync_bundle' "$repo_root/web/reader-web/src/lib.rs"
+grep -Fq 'prs_sync_bundle::extract_to_memory' "$repo_root/web/reader-web/src/lib.rs"
+grep -Fq 'credentials: "omit"' "$repo_root/web/reader-web/prsync-client.mjs"
+grep -Fq 'polling_secret: pollingSecret' "$repo_root/web/reader-web/prsync-client.mjs"
+grep -Fq 'url.search || url.hash' "$repo_root/web/reader-web/prsync-client.mjs"
+if rg -n 'localStorage|sessionStorage|indexedDB|console\.(log|debug|info)' \
+  "$repo_root/web/reader-web/main.js" "$repo_root/web/reader-web/prsync-client.mjs"; then
+  printf '%s\n' 'browser sync must keep credentials in memory and must not log secrets' >&2
+  exit 1
+fi
+if rg -n 'setInterval|serviceWorker|navigator\.serviceWorker' \
+  "$repo_root/web/reader-web/main.js" "$repo_root/web/reader-web/prsync-client.mjs"; then
+  printf '%s\n' 'browser sync must not poll or run through a service worker' >&2
+  exit 1
+fi
 grep -Fq 'toggle_fullscreen' "$repo_root/web/reader-web/src/lib.rs"
 grep -Fq 'data-command="previous"' "$repo_root/web/reader-web/index.html"
 grep -Fq 'data-command="next"' "$repo_root/web/reader-web/index.html"
@@ -71,17 +93,21 @@ fi
 node "$repo_root/tools/test-reader-web-input.mjs"
 node "$repo_root/tools/test-reader-web-directory.mjs"
 node "$repo_root/tools/test-reader-web-fullscreen.mjs"
+node "$repo_root/tools/test-reader-web-sync.mjs"
+cargo test --manifest-path "$repo_root/web/reader-web/Cargo.toml"
 
 test -f "$output_dir/index.html"
 test -f "$output_dir/directory-library.js"
 test -f "$output_dir/main.js"
 test -f "$output_dir/input.mjs"
 test -f "$output_dir/fullscreen.mjs"
+test -f "$output_dir/prsync-client.mjs"
 test -f "$output_dir/style.css"
 test -s "$output_dir/pkg/prs_reader_web.js"
 test -s "$output_dir/pkg/prs_reader_web_bg.wasm"
 grep -Fq 'BrowserReader' "$output_dir/pkg/prs_reader_web.js"
 grep -Fq 'load_directory' "$output_dir/pkg/prs_reader_web.js"
+grep -Fq 'load_sync_bundle' "$output_dir/pkg/prs_reader_web.js"
 grep -Fq 'prs_reader_web_bg.wasm' "$output_dir/pkg/prs_reader_web.js"
 
 expected_files=$(printf '%s\n' \
@@ -90,6 +116,7 @@ expected_files=$(printf '%s\n' \
   'main.js' \
   'input.mjs' \
   'fullscreen.mjs' \
+  'prsync-client.mjs' \
   'style.css' \
   'pkg/prs_reader_web.js' \
   'pkg/prs_reader_web_bg.wasm' | sort)
@@ -106,6 +133,7 @@ for relative_path in \
   main.js \
   input.mjs \
   fullscreen.mjs \
+  prsync-client.mjs \
   style.css; do
   cmp -- "$repo_root/web/reader-web/$relative_path" "$output_dir/$relative_path"
 done

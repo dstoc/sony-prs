@@ -79,11 +79,13 @@ build() {
     web/reader-web/index.html web/reader-web/main.js \
     web/reader-web/input.mjs \
     web/reader-web/fullscreen.mjs \
+    web/reader-web/prsync-client.mjs \
     web/reader-web/style.css "$OUTPUT_DIR/"
   test -s "$OUTPUT_DIR/index.html"
   test -s "$OUTPUT_DIR/directory-library.js"
   test -s "$OUTPUT_DIR/main.js"
   test -s "$OUTPUT_DIR/fullscreen.mjs"
+  test -s "$OUTPUT_DIR/prsync-client.mjs"
   test -s "$OUTPUT_DIR/style.css"
   test -s "$OUTPUT_DIR/pkg/prs_reader_web.js"
   test -s "$OUTPUT_DIR/pkg/prs_reader_web_bg.wasm"

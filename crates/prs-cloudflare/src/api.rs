@@ -164,6 +164,8 @@ pub fn register(router: Router<'static, ()>) -> Router<'static, ()> {
         .post_async("/api/v1/authorization/sender", create_sender)
         .post_async("/api/v1/authorization/reader", create_reader)
         .post_async("/api/v1/authorization/poll", poll_authorization)
+        .options_async("/api/v1/authorization/reader", reader_preflight)
+        .options_async("/api/v1/authorization/poll", reader_preflight)
         .get_async("/api/v1/authorization/:request_id", authorization_status)
         .put_async("/api/v1/sender/bundle", push_bundle)
         .delete_async("/api/v1/sender/bundle", clear_bundle)
@@ -171,7 +173,9 @@ pub fn register(router: Router<'static, ()>) -> Router<'static, ()> {
         .delete_async("/api/v1/sender/credentials", revoke_credentials)
         .delete_async("/api/v1/sender/credentials/:name", revoke_named_credential)
         .get_async("/api/v1/reader/manifest", reader_manifest)
-        .get_async("/api/v1/reader/bundle", reader_bundle);
+        .get_async("/api/v1/reader/bundle", reader_bundle)
+        .options_async("/api/v1/reader/manifest", reader_preflight)
+        .options_async("/api/v1/reader/bundle", reader_preflight);
 
     #[cfg(feature = "local-test")]
     let router = router.post_async("/__test/maintenance", test_maintenance);
@@ -288,7 +292,8 @@ async fn create_sender_inner(request: &mut Request, env: &Env) -> ApiResult<Auth
 }
 
 async fn create_reader(mut request: Request, context: RouteContext<()>) -> Result<Response> {
-    finish(create_reader_inner(&mut request, &context.env).await)
+    let response = finish(create_reader_inner(&mut request, &context.env).await)?;
+    with_reader_browser_cors(&request, &context.env, response)
 }
 
 async fn create_reader_inner(request: &mut Request, env: &Env) -> ApiResult<AuthorizationStart> {
@@ -304,7 +309,8 @@ async fn create_reader_inner(request: &mut Request, env: &Env) -> ApiResult<Auth
 }
 
 async fn poll_authorization(mut request: Request, context: RouteContext<()>) -> Result<Response> {
-    finish(poll_authorization_inner(&mut request, &context.env).await)
+    let response = finish(poll_authorization_inner(&mut request, &context.env).await)?;
+    with_reader_browser_cors(&request, &context.env, response)
 }
 
 async fn poll_authorization_inner(
@@ -474,13 +480,14 @@ async fn revoke_credentials_inner(
 }
 
 async fn reader_manifest(request: Request, context: RouteContext<()>) -> Result<Response> {
-    match reader_manifest_inner(&request, &context.env).await {
+    let response = match reader_manifest_inner(&request, &context.env).await {
         Ok((response, revision, etag)) => match manifest_response(response, revision, etag) {
-            Ok(response) => Ok(response),
-            Err(error) => error_response(error),
+            Ok(response) => response,
+            Err(error) => error_response(error)?,
         },
-        Err(error) => error_response(error),
-    }
+        Err(error) => error_response(error)?,
+    };
+    with_reader_browser_cors(&request, &context.env, response)
 }
 
 fn manifest_response(
@@ -549,10 +556,128 @@ async fn reader_manifest_inner(
 }
 
 async fn reader_bundle(request: Request, context: RouteContext<()>) -> Result<Response> {
-    match reader_bundle_inner(&request, &context.env).await {
-        Ok(response) => Ok(response),
-        Err(error) => error_response(error),
+    let response = match reader_bundle_inner(&request, &context.env).await {
+        Ok(response) => response,
+        Err(error) => error_response(error)?,
+    };
+    with_reader_browser_cors(&request, &context.env, response)
+}
+
+/// Only the four reader-browser API routes register this preflight handler.
+/// The `/a/*` human approval flow deliberately remains outside API CORS.
+async fn reader_preflight(request: Request, context: RouteContext<()>) -> Result<Response> {
+    let Some(origin) = request.headers().get("Origin")? else {
+        return Response::error("CORS origin required", 403);
+    };
+    if !reader_browser_origin_allowed(&origin, &context.env) {
+        return Response::error("CORS origin is not allowed", 403);
     }
+    let path = request.url()?.path().to_owned();
+    let method = request
+        .headers()
+        .get("Access-Control-Request-Method")?
+        .unwrap_or_default();
+    let Some((expected_method, allowed_headers)) = reader_preflight_contract(&path) else {
+        return Response::error("CORS route is not allowed", 403);
+    };
+    if method != expected_method {
+        return Response::error("CORS method is not allowed", 403);
+    }
+    let requested_headers = request
+        .headers()
+        .get("Access-Control-Request-Headers")?
+        .unwrap_or_default();
+    if !reader_browser_headers_allowed(&requested_headers, allowed_headers) {
+        return Response::error("CORS request headers are not allowed", 403);
+    }
+
+    let mut response = ResponseBuilder::new().with_status(204).empty();
+    let headers = response.headers_mut();
+    headers.set("Access-Control-Allow-Origin", &origin)?;
+    headers.set("Access-Control-Allow-Methods", &method)?;
+    headers.set("Access-Control-Allow-Headers", allowed_headers)?;
+    headers.set("Access-Control-Max-Age", "300")?;
+    headers.set(
+        "Vary",
+        "Origin, Access-Control-Request-Method, Access-Control-Request-Headers",
+    )?;
+    Ok(response)
+}
+
+fn with_reader_browser_cors(
+    request: &Request,
+    env: &Env,
+    mut response: Response,
+) -> Result<Response> {
+    response.headers_mut().set("Vary", "Origin")?;
+    response.headers_mut().set("Cache-Control", "no-store")?;
+    if let Some(origin) = request.headers().get("Origin")? {
+        if reader_browser_origin_allowed(&origin, env) {
+            response
+                .headers_mut()
+                .set("Access-Control-Allow-Origin", &origin)?;
+            response
+                .headers_mut()
+                .set("Access-Control-Expose-Headers", "ETag, X-PRSync-Revision")?;
+        }
+    }
+    Ok(response)
+}
+
+fn reader_browser_origin_allowed(origin: &str, env: &Env) -> bool {
+    let Some(configured) = env
+        .var("PRS_READER_WEB_ORIGIN")
+        .ok()
+        .map(|value| value.to_string())
+    else {
+        return false;
+    };
+    configured_reader_origin_allowed(origin, &configured)
+}
+
+fn configured_reader_origin_allowed(origin: &str, configured: &str) -> bool {
+    valid_origin(configured) && origin == configured
+}
+
+fn valid_origin(origin: &str) -> bool {
+    let Some(authority) = origin
+        .strip_prefix("https://")
+        .or_else(|| origin.strip_prefix("http://"))
+    else {
+        return false;
+    };
+    !authority.is_empty()
+        && !authority.contains('/')
+        && !authority.contains('?')
+        && !authority.contains('#')
+        && !authority.contains('@')
+        && !authority.chars().any(char::is_whitespace)
+}
+
+fn reader_preflight_contract(path: &str) -> Option<(&'static str, &'static str)> {
+    match path {
+        "/api/v1/authorization/reader" | "/api/v1/authorization/poll" => {
+            Some(("POST", "Content-Type"))
+        }
+        "/api/v1/reader/manifest" => Some(("GET", "Authorization, If-Revision")),
+        "/api/v1/reader/bundle" => Some(("GET", "Authorization")),
+        _ => None,
+    }
+}
+
+fn reader_browser_headers_allowed(headers: &str, allowed: &str) -> bool {
+    let allowed = allowed
+        .split(',')
+        .map(|header| header.trim().to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    headers
+        .split(',')
+        .filter(|header| !header.trim().is_empty())
+        .all(|header| {
+            allowed
+                .iter()
+                .any(|item| item == &header.trim().to_ascii_lowercase())
+        })
 }
 
 async fn reader_bundle_inner(request: &Request, env: &Env) -> ApiResult<Response> {
@@ -964,6 +1089,54 @@ mod tests {
             assert!(path.starts_with("/api/v1/"));
         }
         assert_ne!("/api/v1/sender/bundle", "/api/v1/reader/bundle");
+    }
+
+    #[test]
+    fn browser_cors_requires_one_exact_http_origin_and_reader_headers() {
+        let allowed = "http://127.0.0.1:8000";
+        assert!(configured_reader_origin_allowed(allowed, allowed));
+        assert!(!configured_reader_origin_allowed(
+            "http://localhost:8000",
+            allowed
+        ));
+        assert!(!configured_reader_origin_allowed(
+            "https://127.0.0.1:8000",
+            allowed
+        ));
+        assert!(!configured_reader_origin_allowed(allowed, "*"));
+        assert!(!configured_reader_origin_allowed(
+            allowed,
+            "http://127.0.0.1:8000/reader"
+        ));
+        let manifest_headers = reader_preflight_contract("/api/v1/reader/manifest")
+            .expect("manifest route is allowed")
+            .1;
+        assert!(reader_browser_headers_allowed(
+            "authorization, if-revision",
+            manifest_headers
+        ));
+        assert!(!reader_browser_headers_allowed(
+            "authorization, cf-access-authenticated-user-email",
+            "Authorization"
+        ));
+        assert_eq!(
+            reader_preflight_contract("/a/auth-1"),
+            None,
+            "human approval routes must not enter API CORS"
+        );
+        assert_eq!(
+            reader_preflight_contract("/api/v1/sender/bundle"),
+            None,
+            "sender routes must not enter reader API CORS"
+        );
+        assert_eq!(
+            reader_preflight_contract("/api/v1/reader/bundle"),
+            Some(("GET", "Authorization"))
+        );
+        assert!(!reader_browser_headers_allowed(
+            "content-type",
+            "Authorization"
+        ));
     }
 
     #[test]

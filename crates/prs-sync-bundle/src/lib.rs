@@ -16,6 +16,7 @@ use prs_sync_protocol::{
     BundlePath, Manifest, ManifestFile, ProtocolVersion, CURRENT_BUNDLE_FORMAT_VERSION,
     CURRENT_PROTOCOL_VERSION, MAX_BUNDLE_SIZE,
 };
+use sha2::{Digest, Sha256};
 use tar::{Archive, Builder, EntryType, Header};
 use tempfile::Builder as TempDirBuilder;
 
@@ -43,6 +44,15 @@ pub struct BundleSource {
     pub bundle_path: BundlePath,
     /// The source file size in bytes.
     pub size: u64,
+    /// Lowercase SHA-256 captured while collecting this source.
+    pub sha256: String,
+}
+
+/// A completely validated bundle represented in memory for browser WASM.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InMemoryBundle {
+    pub manifest: Manifest,
+    pub files: Vec<(BundlePath, Vec<u8>)>,
 }
 
 /// Builds a bundle from one Markdown entry point and explicitly selected files.
@@ -146,7 +156,15 @@ impl ValidatedBundle {
 
 /// Validates a complete uncompressed tar stream without extracting it.
 pub fn validate<R: Read>(reader: R) -> Result<ValidatedBundle, BundleError> {
-    process_archive(reader, None, None).map(|manifest| ValidatedBundle { manifest })
+    process_archive(reader, None, None, None, false).map(|manifest| ValidatedBundle { manifest })
+}
+
+/// Validate and collect a bounded bundle in memory, requiring a SHA-256 for
+/// every file. Returned bytes are safe to activate only after this succeeds.
+pub fn extract_to_memory<R: Read>(reader: R) -> Result<InMemoryBundle, BundleError> {
+    let mut files = Vec::new();
+    let manifest = process_archive(reader, None, None, Some(&mut files), true)?;
+    Ok(InMemoryBundle { manifest, files })
 }
 
 /// Validates and extracts a complete bundle stream.
@@ -201,7 +219,7 @@ fn extract_internal<R: Read>(
         .prefix(".prs-sync-bundle-")
         .tempdir_in(parent)
         .map_err(BundleError::Io)?;
-    let manifest = process_archive(reader, Some(staging.path()), staging_limit)?;
+    let manifest = process_archive(reader, Some(staging.path()), staging_limit, None, false)?;
 
     if fs::symlink_metadata(destination).is_ok() {
         fs::remove_dir(destination).map_err(BundleError::Io)?;
@@ -259,6 +277,12 @@ pub enum BundleError {
         expected: u64,
         actual: u64,
     },
+    /// A browser bundle omitted a required integrity hash.
+    MissingFileHash(BundlePath),
+    /// A manifest hash is not 64 lowercase hexadecimal characters.
+    InvalidFileHash(BundlePath),
+    /// A regular archive entry does not match its manifest SHA-256.
+    FileHashMismatch { path: BundlePath },
     /// The sum of manifest file sizes exceeds the bounded protocol limit.
     ExtractedSizeTooLarge { limit: u64 },
     /// The raw manifest and extracted files exceed a caller-provided staging limit.
@@ -343,6 +367,21 @@ impl fmt::Display for BundleError {
                 formatter,
                 "archive entry {path:?} declares {actual} bytes, expected {expected}"
             ),
+            Self::MissingFileHash(path) => {
+                write!(formatter, "manifest has no SHA-256 for file {path:?}")
+            }
+            Self::InvalidFileHash(path) => {
+                write!(
+                    formatter,
+                    "manifest has an invalid SHA-256 for file {path:?}"
+                )
+            }
+            Self::FileHashMismatch { path } => {
+                write!(
+                    formatter,
+                    "archive file SHA-256 does not match manifest: {path:?}"
+                )
+            }
             Self::ExtractedSizeTooLarge { limit } => {
                 write!(formatter, "extracted bundle size exceeds {limit} bytes")
             }
@@ -398,6 +437,7 @@ fn collect_sources(
     let common_parent = common_parent(&paths)?;
     let mut sources = Vec::with_capacity(paths.len());
     let mut seen = HashMap::with_capacity(paths.len());
+    let mut total_size = 0u64;
 
     for source in paths {
         let metadata = fs::symlink_metadata(source).map_err(BundleError::Io)?;
@@ -406,6 +446,17 @@ fn collect_sources(
                 io::ErrorKind::InvalidInput,
                 format!("bundle source is not a regular file: {}", source.display()),
             )));
+        }
+        total_size =
+            total_size
+                .checked_add(metadata.len())
+                .ok_or(BundleError::ExtractedSizeTooLarge {
+                    limit: MAX_BUNDLE_SIZE,
+                })?;
+        if total_size > MAX_BUNDLE_SIZE {
+            return Err(BundleError::ExtractedSizeTooLarge {
+                limit: MAX_BUNDLE_SIZE,
+            });
         }
         let relative = if common_parent.as_os_str().is_empty() {
             source
@@ -427,6 +478,7 @@ fn collect_sources(
             source: source.to_path_buf(),
             bundle_path,
             size: metadata.len(),
+            sha256: hash_source(source, metadata.len())?,
         });
     }
 
@@ -520,6 +572,7 @@ fn make_manifest(sources: &[BundleSource]) -> Result<Manifest, BundleError> {
         .map(|source| ManifestFile {
             path: source.bundle_path.clone(),
             size: source.size,
+            sha256: Some(source.sha256.clone()),
         })
         .collect();
     Ok(Manifest {
@@ -550,7 +603,7 @@ fn append_source<W: Write>(
     source: &BundleSource,
 ) -> Result<(), BundleError> {
     let mut file = File::open(&source.source).map_err(BundleError::Io)?;
-    let mut bounded_file = (&mut file).take(source.size);
+    let mut bounded_file = HashingReader::new((&mut file).take(source.size));
     let mut header = Header::new_ustar();
     header.set_size(source.size);
     header.set_mode(0o644);
@@ -559,7 +612,7 @@ fn append_source<W: Write>(
     archive
         .append_data(&mut header, source.bundle_path.as_str(), &mut bounded_file)
         .map_err(BundleError::Io)?;
-    if bounded_file.limit() != 0 {
+    if bounded_file.inner.limit() != 0 {
         return Err(BundleError::Io(io::Error::new(
             io::ErrorKind::UnexpectedEof,
             format!(
@@ -568,6 +621,11 @@ fn append_source<W: Write>(
             ),
         )));
     }
+    if hex_digest(&bounded_file.finish()) != source.sha256 {
+        return Err(BundleError::FileHashMismatch {
+            path: source.bundle_path.clone(),
+        });
+    }
     Ok(())
 }
 
@@ -575,13 +633,15 @@ fn process_archive<R: Read>(
     reader: R,
     destination: Option<&Path>,
     staging_limit: Option<u64>,
+    mut memory_files: Option<&mut Vec<(BundlePath, Vec<u8>)>>,
+    require_hashes: bool,
 ) -> Result<Manifest, BundleError> {
     let mut counted = CountingReader::new(reader, MAX_ARCHIVE_SIZE);
     let (manifest, expected, seen) = {
         let mut archive = Archive::new(&mut counted);
         let entries = archive.entries().map_err(BundleError::Io)?.raw(true);
         let mut manifest: Option<Manifest> = None;
-        let mut expected: HashMap<BundlePath, u64> = HashMap::new();
+        let mut expected: HashMap<BundlePath, ManifestFile> = HashMap::new();
         let mut seen = HashMap::new();
         let mut extracted_size = 0u64;
         let mut staged_size = 0u64;
@@ -631,10 +691,10 @@ fn process_archive<R: Read>(
                     "manifest.json must be the first archive entry".into(),
                 ));
             }
-            let expected_size = expected
+            let expected_file = expected
                 .get(&path)
-                .copied()
                 .ok_or_else(|| BundleError::UnexpectedArchivePath(path.clone()))?;
+            let expected_size = expected_file.size;
             let declared_size = entry.header().size().map_err(BundleError::Io)?;
             if declared_size != expected_size {
                 return Err(BundleError::ManifestSizeMismatch {
@@ -661,15 +721,21 @@ fn process_archive<R: Read>(
                     limit: MAX_BUNDLE_SIZE,
                 });
             }
-            if let Some(destination) = destination {
+            let digest = if let Some(memory_files) = memory_files.as_deref_mut() {
+                let bytes = read_entry(&mut entry, &path)?;
+                let digest = Sha256::digest(&bytes).to_vec();
+                memory_files.push((path.clone(), bytes));
+                digest
+            } else if let Some(destination) = destination {
                 let staged = staged_path(destination, &path)?;
                 let mut output = OpenOptions::new()
                     .write(true)
                     .create_new(true)
                     .open(staged)
                     .map_err(BundleError::Io)?;
-                let actual = io::copy(&mut entry, &mut output).map_err(BundleError::Io)?;
-                output.flush().map_err(BundleError::Io)?;
+                let mut hashing = HashingWriter::new(&mut output);
+                let actual = io::copy(&mut entry, &mut hashing).map_err(BundleError::Io)?;
+                hashing.flush().map_err(BundleError::Io)?;
                 if actual != declared_size {
                     return Err(BundleError::EntrySizeMismatch {
                         path,
@@ -677,8 +743,10 @@ fn process_archive<R: Read>(
                         actual,
                     });
                 }
+                hashing.finish()
             } else {
-                let actual = io::copy(&mut entry, &mut io::sink()).map_err(BundleError::Io)?;
+                let mut hashing = HashingWriter::new(io::sink());
+                let actual = io::copy(&mut entry, &mut hashing).map_err(BundleError::Io)?;
                 if actual != declared_size {
                     return Err(BundleError::EntrySizeMismatch {
                         path,
@@ -686,7 +754,14 @@ fn process_archive<R: Read>(
                         actual,
                     });
                 }
-            }
+                hashing.finish()
+            };
+            validate_file_hash(
+                &path,
+                expected_file.sha256.as_deref(),
+                &digest,
+                require_hashes,
+            )?;
         }
         (manifest, expected, seen)
     };
@@ -712,7 +787,9 @@ fn process_archive<R: Read>(
     Ok(manifest)
 }
 
-fn validate_manifest(manifest: &Manifest) -> Result<HashMap<BundlePath, u64>, BundleError> {
+fn validate_manifest(
+    manifest: &Manifest,
+) -> Result<HashMap<BundlePath, ManifestFile>, BundleError> {
     if !manifest
         .protocol_version
         .is_compatible_with(CURRENT_PROTOCOL_VERSION)
@@ -741,7 +818,12 @@ fn validate_manifest(manifest: &Manifest) -> Result<HashMap<BundlePath, u64>, Bu
         if file.path.as_str() == MANIFEST_PATH {
             return Err(BundleError::ManifestListsManifest);
         }
-        if expected.insert(file.path.clone(), file.size).is_some() {
+        if let Some(hash) = file.sha256.as_deref() {
+            if !valid_sha256(hash) {
+                return Err(BundleError::InvalidFileHash(file.path.clone()));
+            }
+        }
+        if expected.insert(file.path.clone(), file.clone()).is_some() {
             return Err(BundleError::DuplicateManifestPath(file.path.clone()));
         }
         total = total
@@ -761,6 +843,115 @@ fn validate_manifest(manifest: &Manifest) -> Result<HashMap<BundlePath, u64>, Bu
         ));
     }
     Ok(expected)
+}
+
+fn hash_source(path: &Path, expected_size: u64) -> Result<String, BundleError> {
+    let mut file = File::open(path).map_err(BundleError::Io)?;
+    let mut hashing = HashingWriter::new(io::sink());
+    let mut bounded = (&mut file).take(expected_size);
+    let actual = io::copy(&mut bounded, &mut hashing).map_err(BundleError::Io)?;
+    if actual != expected_size {
+        return Err(BundleError::Io(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            format!("bundle source changed while hashing: {}", path.display()),
+        )));
+    }
+    Ok(hex_digest(&hashing.finish()))
+}
+
+fn valid_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn validate_file_hash(
+    path: &BundlePath,
+    expected: Option<&str>,
+    actual: &[u8],
+    require_hash: bool,
+) -> Result<(), BundleError> {
+    let Some(expected) = expected else {
+        return if require_hash {
+            Err(BundleError::MissingFileHash(path.clone()))
+        } else {
+            Ok(())
+        };
+    };
+    if !valid_sha256(expected) {
+        return Err(BundleError::InvalidFileHash(path.clone()));
+    }
+    if hex_digest(actual) != expected {
+        return Err(BundleError::FileHashMismatch { path: path.clone() });
+    }
+    Ok(())
+}
+
+fn hex_digest(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+
+    let mut value = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        let _ = write!(value, "{byte:02x}");
+    }
+    value
+}
+
+struct HashingWriter<W> {
+    inner: W,
+    digest: Sha256,
+}
+
+impl<W> HashingWriter<W> {
+    fn new(inner: W) -> Self {
+        Self {
+            inner,
+            digest: Sha256::new(),
+        }
+    }
+
+    fn finish(self) -> Vec<u8> {
+        self.digest.finalize().to_vec()
+    }
+}
+
+impl<W: Write> Write for HashingWriter<W> {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        let amount = self.inner.write(buffer)?;
+        self.digest.update(&buffer[..amount]);
+        Ok(amount)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+struct HashingReader<R> {
+    inner: R,
+    digest: Sha256,
+}
+
+impl<R> HashingReader<R> {
+    fn new(inner: R) -> Self {
+        Self {
+            inner,
+            digest: Sha256::new(),
+        }
+    }
+
+    fn finish(self) -> Vec<u8> {
+        self.digest.finalize().to_vec()
+    }
+}
+
+impl<R: Read> Read for HashingReader<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        let amount = self.inner.read(buffer)?;
+        self.digest.update(&buffer[..amount]);
+        Ok(amount)
+    }
 }
 
 fn is_markdown_path(path: &BundlePath) -> bool {
@@ -988,6 +1179,61 @@ mod tests {
     }
 
     #[test]
+    fn in_memory_extraction_requires_and_checks_sha256_before_returning_files() {
+        let (_root, _entry, _source_root, archive) = bundle_fixture();
+        let extracted = extract_to_memory(Cursor::new(&archive)).unwrap();
+        assert_eq!(extracted.manifest.files.len(), 3);
+        assert!(extracted
+            .manifest
+            .files
+            .iter()
+            .all(|file| file.sha256.as_deref().is_some_and(valid_sha256)));
+        assert_eq!(
+            extracted
+                .files
+                .iter()
+                .find(|(path, _)| path.as_str() == "index.md")
+                .unwrap()
+                .1,
+            b"# Index\n"
+        );
+
+        let path = BundlePath::new("index.md").unwrap();
+        let manifest = Manifest {
+            protocol_version: CURRENT_PROTOCOL_VERSION,
+            bundle_format_version: CURRENT_BUNDLE_FORMAT_VERSION,
+            entry_point: path.clone(),
+            files: vec![ManifestFile {
+                path,
+                size: 7,
+                sha256: Some(hex_digest(&Sha256::digest(b"correct"))),
+            }],
+        };
+        let manifest_bytes = serde_json::to_vec(&manifest).unwrap();
+        let tampered = tar_with_entries(&[
+            (MANIFEST_PATH, EntryType::Regular, &manifest_bytes),
+            ("index.md", EntryType::Regular, b"changed"),
+        ]);
+        assert!(matches!(
+            extract_to_memory(Cursor::new(tampered)),
+            Err(BundleError::FileHashMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn in_memory_extraction_rejects_legacy_manifest_without_file_hashes() {
+        let manifest_bytes = manifest_bytes(&[("index.md", 5)], "index.md");
+        let archive = tar_with_entries(&[
+            (MANIFEST_PATH, EntryType::Regular, &manifest_bytes),
+            ("index.md", EntryType::Regular, b"hello"),
+        ]);
+        assert!(matches!(
+            extract_to_memory(Cursor::new(archive)),
+            Err(BundleError::MissingFileHash(_))
+        ));
+    }
+
+    #[test]
     fn generated_archive_starts_with_exact_manifest_then_explicit_files() {
         let root = temp_dir();
         let entry = write_file(root.path(), "docs/index.md", b"index");
@@ -1120,6 +1366,7 @@ mod tests {
                 .map(|(path, size)| ManifestFile {
                     path: BundlePath::new(*path).unwrap(),
                     size: *size,
+                    sha256: None,
                 })
                 .collect(),
         };

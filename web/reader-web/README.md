@@ -20,6 +20,47 @@ local Markdown links and image assets resolve relative to the containing
 document, while absolute and escaping paths return structured reader errors.
 Files are not uploaded or persisted by the simulator.
 
+## One-shot cloud sync
+
+The **Authorize & sync** button starts one reader authorization request against
+the production PRSync API. Open the displayed approval link in its new tab and
+complete the existing Cloudflare Access approval flow. The link contains only
+the public request ID. The polling secret is sent separately in the poll API
+body, and the reader bearer token is returned only by the successful claim
+response; neither is rendered, logged, added to a URL, or stored in browser
+storage. When approval completes, that click performs one manifest check and,
+if needed, one bounded bundle download.
+
+After authorization, **Sync now** performs one additional manifest check and
+at most one bundle download per click. The page never schedules a sync or polls
+for future inbox changes. Closing or reloading the page discards the reader
+session and revision snapshot; authorize again after reload. A denied, expired,
+or rejected session requires a new **Authorize & sync** click. An unchanged
+revision leaves the active reader alone. An empty inbox successfully clears the
+active reader. A new bundle replaces the active reader only after the shared
+Rust bundle validator has checked archive structure, the manifest, all file
+sizes, all SHA-256 values, and the entry document; a failed download or
+validation keeps the active reader. The active-library label identifies the
+local directory or cloud inbox currently being shown.
+
+The browser sends API requests with `credentials: "omit"` and keeps the reader
+session in page memory only. Its authorization and bearer requests use the
+existing production endpoints. The Worker permits CORS only for the exact
+`PRS_READER_WEB_ORIGIN` configured in `crates/prs-cloudflare/wrangler.toml`, on
+the reader authorization, poll, manifest, and bundle routes. It allows only
+the methods and request headers those calls need. It does not allow credential
+cookies or caller-supplied Cloudflare identity headers. `/a/*` is not covered
+by API CORS and remains protected by Cloudflare Access.
+
+The checked-in production origin is `http://127.0.0.1:8000`, for the loopback
+static server below. Keep the browser bound to that exact host and port. If the
+static reader is hosted elsewhere, set `PRS_READER_WEB_ORIGIN` to that exact
+origin and deploy the Worker configuration; do not use `*` or a reflected
+request origin. The browser API base defaults to
+`https://prs-reader.dstoc.workers.dev`; a host can override it with a
+`<meta name="prsync-api-base" content="https://…">` value when it has a
+different same-origin API deployment.
+
 The build uses these pinned versions:
 
 - Rust and Cargo 1.98.1.
@@ -77,7 +118,8 @@ Serve the assembled page with the repository helper:
 
 tools/reader-web-serve.sh 8000
 
-Open <http://127.0.0.1:8000/> in a browser and select **Open directory**. Use
+Open <http://127.0.0.1:8000/> in a browser and select **Open directory** or
+start **Authorize & sync**. Use
 the canvas, Previous, Next, Home, Back, Switch to landscape/portrait, Reader
 fullscreen, and Fullscreen controls. Reader fullscreen is session-scoped and
 reflows the shared reader while preserving the current passage and navigation

@@ -14,6 +14,7 @@ use prs_markdown::{
     T1_LANDSCAPE_VIEWPORT, T1_VIEWPORT,
 };
 use std::convert::Infallible;
+use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
@@ -288,6 +289,35 @@ pub struct BrowserReader {
 #[wasm_bindgen]
 pub fn load_directory(files: Array, entry_point: String) -> Result<BrowserReader, JsValue> {
     let files = parse_files(files)?;
+    let provider = DirectoryResourceProvider::new(Path::new(&entry_point), files)
+        .map_err(|error| structured_error("resource", error))?;
+    let surface = ReaderSurface::new(provider).map_err(|error| structured_error("open", error))?;
+    Ok(BrowserReader { surface })
+}
+
+/// Validate a downloaded PRSync tar archive with the shared bundle validator,
+/// require hashes for every file, and build a candidate reader in memory.
+/// JavaScript activates the returned reader only after this completes.
+#[wasm_bindgen]
+pub fn load_sync_bundle(
+    bundle: Vec<u8>,
+    expected_manifest_json: String,
+) -> Result<BrowserReader, JsValue> {
+    let expected: prs_sync_protocol::Manifest = serde_json::from_str(&expected_manifest_json)
+        .map_err(|error| structured_error("manifest", error))?;
+    let validated = prs_sync_bundle::extract_to_memory(Cursor::new(bundle))
+        .map_err(|error| structured_error("bundle", error))?;
+    if validated.manifest != expected {
+        return Err(structured_error(
+            "manifest",
+            "downloaded bundle does not match the API manifest",
+        ));
+    }
+    let entry_point = validated.manifest.entry_point.as_str().to_owned();
+    let files = validated
+        .files
+        .into_iter()
+        .map(|(path, bytes)| (PathBuf::from(path.as_str()), bytes));
     let provider = DirectoryResourceProvider::new(Path::new(&entry_point), files)
         .map_err(|error| structured_error("resource", error))?;
     let surface = ReaderSurface::new(provider).map_err(|error| structured_error("open", error))?;
@@ -990,6 +1020,60 @@ mod tests {
         let frame = surface.render_frame().expect("render directory reader");
         assert_eq!(frame.len(), 600 * 800 * 4);
         assert!(frame.chunks_exact(4).any(|pixel| pixel != [u8::MAX; 4]));
+    }
+
+    #[test]
+    fn synced_bundle_opens_only_after_manifest_and_image_validation() {
+        let root = std::env::temp_dir().join(format!(
+            "prs-reader-web-sync-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock follows the epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(root.join("assets")).expect("create sync fixture");
+        std::fs::write(
+            root.join("README.md"),
+            b"# Synced library\n\n![image](assets/observatory.png)\n",
+        )
+        .expect("write synced entry document");
+        let image = include_bytes!("../demo/assets/observatory.png");
+        std::fs::write(root.join("assets/observatory.png"), image).expect("write synced image");
+
+        let mut builder = prs_sync_bundle::BundleBuilder::new(root.join("README.md"));
+        builder.add_file(root.join("assets/observatory.png"));
+        let mut archive = Vec::new();
+        let manifest = builder
+            .write(&mut archive)
+            .expect("build hashed test bundle");
+        let reader = load_sync_bundle(
+            archive,
+            serde_json::to_string(&manifest).expect("serialize expected API manifest"),
+        )
+        .expect("validate and open synced reader");
+
+        assert_eq!(reader.current_document(), "README.md");
+        assert_eq!(
+            reader
+                .surface
+                .controller
+                .reader()
+                .provider()
+                .read_binary(Path::new("assets/observatory.png"))
+                .expect("read validated image"),
+            image
+        );
+        assert!(
+            reader
+                .surface
+                .controller
+                .reader()
+                .cache_stats()
+                .image_retained_bytes
+                > 0
+        );
+        std::fs::remove_dir_all(root).expect("remove sync fixture");
     }
 
     #[test]

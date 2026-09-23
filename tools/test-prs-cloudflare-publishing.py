@@ -257,6 +257,7 @@ def assert_production_topology() -> None:
     assert production_vars["PRS_APPROVAL_BASE_URL"] == (
         "https://prs-reader.dstoc.workers.dev"
     )
+    assert production_vars["PRS_READER_WEB_ORIGIN"] == "http://127.0.0.1:8000"
     assert "reader.example.com" not in production_vars["PRS_APPROVAL_BASE_URL"]
     assert config["version_metadata"]["binding"] == "CF_VERSION_METADATA"
     for routing_key in ("route", "routes", "custom_domains"):

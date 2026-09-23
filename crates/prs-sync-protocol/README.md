@@ -10,7 +10,8 @@ service-issued bearer tokens exist only as validated wire values.
 
 The public types cover:
 
-- bundle manifests and the 16 MiB bundle limit;
+- bundle manifests, optional per-file SHA-256 digests, and the 16 MiB bundle
+  limit;
 - inbox revisions, entity tags, and conditional manifest responses;
 - sender and reader authorization requests, statuses, and claim results;
 - separate sender capabilities and boot-scoped reader session scopes, including

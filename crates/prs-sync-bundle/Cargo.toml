@@ -9,5 +9,6 @@ publish = false
 [dependencies]
 prs-sync-protocol = { path = "../prs-sync-protocol" }
 serde_json = "1.0.151"
+sha2 = { version = "0.11.0", default-features = false }
 tar = { version = "0.4.46", default-features = false }
 tempfile = "3.27.0"

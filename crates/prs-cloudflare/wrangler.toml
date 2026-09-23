@@ -23,6 +23,7 @@ workers_dev = true
 [env.local.vars]
 PRS_ENVIRONMENT = "local"
 PRS_APPROVAL_BASE_URL = "http://127.0.0.1"
+PRS_READER_WEB_ORIGIN = "http://127.0.0.1:8000"
 
 [[env.local.d1_databases]]
 binding = "DB"
@@ -48,6 +49,7 @@ binding = "CF_VERSION_METADATA"
 [env.production.vars]
 PRS_ENVIRONMENT = "production"
 PRS_APPROVAL_BASE_URL = "https://prs-reader.dstoc.workers.dev"
+PRS_READER_WEB_ORIGIN = "http://127.0.0.1:8000"
 
 [[env.production.d1_databases]]
 binding = "DB"

@@ -1,4 +1,5 @@
-import init, { load_directory } from "./pkg/prs_reader_web.js";
+import init, { load_directory, load_sync_bundle } from "./pkg/prs_reader_web.js";
+import { createPrsyncClient, DEFAULT_API_BASE } from "./prsync-client.mjs";
 import {
   chooseDirectory,
   readerAfterDirectoryError,
@@ -18,6 +19,11 @@ const context = canvas.getContext("2d", { alpha: false });
 const readerFrame = document.querySelector(".reader-frame");
 const readerStage = document.querySelector("#reader-stage");
 const chooseButton = document.querySelector("#choose-directory");
+const activeLibrary = document.querySelector("#active-library");
+const syncStatus = document.querySelector("#sync-status");
+const authorizeSyncButton = document.querySelector("#authorize-sync");
+const syncNowButton = document.querySelector("#sync-now");
+const approvalLink = document.querySelector("#approval-link");
 const browserFullscreenButton = document.querySelector(
   "#toggle-browser-fullscreen",
 );
@@ -30,6 +36,17 @@ const commands = new Map(
 const controlButtons = [...commands.values()];
 let reader;
 let fullscreenController;
+let syncBusy = false;
+const syncClient = createPrsyncClient({
+  apiBase: document.querySelector('meta[name="prsync-api-base"]')?.content || DEFAULT_API_BASE,
+  onApprovalUrl(url) {
+    approvalLink.href = url;
+    approvalLink.hidden = false;
+  },
+  onProgress(message) {
+    syncStatus.textContent = message;
+  },
+});
 
 function syncCanvasPresentation(
   fullscreen = document.fullscreenElement === readerStage,
@@ -42,9 +59,9 @@ function drawFrame(frame) {
   context.putImageData(new ImageData(pixels, canvas.width, canvas.height), 0, 0);
 }
 
-function render() {
+function render(frame = undefined) {
   syncCanvasPresentation();
-  drawFrame(reader.render_frame());
+  drawFrame(frame ?? reader.render_frame());
   status.textContent = reader.current_document()
     + " · page " + reader.current_page() + " of " + reader.page_count();
   const landscape = reader.logical_width() > reader.logical_height();
@@ -79,6 +96,8 @@ function errorMessage(error) {
 async function chooseLibrary() {
   chooseButton.disabled = true;
   setControlsDisabled(true);
+  authorizeSyncButton.disabled = true;
+  syncNowButton.disabled = true;
   status.textContent = "Opening directory…";
   let directorySelected = false;
   try {
@@ -86,15 +105,93 @@ async function chooseLibrary() {
     directorySelected = true;
     const selectedReader = load_directory(selected.files, selected.entryPoint);
     reader = selectedReader;
+    syncClient.resetSnapshot();
+    activeLibrary.textContent = `Active library: local directory (${selected.name})`;
     setReaderLoaded(true);
     render();
   } catch (error) {
     reader = readerAfterDirectoryError(reader, error, directorySelected);
+    if (directorySelected || error?.directorySelected === true) {
+      syncClient.resetSnapshot();
+      activeLibrary.textContent = "Active library: none";
+    }
     status.textContent = errorMessage(error);
   } finally {
     chooseButton.disabled = false;
     setControlsDisabled(!reader);
     setReaderLoaded(Boolean(reader));
+    authorizeSyncButton.disabled = false;
+    syncNowButton.disabled = !syncClient.hasSession();
+  }
+}
+
+async function activateSyncedLibrary(bundle) {
+  if (bundle === null) {
+    reader = undefined;
+    activeLibrary.textContent = "Active library: cloud inbox (empty)";
+    status.textContent = "Cloud inbox is empty.";
+    setReaderLoaded(false);
+    setControlsDisabled(true);
+    return;
+  }
+  const candidate = load_sync_bundle(bundle.bytes, JSON.stringify(bundle.manifest));
+  const candidateFrame = candidate.render_frame();
+  reader = candidate;
+  activeLibrary.textContent = "Active library: cloud inbox";
+  setReaderLoaded(true);
+  setControlsDisabled(false);
+  render(candidateFrame);
+}
+
+function syncOutcomeMessage(outcome) {
+  if (outcome.kind === "replaced") {
+    return `Cloud library updated (revision ${outcome.revision}).`;
+  }
+  if (outcome.kind === "cleared") {
+    return `Cloud inbox is empty; the active library was cleared (revision ${outcome.revision}).`;
+  }
+  return `Cloud library is unchanged (revision ${outcome.revision}).`;
+}
+
+async function authorizeAndSync() {
+  syncBusy = true;
+  chooseButton.disabled = true;
+  authorizeSyncButton.disabled = true;
+  syncNowButton.disabled = true;
+  approvalLink.hidden = true;
+  try {
+    await syncClient.authorize();
+    approvalLink.hidden = true;
+    approvalLink.href = "#";
+    const outcome = await syncClient.syncOnce(activateSyncedLibrary);
+    syncStatus.textContent = syncOutcomeMessage(outcome);
+  } catch (error) {
+    approvalLink.hidden = true;
+    approvalLink.href = "#";
+    syncStatus.textContent = errorMessage(error);
+  } finally {
+    syncBusy = false;
+    chooseButton.disabled = false;
+    authorizeSyncButton.disabled = false;
+    syncNowButton.disabled = !syncClient.hasSession();
+  }
+}
+
+async function syncNow() {
+  syncBusy = true;
+  chooseButton.disabled = true;
+  authorizeSyncButton.disabled = true;
+  syncNowButton.disabled = true;
+  try {
+    const outcome = await syncClient.syncOnce(activateSyncedLibrary);
+    syncStatus.textContent = syncOutcomeMessage(outcome);
+  } catch (error) {
+    syncStatus.textContent = errorMessage(error);
+  } finally {
+    syncBusy = false;
+    chooseButton.disabled = false;
+    authorizeSyncButton.disabled = false;
+    syncNowButton.disabled = !syncClient.hasSession();
   }
 }
 
@@ -131,10 +228,24 @@ try {
   browserFullscreenButton.addEventListener("click", () => {
     void fullscreenController.toggle();
   });
-  status.textContent = "Open a directory to begin.";
+  status.textContent = "Open a directory or start cloud sync.";
   setReaderLoaded(false);
   setControlsDisabled(true);
   chooseButton.disabled = false;
+  authorizeSyncButton.disabled = false;
+  syncNowButton.disabled = true;
+  syncStatus.textContent = "Cloud sync runs only after you start it.";
+
+  authorizeSyncButton.addEventListener("click", () => {
+    if (!syncBusy) {
+      void authorizeAndSync();
+    }
+  });
+  syncNowButton.addEventListener("click", () => {
+    if (!syncBusy) {
+      void syncNow();
+    }
+  });
 
   canvas.addEventListener("pointerdown", (event) => {
     canvas.setPointerCapture?.(event.pointerId);
@@ -169,4 +280,6 @@ try {
   setReaderLoaded(false);
   chooseButton.disabled = true;
   browserFullscreenButton.disabled = true;
+  authorizeSyncButton.disabled = true;
+  syncNowButton.disabled = true;
 }

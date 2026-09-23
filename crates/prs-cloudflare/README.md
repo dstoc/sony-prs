@@ -363,6 +363,16 @@ The approval URL contains only the public request ID. It is a lookup key, not
 an authentication factor. Owner authentication occurs before the Worker reads
 or changes the authorization request.
 
+The browser simulator uses a separate, exact-origin CORS allowlist from
+`PRS_READER_WEB_ORIGIN`. It applies only to reader authorization creation and
+polling, plus reader manifest and bundle reads. Each route permits only its
+required method and headers. The Worker does not enable credentialed CORS, does
+not accept caller-supplied Cloudflare identity headers, and does not add CORS
+to `/a/*`, sender routes, or other endpoints. The checked-in value
+`http://127.0.0.1:8000` matches the loopback static reader helper. When hosting
+the static reader at another origin, configure that exact origin and redeploy;
+never reflect arbitrary `Origin` values or use `*`.
+
 ## Authorization boundary
 
 `src/authorization.rs` implements the D1-backed authorization state machine.
