@@ -1,5 +1,59 @@
 # Changelog
 
+## [0.12.0](https://github.com/dstoc/sony-prs/compare/prs-t1-agent-v0.11.1...prs-t1-agent-v0.12.0) (2026-09-23)
+
+
+### Features
+
+* **prs-t1-agent:** add network-loss fault injection ([cf5c4d5](https://github.com/dstoc/sony-prs/commit/cf5c4d566bb04a8e13ba2360740f376551e293a8))
+* **prs-t1-agent:** add reader authorization and bundle sync ([38b52a1](https://github.com/dstoc/sony-prs/commit/38b52a1a75fc7eac66fd0568cc46fa01cbbef6b7))
+* **prs-t1-agent:** add synchronization trigger policy ([3a7e6d8](https://github.com/dstoc/sony-prs/commit/3a7e6d8c612ec2f5a7db1c0256b8f07ea18fd102))
+* **prs-t1-agent:** integrate synced reader settings ([0579f62](https://github.com/dstoc/sony-prs/commit/0579f62aad1e5f0e5e3287b653aa3065c0b8fa10))
+* **prs-t1-agent:** redesign details actions and press feedback ([13f82f1](https://github.com/dstoc/sony-prs/commit/13f82f1a0f7ebec7a239da11294acea214cdaa7c))
+* **prs-t1-agent:** refine reader feedback and sync status ([f30e049](https://github.com/dstoc/sony-prs/commit/f30e049a4d7f886773aaf048f5a15a5d40fc6353))
+* **prs-t1-agent:** show external links as QR overlays ([eb6d6e5](https://github.com/dstoc/sony-prs/commit/eb6d6e5c6fee0afd915920d388d7070e5d0d50b9))
+* **prs-t1-agent:** sync once after sleep wake ([4cd9d37](https://github.com/dstoc/sony-prs/commit/4cd9d3751459f1800964f6472e2d86ebf002776a))
+* **prs-t1:** add hardware settings navigation ([f93e1e9](https://github.com/dstoc/sony-prs/commit/f93e1e94291a600e80327199b091cdaf1c1b9844))
+* **reader-web:** add one-shot PRSync browser sync ([6f63baa](https://github.com/dstoc/sony-prs/commit/6f63baa2d31a3f700f6740a7d445875ac5dfafc5))
+* **reader:** add bounded font size controls ([99f61a7](https://github.com/dstoc/sony-prs/commit/99f61a7f8f8abd5aa322c0eaadc71f54551bd830))
+* **reader:** add fullscreen reading mode ([3e154ae](https://github.com/dstoc/sony-prs/commit/3e154aeb3724b318db5e4c05c3f0909659ae9027))
+* **reader:** add per-document progress indicator ([778f9e0](https://github.com/dstoc/sony-prs/commit/778f9e0e141b6c97bb7670570b23c29702081a5b))
+* **reader:** add portrait and landscape orientation ([0f9ea8a](https://github.com/dstoc/sony-prs/commit/0f9ea8af88aad97a954ee6acb7f9730bd3e60423))
+* **reader:** share configurable presentation layout ([a9a68c7](https://github.com/dstoc/sony-prs/commit/a9a68c71443f924dc64be49c9b65a758cd967ee2))
+* **reader:** share external-link overlay session ([ceaf641](https://github.com/dstoc/sony-prs/commit/ceaf6413ee7a9127991c7eefa20147ae176d2e19))
+* **t1:** persist reader preferences ([a5991e6](https://github.com/dstoc/sony-prs/commit/a5991e6763b16c0935d87c93baedffbe4bc48c2d))
+* **t1:** polish settings navigation and layout ([ae41ce2](https://github.com/dstoc/sony-prs/commit/ae41ce22f9a63670d3ef3cdbada0ddb19006db1d))
+* **t1:** redesign settings around reading preferences ([ca7ca59](https://github.com/dstoc/sony-prs/commit/ca7ca59af2786ce564ac7ac485e3f6f3f438988c))
+
+
+### Bug Fixes
+
+* **prs-t1-agent:** adopt synced bundle from placeholder ([df5e674](https://github.com/dstoc/sony-prs/commit/df5e674133ed7a70cdad07f90442cb9f996ee6d6))
+* **prs-t1-agent:** bound immediate sync failure refresh ([c6dcab0](https://github.com/dstoc/sony-prs/commit/c6dcab0efea43b088f40f68678fb504fe876be5c))
+* **prs-t1-agent:** bound raw bundle staging ([8950624](https://github.com/dstoc/sony-prs/commit/895062494140b7aebaf7cc2502ad3c3d78e998e5))
+* **prs-t1-agent:** clean up sync cancellation and settings bounds ([f5103e5](https://github.com/dstoc/sony-prs/commit/f5103e5fded072514ef1b8e8dd0b81ee0329dbb0))
+* **prs-t1-agent:** clear local library for empty inbox ([4c2adbd](https://github.com/dstoc/sony-prs/commit/4c2adbd9d1cbf3fae4d02fdc56ce2d3aa676b9a2))
+* **prs-t1-agent:** document network-loss option in usage ([4acb0ef](https://github.com/dstoc/sony-prs/commit/4acb0efee868f59552c01b1e363a287c036aacb8))
+* **prs-t1-agent:** establish portrait framebuffer orientation ([97871d6](https://github.com/dstoc/sony-prs/commit/97871d61aabc48c0910aa93386713bbfc1f0c408))
+* **prs-t1-agent:** initialize framebuffer before timeout parsing ([028f770](https://github.com/dstoc/sony-prs/commit/028f770ddfaca9be5e4ee35cca8f0f6a6a6155d3))
+* **prs-t1-agent:** keep production details within action pane ([4a33515](https://github.com/dstoc/sony-prs/commit/4a3351555499517889caa5568b9d29f0714929aa))
+* **prs-t1-agent:** make reader sync cooperative ([f9537ae](https://github.com/dstoc/sony-prs/commit/f9537ae1b94e9f5f1ce18d445048adc06d61eb1d))
+* **prs-t1-agent:** make refreshes damage-driven ([2d6de91](https://github.com/dstoc/sony-prs/commit/2d6de91acd438f6538515ecba54e240cfde151e4))
+* **prs-t1-agent:** open framebuffer before Wi-Fi sync ([43d3277](https://github.com/dstoc/sony-prs/commit/43d3277819d8e74710276d947c0b57502580e674))
+* **prs-t1-agent:** preserve wrapped external URL text ([140df35](https://github.com/dstoc/sony-prs/commit/140df35593fdd20216c939e51e8eca003012848c))
+* **prs-t1-agent:** refine physical button navigation ([6af0457](https://github.com/dstoc/sony-prs/commit/6af04575621c7ac8be1db0380aa261bab55153a6))
+* **prs-t1-agent:** repaint feedback after home input ([a666e18](https://github.com/dstoc/sony-prs/commit/a666e18443544da5a39b9bdd1a6e6903248d1cdb))
+* **prs-t1-agent:** resolve legacy WPA control sockets ([e26caa7](https://github.com/dstoc/sony-prs/commit/e26caa7fe6fefd3887dfecf0baea32b4597a3dab))
+* **prs-t1-agent:** retain merged details status rows ([d2f8608](https://github.com/dstoc/sony-prs/commit/d2f8608b6d3326402b9b193152b8f68707879d37))
+* **prs-t1-agent:** reuse TLS provider across sync attempts ([dcd7c15](https://github.com/dstoc/sony-prs/commit/dcd7c15942756b1bc0f3b9f10f8581f4f4b682c4))
+* **prs-t1-agent:** use PRS-T1 Wi-Fi socket fallback ([dc1a49e](https://github.com/dstoc/sony-prs/commit/dc1a49e7dfcd57d9ad474dc28488536ffdca2de9))
+* **prs-t1-agent:** wait after sync completion before idle retry ([ce83ecc](https://github.com/dstoc/sony-prs/commit/ce83eccdff82ef997f2d2e754ba30c1a69146f74))
+* **prsync:** drop per-file manifest hashes ([720899b](https://github.com/dstoc/sony-prs/commit/720899b674eaa35ce0aff2666b54843ab2eac52d))
+* **reader:** preserve orientation layout and multitouch mapping ([f3420c7](https://github.com/dstoc/sony-prs/commit/f3420c78d5141692b5607511b45a365b24131ac3))
+* **reader:** preserve settings preferences after rebase ([4d183cd](https://github.com/dstoc/sony-prs/commit/4d183cd7ecfee19eb26c59da1777878e4600b256))
+* **t1:** align landscape settings row labels ([05b4524](https://github.com/dstoc/sony-prs/commit/05b4524bdc38ad87b57a344252140904f51fd898))
+* **t1:** allow font preference without bundle ([fc07559](https://github.com/dstoc/sony-prs/commit/fc07559255fd1f52e5271eac9e9025eab819d041))
+
 ## [0.11.1](https://github.com/dstoc/sony-prs/compare/prs-t1-agent-v0.11.0...prs-t1-agent-v0.11.1) (2026-09-21)
 
 
