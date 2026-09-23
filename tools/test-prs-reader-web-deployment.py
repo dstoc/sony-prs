@@ -85,6 +85,8 @@ if asset == "index.html" and os.environ.get("FAKE_INDEX_REDIRECT"):
         "cross_origin": "https://example.invalid/login",
         "access_login": "https://prs-reader-web.dstoc.workers.dev/cdn-cgi/access/login?token=do-not-leak",
         "unexpected_path": "https://prs-reader-web.dstoc.workers.dev/main.js",
+        "absolute_userinfo": "https://user:secret@example.invalid/path?token=do-not-leak",
+        "protocol_relative_userinfo": "//user:secret@example.invalid/path?token=do-not-leak",
     }
     respond(
         307,
@@ -291,7 +293,13 @@ def assert_production_smoke_probe() -> None:
             assert "following verified canonical redirect" in canonical.stdout
             assert "verified index.html at https://prs-reader-web.dstoc.workers.dev/" in canonical.stdout
 
-        for destination in ("cross_origin", "access_login", "unexpected_path"):
+        for destination in (
+            "cross_origin",
+            "access_login",
+            "unexpected_path",
+            "absolute_userinfo",
+            "protocol_relative_userinfo",
+        ):
             environment["FAKE_INDEX_REDIRECT"] = destination
             rejected_redirect = subprocess.run(
                 [str(VERIFY_SCRIPT)],
@@ -309,6 +317,25 @@ def assert_production_smoke_probe() -> None:
             assert "CF-Ray: fake-ray-176" in rejected_redirect.stderr
             assert "must-not-be-logged" not in rejected_redirect.stderr
             assert "do-not-leak" not in rejected_redirect.stderr
+            assert "user:secret" not in rejected_redirect.stderr
+
+        for destination, sanitized in (
+            ("absolute_userinfo", "https://<redacted>@example.invalid/path"),
+            ("protocol_relative_userinfo", "//<redacted>@example.invalid/path"),
+        ):
+            environment["FAKE_INDEX_REDIRECT"] = destination
+            redacted_redirect = subprocess.run(
+                [str(VERIFY_SCRIPT)],
+                cwd=REPO_ROOT,
+                env=environment,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            assert redacted_redirect.returncode != 0
+            assert redacted_redirect.stderr.count(sanitized) == 2, (
+                "failure details and relevant headers must both redact Location userinfo"
+            )
 
         environment["FAKE_INDEX_REDIRECT"] = "expected"
         environment["FAKE_CANONICAL_FINAL_STATUS"] = "404"

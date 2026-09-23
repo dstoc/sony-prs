@@ -167,9 +167,9 @@ When an asset check fails, the probe prints the asset path, request URL, HTTP
 status, `Location`, effective URL, `Content-Type`, curl exit code, and selected
 response headers such as `CF-Ray` and `CF-Cache-Status`. It omits response
 bodies, cookies, and request headers. It removes Location query strings,
-fragments, and user information so the diagnostic output does not include
-credentials. The production smoke tests run without the Cloudflare deploy
-secrets.
+fragments, and user information in absolute and protocol-relative URI
+authorities so the diagnostic output does not include credentials. The
+production smoke tests run without the Cloudflare deploy secrets.
 
 The API CORS binding is `PRS_READER_WEB_ORIGIN`. Production sets it to
 `https://prs-reader-web.dstoc.workers.dev` in

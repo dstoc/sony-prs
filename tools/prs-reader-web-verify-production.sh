@@ -20,17 +20,36 @@ header_value() {
 
 safe_location() {
     printf '%s\n' "$1" | awk '
+        function redact_authority_userinfo(value, authority, prefix_length, separator) {
+            if (match(value, /^([^/?#]+:)?\/\/[^/?#]*@/)) {
+                prefix_length = RLENGTH
+                authority = substr(value, 1, prefix_length)
+                separator = index(authority, "//")
+                return substr(authority, 1, separator + 1) "<redacted>@" \
+                    substr(value, prefix_length + 1)
+            }
+            return value
+        }
         {
             sub(/\r$/, "")
             sub(/[?#].*$/, "")
-            sub(/:\/\/[^/]*@/, "://<redacted>@")
-            print
+            print redact_authority_userinfo($0)
         }
     '
 }
 
 print_relevant_headers() {
     awk '
+        function redact_authority_userinfo(value, authority, prefix_length, separator) {
+            if (match(value, /^([^/?#]+:)?\/\/[^/?#]*@/)) {
+                prefix_length = RLENGTH
+                authority = substr(value, 1, prefix_length)
+                separator = index(authority, "//")
+                return substr(authority, 1, separator + 1) "<redacted>@" \
+                    substr(value, prefix_length + 1)
+            }
+            return value
+        }
         /^HTTP\// { print; next }
         {
             name = $1
@@ -40,8 +59,7 @@ print_relevant_headers() {
                 value = $0
                 sub(/^[^:]*:[[:space:]]*/, "", value)
                 sub(/[?#].*$/, "", value)
-                sub(/:\/\/[^/]*@/, "://<redacted>@", value)
-                print "Location: " value
+                print "Location: " redact_authority_userinfo(value)
             } else if (name == "content-type" ||
                 name == "date" || name == "server" || name == "age" ||
                 name == "cache-control" || name == "cf-ray" ||
