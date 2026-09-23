@@ -151,12 +151,15 @@ assert.ok(progress.some((value) => value.includes("Waiting for approval")));
 const activated = [];
 const first = await client.syncOnce(async (value) => activated.push(value));
 assert.deepEqual(first, { kind: "replaced", revision: 3 });
+assert.deepEqual(progress.slice(-2), ["Checking inbox manifest…", "Downloading cloud bundle…"]);
 assert.equal(activated.length, 1);
 assert.deepEqual([...activated[0].bytes], [1, 2, 3]);
 assert.deepEqual(activated[0].manifest, manifest);
 assert.equal(bundleRequests, 1);
+const progressBeforeUnchanged = progress.length;
 const second = await client.syncOnce(async (value) => activated.push(value));
 assert.deepEqual(second, { kind: "unchanged", revision: 3 });
+assert.deepEqual(progress.slice(progressBeforeUnchanged), ["Checking inbox manifest…"]);
 assert.equal(bundleRequests, 1);
 assert.equal(manifestRequests, 2);
 assert.equal(calls.filter(({ url }) => url.pathname.endsWith("/reader/manifest"))[1]

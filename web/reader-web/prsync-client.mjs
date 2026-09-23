@@ -158,6 +158,7 @@ export function createPrsyncClient({
       throw new PrsyncError("Reader access is missing or expired. Authorize again.", { code: "reauthorize" });
     }
 
+    onProgress("Checking inbox manifest…");
     const headers = {};
     if (snapshot) {
       headers["If-Revision"] = String(snapshot.revision);
@@ -206,6 +207,7 @@ export function createPrsyncClient({
       return { kind: "unchanged", revision };
     }
     validateManifestBounds(state.manifest);
+    onProgress("Downloading cloud bundle…");
     let bundleResponse;
     try {
       bundleResponse = await request("/api/v1/reader/bundle", {
