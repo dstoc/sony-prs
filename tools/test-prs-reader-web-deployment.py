@@ -16,6 +16,8 @@ API_CONFIG = REPO_ROOT / "crates" / "prs-cloudflare" / "wrangler.toml"
 API_SOURCE = REPO_ROOT / "crates" / "prs-cloudflare" / "src" / "api.rs"
 DEPLOY_SCRIPT = REPO_ROOT / "tools" / "prs-reader-web-deploy.sh"
 VERIFY_SCRIPT = REPO_ROOT / "tools" / "prs-reader-web-verify-production.sh"
+CONFIGURE_API_BASE = REPO_ROOT / "tools" / "configure-reader-web-api-base.mjs"
+TEST_API_BASE = REPO_ROOT / "tools" / "test-reader-web-api-base.mjs"
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "prs-cloudflare-deploy.yml"
 RUNBOOK = REPO_ROOT / "docs" / "prs-cloudflare-github-deployment.md"
 
@@ -30,6 +32,11 @@ if "--location" in args or "-L" in args:
     raise SystemExit("the verifier must validate each redirect before making another request")
 url = next(argument for argument in args if argument.startswith("https://"))
 parsed_url = urlsplit(url)
+configured_api_base = os.environ.get(
+    "PRS_READER_WEB_API_BASE", "https://prs-reader.dstoc.workers.dev"
+)
+configured_api_url = urlsplit(configured_api_base)
+configured_api_origin = f"{configured_api_url.scheme}://{configured_api_url.netloc}"
 
 
 def respond(status, content_type, headers=None):
@@ -41,6 +48,15 @@ def respond(status, content_type, headers=None):
             + f"Content-Type: {content_type}\r\n\r\n",
             encoding="utf-8",
         )
+    if "--output" in args and parsed_url.hostname == "prs-reader-web.dstoc.workers.dev" \
+            and parsed_url.path in ("/", "/index.html") and status == 200:
+        api_base = os.environ.get("FAKE_READER_WEB_API_BASE", configured_api_base)
+        Path(args[args.index("--output") + 1]).write_text(
+            '<!doctype html><html><head>'
+            f'<meta name="prsync-api-base" content="{api_base}">'
+            '</head><body></body></html>',
+            encoding="utf-8",
+        )
     write_out = args[args.index("--write-out") + 1]
     if write_out == "%{http_code}":
         print(str(status), end="")
@@ -50,7 +66,7 @@ def respond(status, content_type, headers=None):
         raise SystemExit(22)
 
 
-if parsed_url.hostname == "prs-reader.dstoc.workers.dev":
+if parsed_url.netloc == configured_api_url.netloc:
     if "--request" in args and args[args.index("--request") + 1] == "OPTIONS":
         header_values = [
             args[index + 1].split(":", 1)[1].strip()
@@ -58,16 +74,38 @@ if parsed_url.hostname == "prs-reader.dstoc.workers.dev":
             if value == "--header" and args[index + 1].lower().startswith("origin:")
         ]
         origin = header_values[-1] if header_values else ""
-        if origin == "https://prs-reader-web.dstoc.workers.dev" and not os.environ.get(
-            "FAKE_REJECT_READER_WEB_ORIGIN"
-        ):
+        path = parsed_url.path.lstrip("/")
+        request_method = next(
+            (args[index + 1] for index, value in enumerate(args[:-1])
+             if value == "--header"
+             and args[index + 1].lower().startswith("access-control-request-method:")),
+            "",
+        ).split(":", 1)[-1].strip()
+        requested_headers = next(
+            (args[index + 1] for index, value in enumerate(args[:-1])
+             if value == "--header"
+             and args[index + 1].lower().startswith("access-control-request-headers:")),
+            "",
+        ).split(":", 1)[-1].strip()
+        contracts = {
+            "api/v1/authorization/reader": ("POST", "Content-Type"),
+            "api/v1/authorization/poll": ("POST", "Content-Type"),
+            "api/v1/reader/manifest": ("GET", "Authorization, If-Revision"),
+            "api/v1/reader/bundle": ("GET", "Authorization"),
+        }
+        expected_method, expected_headers = contracts.get(path, ("", ""))
+        requested = {value.strip().lower() for value in requested_headers.split(",") if value.strip()}
+        allowed = {value.strip().lower() for value in expected_headers.split(",") if value.strip()}
+        if origin == "https://prs-reader-web.dstoc.workers.dev" \
+            and not os.environ.get("FAKE_REJECT_READER_WEB_ORIGIN") \
+            and request_method == expected_method and requested <= allowed:
             respond(
                 204,
                 "",
                 [
                     "Access-Control-Allow-Origin: https://prs-reader-web.dstoc.workers.dev",
-                    "Access-Control-Allow-Methods: POST",
-                    "Access-Control-Allow-Headers: Content-Type",
+                    f"Access-Control-Allow-Methods: {expected_method}",
+                    f"Access-Control-Allow-Headers: {expected_headers}",
                 ],
             )
         else:
@@ -186,6 +224,7 @@ def assert_workflow_and_runbook() -> None:
         "secrets.CLOUDFLARE_API_TOKEN",
         "tools/reader-web-build.sh build",
         "tools/test-reader-web.sh target/reader-web",
+        "PRS_READER_WEB_API_BASE: https://prs-reader.dstoc.workers.dev",
         "tools/prs-reader-web-deploy.sh --production",
         "tools/prs-reader-web-verify-production.sh",
     )
@@ -197,6 +236,8 @@ def assert_workflow_and_runbook() -> None:
     assert "secrets.CLOUDFLARE_" not in job_environment, (
         "Cloudflare secrets must not be inherited by the post-deploy checks"
     )
+    assert "PRS_READER_WEB_API_BASE: https://prs-reader.dstoc.workers.dev" in job_environment
+    assert workflow.count("PRS_READER_WEB_API_BASE: https://prs-reader.dstoc.workers.dev") == 1
     for step_name in (
         "Deploy browser reader to the existing prs-reader-web Worker",
         "Upload and promote production version, then verify schema readiness",
@@ -216,6 +257,8 @@ def assert_workflow_and_runbook() -> None:
     for expected in (
         "prs-reader-web",
         "PRS_READER_WEB_ORIGIN",
+        "PRS_READER_WEB_API_BASE",
+        "same job setting configures the static build",
         "does not change the Worker runtime value",
         "wrangler rollback",
         "interactive browser session",
@@ -242,7 +285,11 @@ def assert_deploy_and_verify_scripts() -> None:
     verify = VERIFY_SCRIPT.read_text(encoding="utf-8")
     for expected in (
         "https://prs-reader-web.dstoc.workers.dev",
-        "https://prs-reader.dstoc.workers.dev",
+        "PRS_READER_WEB_API_BASE",
+        "tools/test-reader-web-api-base.mjs",
+        "/api/v1/authorization/poll",
+        "/api/v1/reader/manifest",
+        "/api/v1/reader/bundle",
         "pkg/prs_reader_web_bg.wasm wasm",
         "application/wasm",
         "Access-Control-Allow-Origin",
@@ -267,6 +314,8 @@ def assert_production_smoke_probe() -> None:
 
         environment = os.environ.copy()
         environment["PATH"] = f"{fake_bin}:{environment['PATH']}"
+        environment["PRS_READER_WEB_API_BASE"] = "https://prs-reader.dstoc.workers.dev"
+        environment.pop("FAKE_READER_WEB_API_BASE", None)
         result = subprocess.run(
             [str(VERIFY_SCRIPT)],
             cwd=REPO_ROOT,
@@ -277,7 +326,8 @@ def assert_production_smoke_probe() -> None:
         )
         assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
         assert "pkg/prs_reader_web_bg.wasm at https://prs-reader-web.dstoc.workers.dev/pkg/prs_reader_web_bg.wasm" in result.stdout
-        assert "verified API reader authorization CORS" in result.stdout
+        assert "verified PRSync API endpoint URLs" in result.stdout
+        assert result.stdout.count("verified API CORS") == 4
 
         for destination in ("expected", "relative_expected"):
             environment["FAKE_INDEX_REDIRECT"] = destination
@@ -377,6 +427,43 @@ def assert_production_smoke_probe() -> None:
         assert rejected_origin.returncode != 0, "smoke probe accepted a failed preflight"
 
         environment.pop("FAKE_REJECT_READER_WEB_ORIGIN")
+        environment["PRS_READER_WEB_API_BASE"] = "https://prs-reader-alt.example.net"
+        alternate = subprocess.run(
+            [str(VERIFY_SCRIPT)],
+            cwd=REPO_ROOT,
+            env=environment,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert alternate.returncode == 0, f"{alternate.stdout}\n{alternate.stderr}"
+        assert "verified PRSync API endpoint URLs for https://prs-reader-alt.example.net" in alternate.stdout
+        assert alternate.stdout.count("verified API CORS") == 4
+        assert alternate.stdout.count(
+            "at https://prs-reader-alt.example.net for https://prs-reader-web.dstoc.workers.dev"
+        ) == 4
+
+        for invalid_base in (
+            "api",
+            "https://api",
+            "https://",
+            "https://prs-reader.example/path",
+            "https://user:secret@prs-reader.example",
+        ):
+            environment["PRS_READER_WEB_API_BASE"] = invalid_base
+            bad_api_base = subprocess.run(
+                [str(VERIFY_SCRIPT)],
+                cwd=REPO_ROOT,
+                env=environment,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            assert bad_api_base.returncode != 0, (
+                f"smoke probe accepted invalid API base {invalid_base!r}"
+            )
+
+        environment["PRS_READER_WEB_API_BASE"] = "https://prs-reader.dstoc.workers.dev"
         environment["FAKE_MISSING_WASM"] = "1"
         missing_asset = subprocess.run(
             [str(VERIFY_SCRIPT)],
@@ -389,12 +476,95 @@ def assert_production_smoke_probe() -> None:
         assert missing_asset.returncode != 0, "smoke probe accepted a missing WASM asset"
 
 
+def assert_build_time_api_base() -> None:
+    with tempfile.TemporaryDirectory(prefix="prs-reader-web-api-base-") as temp:
+        index = Path(temp) / "index.html"
+        index.write_text("<!doctype html><html><head>\n  </head></html>\n", encoding="utf-8")
+        environment = os.environ.copy()
+        environment["PRS_READER_WEB_API_BASE"] = "https://prs-reader.dstoc.workers.dev"
+        configured = subprocess.run(
+            ["node", str(CONFIGURE_API_BASE), str(index)],
+            cwd=REPO_ROOT,
+            env=environment,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert configured.returncode == 0, f"{configured.stdout}\n{configured.stderr}"
+        contract = subprocess.run(
+            ["node", str(TEST_API_BASE), str(index), "https://prs-reader.dstoc.workers.dev"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert contract.returncode == 0, f"{contract.stdout}\n{contract.stderr}"
+        assert "verified PRSync API endpoint URLs" in contract.stdout
+
+        environment.pop("PRS_READER_WEB_API_BASE", None)
+        default = subprocess.run(
+            ["node", str(CONFIGURE_API_BASE), str(index)],
+            cwd=REPO_ROOT,
+            env=environment,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert default.returncode == 0, f"{default.stdout}\n{default.stderr}"
+        default_contract = subprocess.run(
+            ["node", str(TEST_API_BASE), str(index), "https://prs-reader.dstoc.workers.dev"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert default_contract.returncode == 0, (
+            f"{default_contract.stdout}\n{default_contract.stderr}"
+        )
+
+        environment["PRS_READER_WEB_API_BASE"] = "http://127.0.0.1:8787/"
+        local = subprocess.run(
+            ["node", str(CONFIGURE_API_BASE), str(index)],
+            cwd=REPO_ROOT,
+            env=environment,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert local.returncode == 0, f"{local.stdout}\n{local.stderr}"
+        local_contract = subprocess.run(
+            ["node", str(TEST_API_BASE), str(index), "http://127.0.0.1:8787/"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert local_contract.returncode == 0, (
+            f"{local_contract.stdout}\n{local_contract.stderr}"
+        )
+
+        for invalid_base in ("api", "https://api", "https://"):
+            environment["PRS_READER_WEB_API_BASE"] = invalid_base
+            rejected = subprocess.run(
+                ["node", str(CONFIGURE_API_BASE), str(index)],
+                cwd=REPO_ROOT,
+                env=environment,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            assert rejected.returncode != 0, (
+                f"build-time configuration accepted invalid API base {invalid_base!r}"
+            )
+
+
 def main() -> None:
     assert_static_worker_config()
     assert_api_origin_configuration()
     assert_workflow_and_runbook()
     assert_deploy_and_verify_scripts()
     assert_production_smoke_probe()
+    assert_build_time_api_base()
     print("browser reader production deployment checks passed")
 
 

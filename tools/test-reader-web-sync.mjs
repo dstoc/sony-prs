@@ -185,6 +185,24 @@ const emptyUnchanged = await client.syncOnce(async (value) => activated.push(val
 assert.deepEqual(emptyUnchanged, { kind: "unchanged", revision: 5 });
 assert.equal(activated.length, activationsAtClear);
 
+const expectedApiEndpointList = [
+  "/api/v1/authorization/reader",
+  "/api/v1/authorization/poll",
+  "/api/v1/reader/manifest",
+  "/api/v1/reader/bundle",
+];
+const expectedApiEndpoints = new Set(expectedApiEndpointList);
+for (const { url } of calls) {
+  assert.equal(url.origin, "https://prs-reader.dstoc.workers.dev");
+  assert.equal(url.username, "");
+  assert.equal(url.password, "");
+  assert.equal(url.search, "", "API secrets or other request data must not appear in URLs");
+  assert.equal(url.hash, "");
+  assert.ok(expectedApiEndpointList.includes(url.pathname), `unexpected PRSync endpoint: ${url.pathname}`);
+  expectedApiEndpoints.delete(url.pathname);
+}
+assert.deepEqual(expectedApiEndpoints, new Set(), "sync must use the production API origin for every endpoint");
+
 const deniedClient = createPrsyncClient({
   fetchImpl: async (url) => new URL(url).pathname.endsWith("/authorization/reader")
     ? authorizationStart()
@@ -211,6 +229,7 @@ const httpRemoteClient = () => createPrsyncClient({
   fetchImpl,
 });
 assert.throws(httpRemoteClient, /must use HTTPS/u);
+assert.throws(() => createPrsyncClient({ apiBase: "api", fetchImpl }));
 
 const futureProtocolClient = createPrsyncClient({
   fetchImpl: async () => {

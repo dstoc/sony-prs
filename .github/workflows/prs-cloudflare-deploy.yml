@@ -106,6 +106,7 @@ jobs:
       name: production
     env:
       PRS_READER_URL: ${{ vars.PRS_READER_URL }}
+      PRS_READER_WEB_API_BASE: https://prs-reader.dstoc.workers.dev
     steps:
       - name: Check out the tested main commit
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0

@@ -32,9 +32,9 @@ export function createPrsyncClient({
     && !(api.protocol === "http:" && (api.hostname === "127.0.0.1" || api.hostname === "localhost"))) {
     throw new Error("PRSync API must use HTTPS outside localhost.");
   }
-  api.pathname = api.pathname.replace(/\/$/u, "");
   api.search = "";
   api.hash = "";
+  const apiPathPrefix = api.pathname.replace(/\/$/u, "");
 
   let session;
   let snapshot;
@@ -49,7 +49,7 @@ export function createPrsyncClient({
     }
     let response;
     try {
-      response = await fetchImpl(new URL(`${api.pathname}${path}`, api.origin), {
+      response = await fetchImpl(new URL(`${apiPathPrefix}${path}`, api.origin), {
         method,
         headers: requestHeaders,
         body: body === undefined ? undefined : JSON.stringify(body),

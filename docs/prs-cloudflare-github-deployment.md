@@ -197,8 +197,20 @@ re-publish the current source, rerun the successful CI deployment run for its
 commit. A rollback restores the previous static asset version and does not
 change the API Worker or its bindings.
 
-The workflow verifies asset responses and the exact-origin authorization
-preflight. A complete authorization and sync still needs an interactive
+The workflow verifies asset responses and exact-origin preflights for reader
+authorization, polling, manifest, and bundle. It also checks the API origin
+embedded in the deployed static HTML and resolves all four endpoint URLs
+before it checks CORS. The browser build uses `PRS_READER_WEB_API_BASE` as a
+build-time setting. Production sets it to
+`https://prs-reader.dstoc.workers.dev` in the production deployment job. The
+same job setting configures the static build, validates the deployed HTML, and
+sets the target for the four post-deploy CORS preflights. Change this one job
+setting when the API Worker origin changes, then use a successful CI deployment
+run for the intended `main` commit. Local builds keep that default unless the
+variable is set to a localhost Worker origin. This static setting does not
+come from Cloudflare Worker runtime vars.
+
+A complete authorization and sync still needs an interactive
 browser session: sign in through the existing Access approval page and approve
 a request for an authorized reader account. CI does not have that user session
 or the account data needed to complete this manual end-to-end step.

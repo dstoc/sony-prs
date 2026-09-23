@@ -34,6 +34,7 @@ grep -Fq 'max-height: 100%;' "$repo_root/web/reader-web/style.css"
 grep -Fq 'import init,' "$repo_root/web/reader-web/main.js"
 grep -Fq 'load_directory, load_sync_bundle' "$repo_root/web/reader-web/main.js"
 grep -Fq 'from "./prsync-client.mjs"' "$repo_root/web/reader-web/main.js"
+grep -Fq 'meta[name="prsync-api-base"]' "$repo_root/web/reader-web/main.js"
 grep -Fq 'from "./pkg/prs_reader_web.js"' "$repo_root/web/reader-web/main.js"
 grep -Fq 'showDirectoryPicker' "$repo_root/web/reader-web/directory-library.js"
 grep -Fq 'selectEntryPoint(files)' "$repo_root/web/reader-web/directory-library.js"
@@ -94,6 +95,8 @@ node "$repo_root/tools/test-reader-web-input.mjs"
 node "$repo_root/tools/test-reader-web-directory.mjs"
 node "$repo_root/tools/test-reader-web-fullscreen.mjs"
 node "$repo_root/tools/test-reader-web-sync.mjs"
+node "$repo_root/tools/test-reader-web-api-base.mjs" \
+  "$output_dir/index.html" "${PRS_READER_WEB_API_BASE:-}"
 cargo test --manifest-path "$repo_root/web/reader-web/Cargo.toml"
 
 test -f "$output_dir/index.html"
@@ -128,7 +131,6 @@ if [[ "$actual_files" != "$expected_files" ]]; then
 fi
 
 for relative_path in \
-  index.html \
   directory-library.js \
   main.js \
   input.mjs \

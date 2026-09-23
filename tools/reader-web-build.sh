@@ -81,6 +81,7 @@ build() {
     web/reader-web/fullscreen.mjs \
     web/reader-web/prsync-client.mjs \
     web/reader-web/style.css "$OUTPUT_DIR/"
+  node tools/configure-reader-web-api-base.mjs "$OUTPUT_DIR/index.html"
   test -s "$OUTPUT_DIR/index.html"
   test -s "$OUTPUT_DIR/directory-library.js"
   test -s "$OUTPUT_DIR/main.js"

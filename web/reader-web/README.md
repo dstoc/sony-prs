@@ -57,10 +57,25 @@ below. Production allows only `https://prs-reader-web.dstoc.workers.dev`, the
 separate static reader Worker. The production value is set in
 `[env.production.vars]` in the API Worker's Wrangler configuration. Deploy that
 configuration after changing the origin; do not use `*` or a reflected request
-origin. The browser API base defaults to
-`https://prs-reader.dstoc.workers.dev`; a host can override it with a
-`<meta name="prsync-api-base" content="https://…">` value when it has a
-different same-origin API deployment.
+origin. The build writes the API origin into the static page's
+`<meta name="prsync-api-base">` value. `PRS_READER_WEB_API_BASE` selects that
+origin at build time. The default remains
+`https://prs-reader.dstoc.workers.dev`, which preserves the existing behavior
+for local static builds. For a local Worker, set
+`PRS_READER_WEB_API_BASE=http://127.0.0.1:8787` when you build. The build
+accepts HTTPS origins and HTTP on localhost only. It rejects a missing scheme
+or host, credentials, paths, queries, and fragments.
+
+The production deployment workflow sets
+`PRS_READER_WEB_API_BASE=https://prs-reader.dstoc.workers.dev`. To change the
+API origin, update that value in
+`.github/workflows/prs-cloudflare-deploy.yml`, then rerun the successful CI
+deployment for the intended `main` commit. The production smoke check reads
+the deployed HTML, resolves authorization, polling, manifest, and bundle
+endpoints, and checks exact-origin CORS preflights for all four API routes.
+The API Worker's separate `PRS_READER_WEB_ORIGIN` CORS setting remains
+`https://prs-reader-web.dstoc.workers.dev`; `/a/*` approval routes remain
+outside API CORS and protected by Cloudflare Access.
 
 ## Production static site
 

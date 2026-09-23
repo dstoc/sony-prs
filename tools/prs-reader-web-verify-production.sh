@@ -1,11 +1,35 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+cd -- "$repo_root"
+
 readonly reader_web_origin="https://prs-reader-web.dstoc.workers.dev"
-readonly api_origin="https://prs-reader.dstoc.workers.dev"
+api_origin=$(node --input-type=module <<'NODE'
+const configuredBase = process.env.PRS_READER_WEB_API_BASE?.trim()
+  || "https://prs-reader.dstoc.workers.dev";
+let apiBase;
+try {
+  apiBase = new URL(configuredBase);
+} catch {
+  process.stderr.write("PRS_READER_WEB_API_BASE must be an absolute HTTPS origin.\n");
+  process.exit(1);
+}
+if (apiBase.protocol !== "https:" || apiBase.hostname === "api"
+  || apiBase.username || apiBase.password
+  || (apiBase.pathname !== "/" && apiBase.pathname !== "")
+  || apiBase.search || apiBase.hash) {
+  process.stderr.write("PRS_READER_WEB_API_BASE must be an HTTPS origin without credentials, a path, query, or fragment.\n");
+  process.exit(1);
+}
+process.stdout.write(apiBase.origin);
+NODE
+)
+readonly api_origin
 readonly reader_web_api_path="/api/v1/authorization/reader"
 headers=$(mktemp)
-trap 'rm -f -- "$headers"' EXIT
+readonly deployed_index=$(mktemp)
+trap 'rm -f -- "$headers" "$deployed_index"' EXIT
 
 header_value() {
     local header_name=$1
@@ -105,6 +129,7 @@ report_asset_failure() {
 check_asset() {
     local asset_path=$1
     local expected_type=$2
+    local output_file=${3:-/dev/null}
     local requested_url="$reader_web_origin/$asset_path"
     local original_url=$requested_url
     local status content_type media_type effective_url curl_exit location metadata initial_location=''
@@ -115,7 +140,7 @@ check_asset() {
     : > "$headers"
     curl_exit=0
     metadata=$(curl --disable --fail-with-body --silent --show-error --max-time 20 \
-        --dump-header "$headers" --output /dev/null \
+        --dump-header "$headers" --output "$output_file" \
         --write-out '%{http_code}\n%{content_type}\n%{url_effective}\n' \
         "$requested_url") || curl_exit=$?
     mapfile -t metadata_lines <<<"$metadata"
@@ -150,7 +175,7 @@ check_asset() {
         : > "$headers"
         curl_exit=0
         metadata=$(curl --disable --fail-with-body --silent --show-error --max-time 20 \
-            --dump-header "$headers" --output /dev/null \
+            --dump-header "$headers" --output "$output_file" \
             --write-out '%{http_code}\n%{content_type}\n%{url_effective}\n' \
             "$requested_url") || curl_exit=$?
         mapfile -t metadata_lines <<<"$metadata"
@@ -181,7 +206,8 @@ check_asset() {
     printf 'verified %s at %s (%s)\n' "$asset_path" "$effective_url" "$content_type"
 }
 
-check_asset index.html html
+check_asset index.html html "$deployed_index"
+node "$repo_root/tools/test-reader-web-api-base.mjs" "$deployed_index" "$api_origin"
 check_asset main.js js
 check_asset directory-library.js js
 check_asset input.mjs js
@@ -191,28 +217,56 @@ check_asset style.css css
 check_asset pkg/prs_reader_web.js js
 check_asset pkg/prs_reader_web_bg.wasm wasm
 
-: > "$headers"
-status=$(curl --disable --silent --show-error --max-time 20 --request OPTIONS \
-    --dump-header "$headers" --output /dev/null --write-out '%{http_code}' \
-    "$api_origin$reader_web_api_path" \
-    --header "Origin: $reader_web_origin" \
-    --header 'Access-Control-Request-Method: POST' \
-    --header 'Access-Control-Request-Headers: content-type')
-if [[ "$status" != "204" ]]; then
-    echo "reader API preflight returned HTTP $status for $reader_web_origin" >&2
-    exit 1
-fi
+verify_reader_preflight() {
+    local path=$1
+    local method=$2
+    local requested_headers=$3
+    local status allow_origin allow_methods allow_headers allow_credentials
 
-allow_origin=$(header_value 'Access-Control-Allow-Origin')
-allow_methods=$(header_value 'Access-Control-Allow-Methods')
-allow_headers=$(header_value 'Access-Control-Allow-Headers')
-allow_credentials=$(header_value 'Access-Control-Allow-Credentials')
-if [[ "$allow_origin" != "$reader_web_origin" || "$allow_methods" != "POST" || \
-      "${allow_headers,,}" != *content-type* || -n "$allow_credentials" ]]; then
-    echo "reader API preflight did not return the exact-origin reader CORS contract" >&2
-    exit 1
-fi
-printf 'verified API reader authorization CORS for %s\n' "$reader_web_origin"
+    : > "$headers"
+    if ! status=$(curl --disable --silent --show-error --max-time 20 --request OPTIONS \
+        --dump-header "$headers" --output /dev/null --write-out '%{http_code}' \
+        "$api_origin$path" \
+        --header "Origin: $reader_web_origin" \
+        --header "Access-Control-Request-Method: $method" \
+        --header "Access-Control-Request-Headers: $requested_headers"); then
+        echo "reader API preflight request failed at $api_origin for $path" >&2
+        return 1
+    fi
+    if [[ "$status" != "204" ]]; then
+        echo "reader API preflight returned HTTP $status for $path and $reader_web_origin" >&2
+        return 1
+    fi
+
+    allow_origin=$(header_value 'Access-Control-Allow-Origin')
+    allow_methods=$(header_value 'Access-Control-Allow-Methods')
+    allow_headers=$(header_value 'Access-Control-Allow-Headers')
+    allow_credentials=$(header_value 'Access-Control-Allow-Credentials')
+    if [[ "$allow_origin" != "$reader_web_origin" || "$allow_methods" != "$method" || \
+          -n "$allow_credentials" ]]; then
+        echo "reader API preflight did not return the exact-origin contract for $path" >&2
+        return 1
+    fi
+    local requested_header normalized_allow_headers
+    normalized_allow_headers=${allow_headers,,}
+    normalized_allow_headers=${normalized_allow_headers//[[:space:]]/}
+    normalized_allow_headers=",$normalized_allow_headers,"
+    IFS=',' read -r -a requested_header_names <<<"$requested_headers"
+    for requested_header in "${requested_header_names[@]}"; do
+        requested_header=${requested_header//[[:space:]]/}
+        if [[ "$normalized_allow_headers" != *",${requested_header,,},"* ]]; then
+            echo "reader API preflight omitted $requested_header for $path" >&2
+            return 1
+        fi
+    done
+    printf 'verified API CORS %s %s at %s for %s\n' \
+        "$method" "$path" "$api_origin" "$reader_web_origin"
+}
+
+verify_reader_preflight /api/v1/authorization/reader POST content-type
+verify_reader_preflight /api/v1/authorization/poll POST content-type
+verify_reader_preflight /api/v1/reader/manifest GET 'authorization, if-revision'
+verify_reader_preflight /api/v1/reader/bundle GET authorization
 
 status=$(curl --disable --silent --show-error --max-time 20 --request OPTIONS \
     --output /dev/null --write-out '%{http_code}' \
