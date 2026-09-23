@@ -908,6 +908,226 @@ mod tests {
         fs::remove_dir_all(root).expect("remove reader fixture root");
     }
 
+    fn integrated_reader_fixture() -> PathBuf {
+        let source = (0..96)
+            .map(|index| {
+                format!(
+                    "## Section {index}\n\nThis long passage keeps a stable reading position while orientation, font size, fullscreen, and progress settings change. It contains enough words to repaginate in every supported reader layout.\n\n"
+                )
+            })
+            .collect::<String>();
+        let root = fixture_root(&format!(
+            "# Integrated reader\n\n[Chapter](chapter.md#middle)\n\n![Observatory](assets/observatory.png)\n\n{source}"
+        ));
+        fs::create_dir_all(root.join("assets")).expect("create integrated asset directory");
+        fs::write(
+            root.join("assets/observatory.png"),
+            include_bytes!("../../prs-markdown/tests/fixtures/assets/observatory.png"),
+        )
+        .expect("write integrated image fixture");
+        fs::write(
+            root.join("chapter.md"),
+            "# Chapter\n\n## Middle\n\nThe linked destination remains stable after every layout change.\n",
+        )
+        .expect("write integrated linked document");
+        root
+    }
+
+    fn advance_to_halfway(reader: &mut T1Reader) {
+        let half = reader.reader().page_count() / 2;
+        assert!(half > 1, "integrated fixture must span several pages");
+        for _ in 0..half {
+            reader.next_page().expect("advance integrated fixture");
+        }
+    }
+
+    fn assert_reader_layout_regions_do_not_overlap(layout: ReaderLayout) {
+        let display = layout.display_viewport;
+        let content_top = layout.content_top();
+        let content_bottom = content_top + layout.effective_viewport().height;
+        let progress = layout.progress_line_bounds();
+
+        assert!(content_bottom <= display.height);
+        assert_eq!(progress.top_left.x, 0);
+        assert_eq!(progress.top_left.y as u32, content_bottom);
+        assert_eq!(progress.size.width, display.width);
+        assert_eq!(
+            progress.size.height, layout.progress_line.reserved_height,
+            "progress reservation must remain a separate bottom band"
+        );
+        assert!(progress.top_left.y >= content_top as i32);
+        assert!(layout.effective_viewport().height > 0);
+        if let Some(indicator) = layout.progress_indicator_bounds() {
+            assert_eq!(indicator.size.height, 1);
+            assert_eq!(
+                indicator.top_left.y,
+                progress.top_left.y + progress.size.height as i32 - 1
+            );
+        }
+    }
+
+    #[test]
+    fn integrated_reader_preserves_history_through_repeated_layout_reversals() {
+        let root = integrated_reader_fixture();
+        let mut reader = T1Reader::open_with_layout(
+            fixture_config(&root),
+            reader_layout_for_orientation(ReaderOrientation::Portrait),
+        )
+        .expect("open integrated reader fixture");
+        advance_to_halfway(&mut reader);
+
+        let origin_location = reader.reader().current_location().cloned();
+        let origin_anchor = reader
+            .reader()
+            .current_content_anchor()
+            .expect("capture halfway anchor");
+        assert!(reader
+            .reader()
+            .layout()
+            .expect("integrated document layout")
+            .blocks()
+            .iter()
+            .flat_map(|block| block.lines.iter())
+            .flat_map(|line| line.fragments.iter())
+            .any(|fragment| fragment.image.is_some()));
+
+        reader
+            .controller
+            .follow_reference("chapter.md#middle")
+            .expect("follow linked history destination");
+        let destination_anchor = reader
+            .reader()
+            .current_content_anchor()
+            .expect("capture linked destination anchor");
+
+        for (orientation, font_scale, fullscreen, progress_enabled) in [
+            (ReaderOrientation::Landscape, 150, true, false),
+            (ReaderOrientation::Portrait, 75, false, true),
+            (ReaderOrientation::Landscape, 100, true, false),
+            (ReaderOrientation::Portrait, 150, false, true),
+            (ReaderOrientation::Portrait, 100, false, true),
+        ] {
+            reader
+                .set_orientation(orientation)
+                .expect("reflow integrated orientation");
+            reader
+                .set_font_scale_percent(font_scale)
+                .expect("reflow integrated font scale");
+            reader
+                .set_fullscreen(fullscreen)
+                .expect("reflow integrated fullscreen");
+            reader.set_progress_line_enabled(progress_enabled);
+
+            assert_eq!(
+                reader.reader().current_content_anchor(),
+                Some(destination_anchor)
+            );
+            assert_eq!(reader.font_scale_percent(), font_scale);
+            assert_eq!(reader.fullscreen(), fullscreen);
+            assert_reader_layout_regions_do_not_overlap(reader.reader().reader_layout());
+        }
+
+        assert!(matches!(
+            reader.controller.back().expect("restore origin history"),
+            ReaderEvent::Back { .. }
+        ));
+        assert_eq!(reader.reader().current_location(), origin_location.as_ref());
+        assert_eq!(
+            reader.reader().current_content_anchor(),
+            Some(origin_anchor)
+        );
+        assert!(matches!(
+            reader
+                .controller
+                .forward()
+                .expect("restore destination history"),
+            ReaderEvent::Forward { .. }
+        ));
+        assert_eq!(
+            reader.reader().current_content_anchor(),
+            Some(destination_anchor)
+        );
+
+        fs::remove_dir_all(root).expect("remove integrated reader fixture root");
+    }
+
+    #[test]
+    fn integrated_reader_matrix_has_goldens_for_orientations_font_bounds_and_modes() {
+        use prs_markdown::{
+            DEFAULT_FONT_SCALE_PERCENT, MAX_FONT_SCALE_PERCENT, MIN_FONT_SCALE_PERCENT,
+        };
+
+        let root = integrated_reader_fixture();
+        let mut reader = T1Reader::open_with_layout(
+            fixture_config(&root),
+            reader_layout_for_orientation(ReaderOrientation::Portrait),
+        )
+        .expect("open matrix reader fixture");
+        advance_to_halfway(&mut reader);
+        let anchor = reader
+            .reader()
+            .current_content_anchor()
+            .expect("capture matrix anchor");
+        for orientation in ReaderOrientation::ALL {
+            for font_scale in [
+                MIN_FONT_SCALE_PERCENT,
+                DEFAULT_FONT_SCALE_PERCENT,
+                MAX_FONT_SCALE_PERCENT,
+            ] {
+                for fullscreen in [false, true] {
+                    for progress_enabled in [false, true] {
+                        reader
+                            .set_orientation(orientation)
+                            .expect("set matrix orientation");
+                        reader
+                            .set_font_scale_percent(font_scale)
+                            .expect("set matrix font scale");
+                        reader
+                            .set_fullscreen(fullscreen)
+                            .expect("set matrix fullscreen");
+                        reader.set_progress_line_enabled(progress_enabled);
+
+                        assert_eq!(reader.reader().current_content_anchor(), Some(anchor));
+                        assert_eq!(reader.font_scale_percent(), font_scale);
+                        assert_eq!(reader.fullscreen(), fullscreen);
+                        assert_reader_layout_regions_do_not_overlap(
+                            reader.reader().reader_layout(),
+                        );
+
+                        let viewport = orientation.viewport();
+                        let frame = reader
+                            .render_frame(
+                                "87%|UP|ON|ON||12:34",
+                                None,
+                                viewport.width,
+                                viewport.height,
+                            )
+                            .expect("render matrix reader frame");
+                        assert_eq!(frame.len(), (viewport.width * viewport.height * 2) as usize);
+                        let name = format!(
+                            "reader-integrated-{}-font-{font_scale}-{}-progress-{}",
+                            if orientation.is_landscape() {
+                                "landscape"
+                            } else {
+                                "portrait"
+                            },
+                            if fullscreen { "fullscreen" } else { "status" },
+                            if progress_enabled { "on" } else { "off" },
+                        );
+                        let png = crate::display::rgb565_to_png(
+                            &frame,
+                            viewport.width as usize,
+                            viewport.height as usize,
+                        )
+                        .expect("encode matrix reader PNG");
+                        assert_png_golden(&name, &png);
+                    }
+                }
+            }
+        }
+        fs::remove_dir_all(root).expect("remove matrix reader fixture root");
+    }
+
     #[test]
     fn reader_without_feedback_matches_png_golden() {
         let root = fixture_root("# Native reader\n\nNormal reading stays quiet.");
